@@ -1,0 +1,144 @@
+@import 'tailwindcss';
+@import 'tw-animate-css';
+
+@custom-variant dark (&:is(.dark *));
+
+/*
+  Aesthetic: "control-room" operator console.
+  Near-black slate base, a single signal-amber accent, semantic status hues,
+  and a deliberate three-font system (display / body / mono).
+*/
+
+:root,
+.dark {
+  --background: #0b0d10;
+  --foreground: #e7e9ec;
+
+  --card: #111419;
+  --card-foreground: #e7e9ec;
+  --popover: #14181e;
+  --popover-foreground: #e7e9ec;
+
+  --primary: #f5a524;
+  --primary-foreground: #1a1205;
+
+  --secondary: #1b2027;
+  --secondary-foreground: #d4d9df;
+
+  --muted: #161a20;
+  --muted-foreground: #899099;
+
+  --accent: #1b2027;
+  --accent-foreground: #f0f2f4;
+
+  --destructive: #fb5d6b;
+  --destructive-foreground: #1a0506;
+
+  --border: #222a33;
+  --input: #222a33;
+  --ring: #f5a524;
+
+  /* semantic status palette */
+  --success: #34d399;
+  --warning: #f5a524;
+  --danger: #fb7185;
+  --info: #38bdf8;
+  --neutral: #71717a;
+
+  --radius: 0.55rem;
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-destructive-foreground: var(--destructive-foreground);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+
+  --color-success: var(--success);
+  --color-warning: var(--warning);
+  --color-danger: var(--danger);
+  --color-info: var(--info);
+  --color-neutral: var(--neutral);
+
+  --font-sans: 'Hanken Grotesque', ui-sans-serif, system-ui, sans-serif;
+  --font-display: 'Bricolage Grotesque', 'Hanken Grotesque', ui-sans-serif, sans-serif;
+  --font-mono: 'IBM Plex Mono', ui-monospace, 'SF Mono', monospace;
+
+  --radius-sm: calc(var(--radius) - 4px);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) + 4px);
+}
+
+@layer base {
+  * {
+    border-color: var(--border);
+  }
+  html {
+    color-scheme: dark;
+  }
+  body {
+    background-color: var(--background);
+    color: var(--foreground);
+    font-family: var(--font-sans);
+    font-feature-settings: 'cv05', 'ss01';
+    -webkit-font-smoothing: antialiased;
+    /* faint control-grid + amber glow in the corner for atmosphere */
+    background-image:
+      radial-gradient(60rem 60rem at 100% -10%, rgba(245, 165, 36, 0.06), transparent 60%),
+      linear-gradient(to bottom, rgba(255, 255, 255, 0.015), transparent 30%);
+    background-attachment: fixed;
+  }
+  h1,
+  h2,
+  h3,
+  .font-display {
+    font-family: var(--font-display);
+    letter-spacing: -0.01em;
+  }
+}
+
+/* staggered page-load reveal */
+@keyframes rise {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+.animate-rise {
+  animation: rise 0.5s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+/* thin custom scrollbars to match the console feel */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--border) transparent;
+}
+*::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+*::-webkit-scrollbar-thumb {
+  background: var(--border);
+  border-radius: 9999px;
+  border: 3px solid var(--background);
+}

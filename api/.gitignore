@@ -1,0 +1,15 @@
+# Secrets — never commit signing keys or env
+/keys/*.xml
+/keys/*.pem
+.env
+.env.local
+
+# Build artifacts
+/bin/
+*.exe
+arib-license-api
+
+# OS / editor
+.DS_Store
+.idea/
+.vscode/

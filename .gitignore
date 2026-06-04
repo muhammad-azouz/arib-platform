@@ -1,0 +1,15 @@
+# Secrets
+.env
+.env.local
+secrets/
+
+# Go
+api/bin/
+api/keys/
+
+# Node
+admin/node_modules/
+admin/dist/
+
+# Docker volumes / OS
+.DS_Store
