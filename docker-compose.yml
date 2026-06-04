@@ -1,5 +1,4 @@
 services:
-
   mongodb:
     image: mongo:7
     restart: unless-stopped
@@ -19,10 +18,12 @@ services:
   api:
     build: ./api
     restart: unless-stopped
-    env_file: .env
+    env_file: api/.env
     environment:
       HTTP_ADDR: 0.0.0.0:8080
       MONGO_URI: mongodb://${MONGO_USER}:${MONGO_PASS}@mongodb:27017/arib_license?authSource=admin
+    volumes:
+      - ./api/keys:/app/keys:ro
     ports:
       - "127.0.0.1:8080:8080"
     networks: [license]
