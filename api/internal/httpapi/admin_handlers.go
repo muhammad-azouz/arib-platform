@@ -171,6 +171,37 @@ func (s *Server) handleAdminForceRelease(w http.ResponseWriter, r *http.Request)
 	writeJSON(w, http.StatusOK, map[string]string{"status": "released"})
 }
 
+// handleAdminShardRollout migrates a shard's tenant DBs up to the gateway's
+// current schema version (retrying behind/failed tenants) and returns a
+// mixed-version report (E3).
+func (s *Server) handleAdminShardRollout(w http.ResponseWriter, r *http.Request) {
+	rep, err := s.rollout.RolloutShard(r.Context(), chi.URLParam(r, "id"))
+	if errors.Is(err, mongostore.ErrNotFound) {
+		writeErr(w, http.StatusNotFound, "shard not found")
+		return
+	}
+	if err != nil {
+		writeErr(w, http.StatusBadGateway, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, rep)
+}
+
+// handleAdminShardSchemaReport returns the shard's current mixed-version view
+// without migrating anything (E3).
+func (s *Server) handleAdminShardSchemaReport(w http.ResponseWriter, r *http.Request) {
+	rep, err := s.rollout.ShardReport(r.Context(), chi.URLParam(r, "id"))
+	if errors.Is(err, mongostore.ErrNotFound) {
+		writeErr(w, http.StatusNotFound, "shard not found")
+		return
+	}
+	if err != nil {
+		writeErr(w, http.StatusBadGateway, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, rep)
+}
+
 func (s *Server) handleAdminAudit(w http.ResponseWriter, r *http.Request) {
 	entries, err := s.admin.ListAudit(r.Context(), 200)
 	if err != nil {

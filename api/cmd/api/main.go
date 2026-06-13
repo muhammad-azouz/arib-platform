@@ -18,7 +18,9 @@ import (
 	"github.com/aribpos/license-api/internal/httpapi"
 	"github.com/aribpos/license-api/internal/license"
 	"github.com/aribpos/license-api/internal/mail"
+	"github.com/aribpos/license-api/internal/rollout"
 	mongostore "github.com/aribpos/license-api/internal/store/mongo"
+	"github.com/aribpos/license-api/internal/tenant"
 	"github.com/aribpos/license-api/pkg/licensetoken"
 	"github.com/joho/godotenv"
 )
@@ -68,6 +70,13 @@ func main() {
 		MaxPerMonth: cfg.ReleaseMaxPerMonth,
 	})
 	adminSvc := admin.New(store, licenseSvc)
+	syncKey, err := licensetoken.ParsePrivateKeyXML(cfg.PrivateKeyXML)
+	if err != nil {
+		log.Error("parse sync signing key", "err", err)
+		os.Exit(1)
+	}
+	tenantSvc := tenant.New(store, syncKey, cfg.SyncTokenTTL)
+	rolloutSvc := rollout.New(store, tenantSvc, nil)
 
 	mailer := mail.New(mail.Config{
 		Host: cfg.SMTPHost, Port: cfg.SMTPPort,
@@ -85,7 +94,7 @@ func main() {
 		OTPTTL: cfg.OTPTTL, OTPMaxAttempts: cfg.OTPMaxAttempts,
 	})
 
-	srv := httpapi.New(authSvc, deviceSvc, adminSvc, cfg.DashboardOrigins, log)
+	srv := httpapi.New(authSvc, deviceSvc, adminSvc, tenantSvc, rolloutSvc, cfg.DashboardOrigins, log)
 
 	httpServer := &http.Server{
 		Addr:              cfg.HTTPAddr,

@@ -10,6 +10,8 @@ import (
 	"github.com/aribpos/license-api/internal/admin"
 	"github.com/aribpos/license-api/internal/auth"
 	"github.com/aribpos/license-api/internal/device"
+	"github.com/aribpos/license-api/internal/rollout"
+	"github.com/aribpos/license-api/internal/tenant"
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
 	"github.com/go-chi/cors"
@@ -17,10 +19,12 @@ import (
 
 // Server bundles the dependencies the HTTP handlers need.
 type Server struct {
-	auth   *auth.Service
-	device *device.Service
-	admin  *admin.Service
-	log    *slog.Logger
+	auth    *auth.Service
+	device  *device.Service
+	admin   *admin.Service
+	tenant  *tenant.Service
+	rollout *rollout.Service
+	log     *slog.Logger
 
 	corsOrigins []string
 	otpLimiter  *keyedLimiter
@@ -28,11 +32,13 @@ type Server struct {
 
 // New builds an HTTP Server. corsOrigins are the browser origins (admin
 // dashboard) allowed to call the API; nil disables CORS.
-func New(authSvc *auth.Service, deviceSvc *device.Service, adminSvc *admin.Service, corsOrigins []string, log *slog.Logger) *Server {
+func New(authSvc *auth.Service, deviceSvc *device.Service, adminSvc *admin.Service, tenantSvc *tenant.Service, rolloutSvc *rollout.Service, corsOrigins []string, log *slog.Logger) *Server {
 	return &Server{
 		auth:        authSvc,
 		device:      deviceSvc,
 		admin:       adminSvc,
+		tenant:      tenantSvc,
+		rollout:     rolloutSvc,
 		log:         log,
 		corsOrigins: corsOrigins,
 		otpLimiter:  newKeyedLimiter(rateEvery(time.Minute), 3),
@@ -57,6 +63,15 @@ func (s *Server) Router() http.Handler {
 	r.Use(middleware.Timeout(30 * time.Second))
 
 	r.Get("/healthz", func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) })
+	r.Get("/v1/sync-public-key", func(w http.ResponseWriter, _ *http.Request) {
+		pemStr, err := s.tenant.SyncPublicKeyPEM()
+		if err != nil {
+			writeErr(w, http.StatusInternalServerError, "key unavailable")
+			return
+		}
+		w.Header().Set("Content-Type", "application/x-pem-file")
+		_, _ = w.Write([]byte(pemStr))
+	})
 
 	r.Route("/v1", func(r chi.Router) {
 		// --- Public auth ---
@@ -77,6 +92,21 @@ func (s *Server) Router() http.Handler {
 			r.Post("/devices/bind", s.handleBind)
 			r.Post("/devices/validate", s.handleValidate)
 			r.Post("/devices/release", s.handleRelease)
+
+			// Multi-tenant registry.
+			r.Route("/tenants", func(r chi.Router) {
+				r.Post("/", s.handleTenantCreate)
+				r.Get("/", s.handleTenantList)
+				r.Route("/{id}", func(r chi.Router) {
+					r.Get("/", s.handleTenantBundle)
+					r.Put("/company", s.handleTenantSetCompany)
+					r.Post("/branches", s.handleBranchAdd)
+					r.Patch("/branches/{branchId}", s.handleBranchUpdate)
+					r.Post("/branches/{branchId}/bind", s.handleBranchBind)
+					r.Post("/devices/{deviceId}/release", s.handleBranchDeviceRelease)
+					r.Post("/sync-token", s.handleSyncToken)
+				})
+			})
 		})
 
 		// --- Admin ---
@@ -93,6 +123,17 @@ func (s *Server) Router() http.Handler {
 			r.Post("/licenses/{id}/sign-offline", s.handleAdminSignOffline)
 			r.Post("/devices/{id}/release", s.handleAdminForceRelease)
 			r.Get("/audit", s.handleAdminAudit)
+
+			// Multi-tenant registry (placement & billing levers).
+			r.Post("/shards", s.handleAdminCreateShard)
+			r.Get("/shards", s.handleAdminListShards)
+			r.Post("/tenants/{id}/assign-shard", s.handleAdminAssignShard)
+			r.Post("/branches/{id}/seats", s.handleAdminBranchSeats)
+
+			// Fleet schema rollout (E3): migrate a shard's tenant DBs to the
+			// gateway's version; report mixed-version state.
+			r.Post("/shards/{id}/rollout", s.handleAdminShardRollout)
+			r.Get("/shards/{id}/schema-report", s.handleAdminShardSchemaReport)
 		})
 	})
 	return r

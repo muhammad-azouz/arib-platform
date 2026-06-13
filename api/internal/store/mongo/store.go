@@ -28,6 +28,13 @@ type Store struct {
 	Sessions  *mongo.Collection
 	Exchanges *mongo.Collection
 	Audit     *mongo.Collection
+
+	// Multi-tenant registry (control plane).
+	Tenants       *mongo.Collection
+	Companies     *mongo.Collection
+	Branches      *mongo.Collection
+	BranchDevices *mongo.Collection
+	Shards        *mongo.Collection
 }
 
 // Connect dials MongoDB, pings it, and returns a Store with collection handles.
@@ -53,11 +60,20 @@ func Connect(ctx context.Context, uri, dbName string) (*Store, error) {
 		Sessions:  db.Collection("sessions"),
 		Exchanges: db.Collection("oauth_exchanges"),
 		Audit:     db.Collection("audit_log"),
+
+		Tenants:       db.Collection("tenants"),
+		Companies:     db.Collection("companies"),
+		Branches:      db.Collection("branches"),
+		BranchDevices: db.Collection("branch_devices"),
+		Shards:        db.Collection("shards"),
 	}, nil
 }
 
 // Close disconnects the client.
 func (s *Store) Close(ctx context.Context) error { return s.client.Disconnect(ctx) }
+
+// DropDatabase drops the whole database (test teardown only).
+func (s *Store) DropDatabase(ctx context.Context) error { return s.db.Drop(ctx) }
 
 // EnsureIndexes creates the unique and TTL indexes the API relies on.
 func (s *Store) EnsureIndexes(ctx context.Context) error {
@@ -87,6 +103,35 @@ func (s *Store) EnsureIndexes(ctx context.Context) error {
 		{s.Sessions, mongo.IndexModel{Keys: bson.D{{Key: "token_hash", Value: 1}}, Options: options.Index().SetUnique(true)}},
 		{s.Sessions, mongo.IndexModel{Keys: bson.D{{Key: "expires_at", Value: 1}}, Options: options.Index().SetExpireAfterSeconds(0)}},
 		{s.Audit, mongo.IndexModel{Keys: bson.D{{Key: "created_at", Value: -1}}}},
+
+		// --- Multi-tenant registry ---
+		{s.Tenants, mongo.IndexModel{Keys: bson.D{{Key: "account_id", Value: 1}}}},
+		{s.Tenants, mongo.IndexModel{Keys: bson.D{{Key: "shard_id", Value: 1}}}},
+		// One DB name per shard (only for tenants actually placed on a shard).
+		{s.Tenants, mongo.IndexModel{
+			Keys: bson.D{{Key: "shard_id", Value: 1}, {Key: "db_name", Value: 1}},
+			Options: options.Index().
+				SetName("shard_db_unique").
+				SetUnique(true).
+				SetPartialFilterExpression(bson.D{{Key: "shard_id", Value: bson.D{{Key: "$exists", Value: true}, {Key: "$gt", Value: ""}}}}),
+		}},
+		// One company per tenant (D15).
+		{s.Companies, mongo.IndexModel{Keys: bson.D{{Key: "tenant_id", Value: 1}}, Options: options.Index().SetUnique(true)}},
+		{s.Branches, mongo.IndexModel{Keys: bson.D{{Key: "tenant_id", Value: 1}}}},
+		{s.Branches, mongo.IndexModel{Keys: bson.D{{Key: "company_id", Value: 1}}}},
+		{s.BranchDevices, mongo.IndexModel{Keys: bson.D{{Key: "tenant_id", Value: 1}}}},
+		{s.BranchDevices, mongo.IndexModel{Keys: bson.D{{Key: "branch_id", Value: 1}, {Key: "status", Value: 1}}}},
+		{s.BranchDevices, mongo.IndexModel{Keys: bson.D{{Key: "machine_id", Value: 1}}}},
+		// One active binding per machine per branch (seat dedupe; the seat
+		// COUNT limit is enforced in the service layer).
+		{s.BranchDevices, mongo.IndexModel{
+			Keys: bson.D{{Key: "branch_id", Value: 1}, {Key: "machine_id", Value: 1}},
+			Options: options.Index().
+				SetName("branch_machine_active_unique").
+				SetUnique(true).
+				SetPartialFilterExpression(bson.D{{Key: "status", Value: string("active")}}),
+		}},
+		{s.Shards, mongo.IndexModel{Keys: bson.D{{Key: "name", Value: 1}}, Options: options.Index().SetUnique(true)}},
 	}
 	for _, sp := range specs {
 		if _, err := sp.coll.Indexes().CreateOne(ctx, sp.model); err != nil {

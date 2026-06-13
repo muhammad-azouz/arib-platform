@@ -128,3 +128,123 @@ type AuditLog struct {
 	Meta      map[string]any `bson:"meta,omitempty"`
 	CreatedAt time.Time      `bson:"created_at"`
 }
+
+// ---------------------------------------------------------------------------
+// Multi-tenant registry (control plane for the centralized sync architecture).
+// Company/Branch IDs are SQL-Server uniqueidentifier GUIDs (lowercase string
+// form): the cloud mints them, or adopts the tenant's existing local GUIDs
+// when a standalone install subscribes. They flow into every tenant DB as FKs.
+// ---------------------------------------------------------------------------
+
+// TenantStatus is the admin/subscription-controlled lifecycle of a tenant.
+type TenantStatus string
+
+const (
+	TenantActive    TenantStatus = "active"
+	TenantSuspended TenantStatus = "suspended"
+)
+
+// BranchStatus reflects whether a branch is licensed for use.
+type BranchStatus string
+
+const (
+	BranchActive      BranchStatus = "active"
+	BranchDeactivated BranchStatus = "deactivated"
+)
+
+// RolloutStatus tracks where a tenant's central DB is in a fleet schema
+// rollout (roadmap E3).
+type RolloutStatus string
+
+const (
+	RolloutIdle      RolloutStatus = "idle"      // at the recorded schema_version, nothing pending
+	RolloutMigrating RolloutStatus = "migrating" // a migrate call is in flight
+	RolloutFailed    RolloutStatus = "failed"    // last migrate failed; retried on the next rollout
+)
+
+// ShardStatus controls whether new tenant DBs may be placed on a shard.
+type ShardStatus string
+
+const (
+	ShardActive   ShardStatus = "active"   // accepting new tenants
+	ShardFull     ShardStatus = "full"     // serving, not accepting
+	ShardDraining ShardStatus = "draining" // being evacuated
+)
+
+// Tenant is the multi-tenant subscription unit owned by an account. ShardID
+// and DBName form the tenant→{shard,db} map; both stay empty until the tenant
+// subscribes to sync and a central DB is provisioned (sync is optional).
+type Tenant struct {
+	ID        string       `bson:"_id"` // tnt_...
+	AccountID string       `bson:"account_id"`
+	Name      string       `bson:"name"` // business display name
+	Status    TenantStatus `bson:"status"`
+	Plan      string       `bson:"plan,omitempty"`     // subscription plan code; empty = standalone
+	ShardID   string       `bson:"shard_id,omitempty"` // set on sync provisioning
+	DBName    string       `bson:"db_name,omitempty"`  // central DB on that shard
+	CreatedAt time.Time    `bson:"created_at"`
+	UpdatedAt time.Time    `bson:"updated_at"`
+
+	// --- Schema-version registry (roadmap E3) ---
+	// SchemaVersion is the last version the gateway verified applied to this
+	// tenant's central DB; 0 = never provisioned. The fleet rollout updates
+	// these via the gateway's ops API.
+	SchemaVersion   int           `bson:"schema_version,omitempty"`
+	RolloutStatus   RolloutStatus `bson:"rollout_status,omitempty"`
+	RolloutError    string        `bson:"rollout_error,omitempty"`    // last failure detail
+	RolloutAttempts int           `bson:"rollout_attempts,omitempty"` // failed-migrate counter
+	RolloutAt       time.Time     `bson:"rollout_at,omitempty"`       // last rollout touch
+}
+
+// Company is cloud-authoritative company info, pulled by the app at
+// activation/login and cached locally; never DMS-synced.
+type Company struct {
+	ID        string    `bson:"_id"` // GUID (matches the tenant DB row)
+	TenantID  string    `bson:"tenant_id"`
+	Name      string    `bson:"name"`
+	Phone     string    `bson:"phone,omitempty"`
+	Address   string    `bson:"address,omitempty"`
+	TaxNumber string    `bson:"tax_number,omitempty"`
+	CreatedAt time.Time `bson:"created_at"`
+	UpdatedAt time.Time `bson:"updated_at"`
+}
+
+// Branch is a licensed branch of a company. Seats is the per-branch device
+// limit; adding/deactivating a branch is a licensing event.
+type Branch struct {
+	ID        string       `bson:"_id"` // GUID (matches the tenant DB row)
+	TenantID  string       `bson:"tenant_id"`
+	CompanyID string       `bson:"company_id"`
+	Name      string       `bson:"name"`
+	Seats     int          `bson:"seats"`
+	Status    BranchStatus `bson:"status"`
+	CreatedAt time.Time    `bson:"created_at"`
+	UpdatedAt time.Time    `bson:"updated_at"`
+}
+
+// BranchDevice binds one PC to a branch seat (the multi-tenant counterpart of
+// Device, which binds a machine to a standalone license).
+type BranchDevice struct {
+	ID          string       `bson:"_id"` // bdv_...
+	TenantID    string       `bson:"tenant_id"`
+	BranchID    string       `bson:"branch_id"`
+	MachineID   string       `bson:"machine_id"`
+	MachineName string       `bson:"machine_name,omitempty"`
+	OS          string       `bson:"os,omitempty"`
+	Status      DeviceStatus `bson:"status"` // active | released
+	BoundAt     time.Time    `bson:"bound_at"`
+	LastSeenAt  time.Time    `bson:"last_seen_at"`
+	ReleasedAt  *time.Time   `bson:"released_at,omitempty"`
+}
+
+// Shard is one central VPS hosting tenant DBs behind a sync gateway.
+type Shard struct {
+	ID         string      `bson:"_id"`  // shd_...
+	Name       string      `bson:"name"` // unique, e.g. "shard-eu-1"
+	Host       string      `bson:"host"` // private address (provisioner/web app)
+	GatewayURL string      `bson:"gateway_url"`
+	MaxTenants int         `bson:"max_tenants"`
+	Status     ShardStatus `bson:"status"`
+	CreatedAt  time.Time   `bson:"created_at"`
+	UpdatedAt  time.Time   `bson:"updated_at"`
+}

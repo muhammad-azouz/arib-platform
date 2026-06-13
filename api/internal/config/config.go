@@ -22,6 +22,10 @@ type Config struct {
 	AccessTokenTTL  time.Duration
 	RefreshTokenTTL time.Duration
 
+	// Sync tokens authorize a bound device against a shard's DMS gateway.
+	// The secret is shared with the gateways; defaults to JWT_SECRET.
+	SyncTokenTTL    time.Duration
+
 	RevalidateAfter    time.Duration
 	HardExpireAfter    time.Duration
 	TrialDuration      time.Duration
@@ -83,6 +87,10 @@ func Load() (*Config, error) {
 		return nil, fmt.Errorf("JWT_SECRET must be set (>=16 chars)")
 	}
 	c.JWTSecret = []byte(secret)
+
+	// Sync tokens are RS256-signed with the license RSA key (gateways hold
+	// only the public key); SYNC_TOKEN_SECRET is gone with the HS256 scheme.
+	c.SyncTokenTTL = dur("SYNC_TOKEN_TTL", time.Hour)
 
 	if c.MongoURI == "" {
 		return nil, fmt.Errorf("MONGO_URI is required")
