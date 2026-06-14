@@ -75,11 +75,18 @@ func (s *Service) OAuth() *OAuth { return s.oauth }
 // TokenManager exposes the access-token manager (for middleware).
 func (s *Service) TokenManager() *TokenManager { return s.tokens }
 
-// StartEmailLogin generates and emails a one-time code.
-func (s *Service) StartEmailLogin(ctx context.Context, email string) error {
+// StartEmailLogin generates and emails a one-time code. It reports whether the
+// email already belongs to an account so the client can decide whether to
+// collect profile (name) fields for a first-time signup.
+func (s *Service) StartEmailLogin(ctx context.Context, email string) (exists bool, err error) {
 	email = strings.ToLower(strings.TrimSpace(email))
 	if !strings.Contains(email, "@") {
-		return fmt.Errorf("invalid email")
+		return false, fmt.Errorf("invalid email")
+	}
+	if _, err := s.store.AccountByEmail(ctx, email); err == nil {
+		exists = true
+	} else if !errors.Is(err, mongostore.ErrNotFound) {
+		return false, err
 	}
 	code := idgen.NumericCode(6)
 	now := time.Now().UTC()
@@ -91,9 +98,12 @@ func (s *Service) StartEmailLogin(ctx context.Context, email string) error {
 		CreatedAt: now,
 	}
 	if err := s.store.UpsertOTP(ctx, otp); err != nil {
-		return err
+		return false, err
 	}
-	return s.mail.SendOTP(ctx, email, code)
+	if err := s.mail.SendOTP(ctx, email, code); err != nil {
+		return false, err
+	}
+	return exists, nil
 }
 
 // VerifyEmailLogin checks the code, provisioning a new account (with trial) on

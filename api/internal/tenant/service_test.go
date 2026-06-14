@@ -57,7 +57,10 @@ func setupTenant(t *testing.T, s *Service, ctx context.Context) (tenantID, compa
 	if err != nil {
 		t.Fatalf("set company: %v", err)
 	}
-	b, err := s.AddBranch(ctx, owner, tn.ID, BranchInput{CompanyID: c.ID, Name: "فرع وسط البلد", Seats: 2})
+	b, err := s.AddBranch(ctx, owner, tn.ID, BranchInput{
+		CompanyID: c.ID, Name: "فرع وسط البلد", Seats: 2,
+		Phone1: "01000000000", Phone2: "0227000000", Address: "شارع وسط البلد",
+	})
 	if err != nil {
 		t.Fatalf("add branch: %v", err)
 	}
@@ -77,6 +80,10 @@ func TestActivationFlow(t *testing.T) {
 	}
 	if bundle.Branches[0].Seats != 2 || bundle.Branches[0].Status != model.BranchActive {
 		t.Fatalf("branch defaults: %+v", bundle.Branches[0])
+	}
+	// Contact fields (printed on POS receipts) must round-trip through the bundle.
+	if got := bundle.Branches[0]; got.Phone1 != "01000000000" || got.Phone2 != "0227000000" || got.Address != "شارع وسط البلد" {
+		t.Fatalf("branch contact not persisted: %+v", got)
 	}
 
 	// One company per tenant (D15): a second company with a different GUID is

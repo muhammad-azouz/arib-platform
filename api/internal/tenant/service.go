@@ -107,6 +107,15 @@ func (s *Service) GetBundle(ctx context.Context, accountID, tenantID string) (*B
 	if err != nil {
 		return nil, err
 	}
+	// Enrich each branch with its live seat usage (active device count) so the
+	// console can show used-of-limit without a separate devices endpoint.
+	for i := range branches {
+		n, err := s.store.CountActiveBranchDevices(ctx, branches[i].ID)
+		if err != nil {
+			return nil, err
+		}
+		branches[i].ActiveDevices = int(n)
+	}
 	return &Bundle{Tenant: *t, Company: company, Branches: branches}, nil
 }
 
@@ -185,6 +194,10 @@ type BranchInput struct {
 	ID        string
 	CompanyID string
 	Name      string
+	Phone1    string // required on the POS branch (printed on receipts); validated client-side
+	Phone2    string
+	Phone3    string
+	Address   string // required on the POS branch (printed on receipts)
 	Seats     int
 }
 
@@ -220,13 +233,41 @@ func (s *Service) AddBranch(ctx context.Context, accountID, tenantID string, in 
 	now := time.Now().UTC()
 	b := &model.Branch{
 		ID: id, TenantID: tenantID, CompanyID: company.ID,
-		Name: strings.TrimSpace(in.Name), Seats: seats, Status: model.BranchActive,
+		Name:    strings.TrimSpace(in.Name),
+		Phone1:  strings.TrimSpace(in.Phone1),
+		Phone2:  strings.TrimSpace(in.Phone2),
+		Phone3:  strings.TrimSpace(in.Phone3),
+		Address: strings.TrimSpace(in.Address),
+		Seats:   seats, Status: model.BranchActive,
 		CreatedAt: now, UpdatedAt: now,
 	}
 	if err := s.store.UpsertBranch(ctx, b); err != nil {
 		return nil, err
 	}
 	return b, nil
+}
+
+// SetBranchContact updates a branch's contact fields (address/phones). Empty
+// strings are treated as "leave unchanged" so a PATCH can touch just one field.
+func (s *Service) SetBranchContact(ctx context.Context, accountID, tenantID, branchID string, in BranchInput) error {
+	b, err := s.ownedBranch(ctx, accountID, tenantID, branchID)
+	if err != nil {
+		return err
+	}
+	if v := strings.TrimSpace(in.Phone1); v != "" {
+		b.Phone1 = v
+	}
+	if v := strings.TrimSpace(in.Phone2); v != "" {
+		b.Phone2 = v
+	}
+	if v := strings.TrimSpace(in.Phone3); v != "" {
+		b.Phone3 = v
+	}
+	if v := strings.TrimSpace(in.Address); v != "" {
+		b.Address = v
+	}
+	b.UpdatedAt = time.Now().UTC()
+	return s.store.UpsertBranch(ctx, b)
 }
 
 // RenameBranch changes a branch's display name.

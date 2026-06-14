@@ -18,12 +18,15 @@ func (s *Server) handleEmailStart(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "invalid body")
 		return
 	}
-	if err := s.auth.StartEmailLogin(r.Context(), req.Email); err != nil {
+	exists, err := s.auth.StartEmailLogin(r.Context(), req.Email)
+	if err != nil {
 		writeErr(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	// Do not reveal whether the email exists.
-	writeJSON(w, http.StatusOK, map[string]string{"status": "sent"})
+	// `exists` lets the console skip the name fields for returning users. This
+	// deliberately reveals account existence to callers of this endpoint
+	// (product decision); the OTP send is rate-limited (see route wiring).
+	writeJSON(w, http.StatusOK, map[string]any{"status": "sent", "exists": exists})
 }
 
 func (s *Server) handleEmailVerify(w http.ResponseWriter, r *http.Request) {

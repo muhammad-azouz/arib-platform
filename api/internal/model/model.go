@@ -216,10 +216,20 @@ type Branch struct {
 	TenantID  string       `bson:"tenant_id"`
 	CompanyID string       `bson:"company_id"`
 	Name      string       `bson:"name"`
+	Phone1    string       `bson:"phone1,omitempty"`  // required on the POS branch; printed on receipts
+	Phone2    string       `bson:"phone2,omitempty"`  // optional
+	Phone3    string       `bson:"phone3,omitempty"`  // optional
+	Address   string       `bson:"address,omitempty"` // required on the POS branch; printed on receipts
 	Seats     int          `bson:"seats"`
 	Status    BranchStatus `bson:"status"`
 	CreatedAt time.Time    `bson:"created_at"`
 	UpdatedAt time.Time    `bson:"updated_at"`
+
+	// ActiveDevices is the live count of seats currently in use. It is computed
+	// in GetBundle and never persisted (bson:"-"); it serializes as JSON
+	// "ActiveDevices", matching the no-json-tags PascalCase convention the
+	// console mirrors.
+	ActiveDevices int `bson:"-"`
 }
 
 // BranchDevice binds one PC to a branch seat (the multi-tenant counterpart of

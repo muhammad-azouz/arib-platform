@@ -8,7 +8,7 @@ services:
       MONGO_INITDB_DATABASE: arib_license
     volumes:
       - mongo_data:/data/db
-    networks: [license]
+    networks: [arib-platform]
     healthcheck:
       test: ["CMD", "mongosh", "--eval", "db.adminCommand('ping')"]
       interval: 10s
@@ -21,12 +21,15 @@ services:
     env_file: api/.env
     environment:
       HTTP_ADDR: 0.0.0.0:8080
-      MONGO_URI: mongodb://${MONGO_USER}:${MONGO_PASS}@mongodb:27017/arib_license?authSource=admin
+      # The local mongo_data volume was initialized with empty root creds (no
+      # auth), so connect without credentials. Re-add ${MONGO_USER}:${MONGO_PASS}
+      # @…?authSource=admin only if you recreate Mongo with auth (fresh volume).
+      MONGO_URI: mongodb://mongodb:27017/arib_license
     volumes:
       - ./api/keys:/app/keys:ro
     ports:
       - "127.0.0.1:8080:8080"
-    networks: [license]
+    networks: [arib-platform]
     depends_on:
       mongodb: { condition: service_healthy }
     healthcheck:
@@ -40,7 +43,7 @@ services:
     restart: unless-stopped
     ports:
       - "127.0.0.1:3000:80"
-    networks: [license]
+    networks: [arib-platform]
     depends_on:
       api: { condition: service_healthy }
 
@@ -55,7 +58,7 @@ services:
       ME_CONFIG_MONGODB_ADMINUSERNAME: ${MONGO_USER}
       ME_CONFIG_MONGODB_ADMINPASSWORD: ${MONGO_PASS}
       ME_CONFIG_MONGODB_URL: mongodb://${MONGO_USER}:${MONGO_PASS}@mongodb:27017/
-    networks: [license]
+    networks: [arib-platform]
     depends_on:
       mongodb: { condition: service_healthy }
 
@@ -63,5 +66,5 @@ volumes:
   mongo_data:
 
 networks:
-  license:
+  arib-platform:
     driver: bridge

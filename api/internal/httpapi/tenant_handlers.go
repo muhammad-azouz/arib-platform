@@ -82,6 +82,10 @@ func (s *Server) handleBranchAdd(w http.ResponseWriter, r *http.Request) {
 		ID        string `json:"id"`
 		CompanyID string `json:"company_id"`
 		Name      string `json:"name"`
+		Phone1    string `json:"phone1"`
+		Phone2    string `json:"phone2"`
+		Phone3    string `json:"phone3"`
+		Address   string `json:"address"`
 		Seats     int    `json:"seats"`
 	}
 	if err := decode(r, &req); err != nil {
@@ -89,7 +93,9 @@ func (s *Server) handleBranchAdd(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	b, err := s.tenant.AddBranch(r.Context(), c.Subject, chi.URLParam(r, "id"), tenant.BranchInput{
-		ID: req.ID, CompanyID: req.CompanyID, Name: req.Name, Seats: req.Seats,
+		ID: req.ID, CompanyID: req.CompanyID, Name: req.Name,
+		Phone1: req.Phone1, Phone2: req.Phone2, Phone3: req.Phone3, Address: req.Address,
+		Seats: req.Seats,
 	})
 	if err != nil {
 		s.writeTenantError(w, err)
@@ -101,8 +107,12 @@ func (s *Server) handleBranchAdd(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleBranchUpdate(w http.ResponseWriter, r *http.Request) {
 	c := claimsFrom(r.Context())
 	var req struct {
-		Name   string `json:"name"`
-		Status string `json:"status"` // "" | "active" | "deactivated"
+		Name    string `json:"name"`
+		Phone1  string `json:"phone1"`
+		Phone2  string `json:"phone2"`
+		Phone3  string `json:"phone3"`
+		Address string `json:"address"`
+		Status  string `json:"status"` // "" | "active" | "deactivated"
 	}
 	if err := decode(r, &req); err != nil {
 		writeErr(w, http.StatusBadRequest, "invalid body")
@@ -111,6 +121,14 @@ func (s *Server) handleBranchUpdate(w http.ResponseWriter, r *http.Request) {
 	tenantID, branchID := chi.URLParam(r, "id"), chi.URLParam(r, "branchId")
 	if req.Name != "" {
 		if err := s.tenant.RenameBranch(r.Context(), c.Subject, tenantID, branchID, req.Name); err != nil {
+			s.writeTenantError(w, err)
+			return
+		}
+	}
+	if req.Phone1 != "" || req.Phone2 != "" || req.Phone3 != "" || req.Address != "" {
+		if err := s.tenant.SetBranchContact(r.Context(), c.Subject, tenantID, branchID, tenant.BranchInput{
+			Phone1: req.Phone1, Phone2: req.Phone2, Phone3: req.Phone3, Address: req.Address,
+		}); err != nil {
 			s.writeTenantError(w, err)
 			return
 		}
