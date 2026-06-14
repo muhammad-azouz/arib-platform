@@ -1,0 +1,152 @@
+@import 'tailwindcss';
+@import 'tw-animate-css';
+
+/*
+  Aesthetic: "warm daylight" tenant console — the friendly, business-owner-facing
+  counterpart to the dark operator `admin/`. A warm paper base, the shared Arib
+  signal-amber brand, semantic status hues, and an Arabic-first three-font system
+  (Tajawal display / IBM Plex Sans Arabic body / IBM Plex Mono for ids & tokens).
+  RTL is the default direction (set on <html dir="rtl">); Tailwind v4 logical
+  properties flip automatically.
+*/
+
+:root {
+  --background: #f7f5f0;
+  --foreground: #1c1917;
+
+  --card: #ffffff;
+  --card-foreground: #1c1917;
+  --popover: #ffffff;
+  --popover-foreground: #1c1917;
+
+  --primary: #f5a524;
+  --primary-foreground: #2a1a05;
+
+  --secondary: #f0ebe1;
+  --secondary-foreground: #44403c;
+
+  --muted: #f0ebe1;
+  --muted-foreground: #79716b;
+
+  --accent: #f6efe2;
+  --accent-foreground: #1c1917;
+
+  --destructive: #dc2626;
+  --destructive-foreground: #ffffff;
+
+  --border: #e7e0d4;
+  --input: #e7e0d4;
+  --ring: #f5a524;
+
+  /* semantic status palette (tuned for a light surface) */
+  --success: #16a34a;
+  --warning: #b45309;
+  --danger: #e11d48;
+  --info: #0284c7;
+  --neutral: #79716b;
+  --neutral-foreground: #57534e;
+
+  --radius: 0.7rem;
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-destructive-foreground: var(--destructive-foreground);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+
+  --color-success: var(--success);
+  --color-warning: var(--warning);
+  --color-danger: var(--danger);
+  --color-info: var(--info);
+  --color-neutral: var(--neutral);
+  --color-neutral-foreground: var(--neutral-foreground);
+
+  --font-sans: 'IBM Plex Sans Arabic', ui-sans-serif, system-ui, sans-serif;
+  --font-display: 'Tajawal', 'IBM Plex Sans Arabic', ui-sans-serif, sans-serif;
+  --font-mono: 'IBM Plex Mono', ui-monospace, 'SF Mono', monospace;
+
+  --radius-sm: calc(var(--radius) - 4px);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) + 4px);
+}
+
+@layer base {
+  * {
+    border-color: var(--border);
+  }
+  html {
+    color-scheme: light;
+  }
+  body {
+    background-color: var(--background);
+    color: var(--foreground);
+    font-family: var(--font-sans);
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+    /* warm amber glow in the leading-top corner + faint paper wash */
+    background-image:
+      radial-gradient(48rem 48rem at 100% -8%, rgba(245, 165, 36, 0.1), transparent 60%),
+      radial-gradient(40rem 40rem at 0% 0%, rgba(180, 83, 9, 0.04), transparent 55%);
+    background-attachment: fixed;
+  }
+  h1,
+  h2,
+  h3,
+  .font-display {
+    font-family: var(--font-display);
+    letter-spacing: 0;
+    font-weight: 700;
+  }
+  /* Latin ids, GUIDs, tokens and numbers read left-to-right even inside RTL. */
+  .dir-ltr {
+    direction: ltr;
+    unicode-bidi: isolate;
+  }
+}
+
+/* staggered page-load reveal */
+@keyframes rise {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+.animate-rise {
+  animation: rise 0.5s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+/* thin warm scrollbars */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--border) transparent;
+}
+*::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+*::-webkit-scrollbar-thumb {
+  background: var(--border);
+  border-radius: 9999px;
+  border: 3px solid var(--background);
+}
