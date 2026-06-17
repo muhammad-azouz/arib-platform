@@ -55,8 +55,8 @@ func TestTenantCRUD(t *testing.T) {
 	if err != nil || got.Name != tn.Name || got.Status != model.TenantActive {
 		t.Fatalf("byID: %+v err=%v", got, err)
 	}
-	if got.ShardID != "" || got.DBName != "" {
-		t.Fatalf("new tenant must have no shard placement, got %q/%q", got.ShardID, got.DBName)
+	if got.DBName != "" {
+		t.Fatalf("new tenant must have no central DB provisioned, got %q", got.DBName)
 	}
 
 	list, err := s.TenantsByAccount(ctx, "acc_1")
@@ -83,7 +83,7 @@ func TestTenantCRUD(t *testing.T) {
 	}
 }
 
-func TestTenantShardPlacement(t *testing.T) {
+func TestTenantSyncProvision(t *testing.T) {
 	s, ctx := testStore(t)
 	at := now()
 
@@ -95,21 +95,21 @@ func TestTenantShardPlacement(t *testing.T) {
 		}
 	}
 
-	if err := s.AssignTenantShard(ctx, t1.ID, "shd_1", "tenant_t1", now()); err != nil {
-		t.Fatalf("assign: %v", err)
+	if err := s.SetTenantDBName(ctx, t1.ID, "tenant_t1", now()); err != nil {
+		t.Fatalf("provision: %v", err)
 	}
-	// Same DB name on the same shard must be rejected by shard_db_unique.
-	if err := s.AssignTenantShard(ctx, t2.ID, "shd_1", "tenant_t1", now()); !IsDuplicateKey(err) {
-		t.Fatalf("want duplicate-key on shard/db collision, got %v", err)
+	// The same DB name on the single server must be rejected (db_name_unique).
+	if err := s.SetTenantDBName(ctx, t2.ID, "tenant_t1", now()); !IsDuplicateKey(err) {
+		t.Fatalf("want duplicate-key on db name collision, got %v", err)
 	}
-	// Same DB name on a DIFFERENT shard is fine.
-	if err := s.AssignTenantShard(ctx, t2.ID, "shd_2", "tenant_t1", now()); err != nil {
-		t.Fatalf("assign other shard: %v", err)
+	// A distinct DB name is fine.
+	if err := s.SetTenantDBName(ctx, t2.ID, "tenant_t2", now()); err != nil {
+		t.Fatalf("provision t2: %v", err)
 	}
 
-	n, err := s.CountTenantsOnShard(ctx, "shd_1")
-	if err != nil || n != 1 {
-		t.Fatalf("count shd_1: n=%d err=%v", n, err)
+	withSync, err := s.TenantsWithSync(ctx)
+	if err != nil || len(withSync) != 2 {
+		t.Fatalf("TenantsWithSync: n=%d err=%v", len(withSync), err)
 	}
 }
 
@@ -248,42 +248,5 @@ func TestBranchDeviceSeats(t *testing.T) {
 	}
 	if err := s.ReleaseBranchDevice(ctx, "bdv_missing", now()); err != ErrNotFound {
 		t.Fatalf("release missing: want ErrNotFound, got %v", err)
-	}
-}
-
-func TestShardCRUD(t *testing.T) {
-	s, ctx := testStore(t)
-	at := now()
-
-	sh := &model.Shard{
-		ID: idgen.New("shd"), Name: "shard-eu-1", Host: "10.0.0.5",
-		GatewayURL: "https://sync1.aribpos.com", MaxTenants: 100,
-		Status: model.ShardActive, CreatedAt: at, UpdatedAt: at,
-	}
-	if err := s.InsertShard(ctx, sh); err != nil {
-		t.Fatalf("insert: %v", err)
-	}
-
-	dup := *sh
-	dup.ID = idgen.New("shd")
-	if err := s.InsertShard(ctx, &dup); !IsDuplicateKey(err) {
-		t.Fatalf("want duplicate-key on shard name, got %v", err)
-	}
-
-	got, err := s.ShardByID(ctx, sh.ID)
-	if err != nil || got.GatewayURL != sh.GatewayURL {
-		t.Fatalf("byID: %+v err=%v", got, err)
-	}
-
-	if err := s.UpdateShardStatus(ctx, sh.ID, model.ShardDraining, now()); err != nil {
-		t.Fatalf("status: %v", err)
-	}
-	list, err := s.ListShards(ctx)
-	if err != nil || len(list) != 1 || list[0].Status != model.ShardDraining {
-		t.Fatalf("list: %+v err=%v", list, err)
-	}
-
-	if _, err := s.ShardByID(ctx, "shd_missing"); err != ErrNotFound {
-		t.Fatalf("want ErrNotFound, got %v", err)
 	}
 }

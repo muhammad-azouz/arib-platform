@@ -3,6 +3,7 @@ package httpapi
 import (
 	"errors"
 	"net/http"
+	"strings"
 
 	"github.com/aribpos/license-api/internal/model"
 	mongostore "github.com/aribpos/license-api/internal/store/mongo"
@@ -47,6 +48,59 @@ func (s *Server) handleTenantBundle(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, bundle)
+}
+
+// handleInternalTenantRegistry serves a tenant's company + branches to the
+// gateway so it can seed FK anchors into the central DB (E5/D18).
+// Authorised by the client's sync token (forwarded by the gateway), not an
+// account session — the token already scopes the caller to one tenant.
+func (s *Server) handleInternalTenantRegistry(w http.ResponseWriter, r *http.Request) {
+	auth := r.Header.Get("Authorization")
+	if !strings.HasPrefix(auth, "Bearer ") {
+		writeErr(w, http.StatusUnauthorized, "missing bearer token")
+		return
+	}
+	claims, err := s.tenant.VerifySyncToken(strings.TrimPrefix(auth, "Bearer "))
+	if err != nil {
+		writeErr(w, http.StatusUnauthorized, "invalid sync token")
+		return
+	}
+	company, branches, err := s.tenant.TenantRegistry(r.Context(), claims.TenantID)
+	if err != nil {
+		s.writeTenantError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, registryResponse(company, branches))
+}
+
+// registryResponse shapes the gateway-facing registry payload (snake_case).
+func registryResponse(c *model.Company, branches []model.Branch) map[string]any {
+	resp := map[string]any{}
+	if c != nil {
+		resp["company"] = map[string]any{
+			"id":         c.ID,
+			"name":       c.Name,
+			"phone":      c.Phone,
+			"address":    c.Address,
+			"tax_number": c.TaxNumber,
+		}
+	}
+	bs := make([]map[string]any, 0, len(branches))
+	for i := range branches {
+		b := &branches[i]
+		bs = append(bs, map[string]any{
+			"id":         b.ID,
+			"company_id": b.CompanyID,
+			"name":       b.Name,
+			"phone1":     b.Phone1,
+			"phone2":     b.Phone2,
+			"phone3":     b.Phone3,
+			"address":    b.Address,
+			"is_active":  b.Status == model.BranchActive,
+		})
+	}
+	resp["branches"] = bs
+	return resp
 }
 
 // --- client: company ---
@@ -200,58 +254,18 @@ func (s *Server) handleSyncToken(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
 		"token":       issued.Token,
 		"expires_at":  issued.Claims.ExpiresAt.Time,
-		"shard_id":    issued.Claims.ShardID,
 		"db_name":     issued.Claims.DBName,
 		"gateway_url": issued.GatewayURL,
 	})
 }
 
-// --- admin: shards & placement ---
+// --- admin: sync provisioning ---
 
-func (s *Server) handleAdminCreateShard(w http.ResponseWriter, r *http.Request) {
-	var req struct {
-		Name       string `json:"name"`
-		Host       string `json:"host"`
-		GatewayURL string `json:"gateway_url"`
-		MaxTenants int    `json:"max_tenants"`
-	}
-	if err := decode(r, &req); err != nil {
-		writeErr(w, http.StatusBadRequest, "invalid body")
-		return
-	}
-	sh, err := s.tenant.CreateShard(r.Context(), req.Name, req.Host, req.GatewayURL, req.MaxTenants)
+func (s *Server) handleAdminProvisionSync(w http.ResponseWriter, r *http.Request) {
+	t, err := s.tenant.ProvisionSync(r.Context(), chi.URLParam(r, "id"))
 	if err != nil {
 		if mongostore.IsDuplicateKey(err) {
-			writeErr(w, http.StatusConflict, "shard name already exists")
-			return
-		}
-		s.writeTenantError(w, err)
-		return
-	}
-	writeJSON(w, http.StatusCreated, sh)
-}
-
-func (s *Server) handleAdminListShards(w http.ResponseWriter, r *http.Request) {
-	list, err := s.tenant.Shards(r.Context())
-	if err != nil {
-		s.writeTenantError(w, err)
-		return
-	}
-	writeJSON(w, http.StatusOK, list)
-}
-
-func (s *Server) handleAdminAssignShard(w http.ResponseWriter, r *http.Request) {
-	var req struct {
-		ShardID string `json:"shard_id"`
-	}
-	if err := decode(r, &req); err != nil {
-		writeErr(w, http.StatusBadRequest, "invalid body")
-		return
-	}
-	t, err := s.tenant.AssignShard(r.Context(), chi.URLParam(r, "id"), req.ShardID)
-	if err != nil {
-		if mongostore.IsDuplicateKey(err) {
-			writeErr(w, http.StatusConflict, "db name already taken on that shard")
+			writeErr(w, http.StatusConflict, "db name already taken")
 			return
 		}
 		s.writeTenantError(w, err)
@@ -291,8 +305,6 @@ func (s *Server) writeTenantError(w http.ResponseWriter, err error) {
 		writeErr(w, http.StatusNotFound, "no such device binding")
 	case errors.Is(err, tenant.ErrNotSubscribed):
 		writeErr(w, http.StatusPaymentRequired, "tenant has no sync subscription")
-	case errors.Is(err, tenant.ErrShardFull):
-		writeErr(w, http.StatusConflict, "shard is full or not accepting tenants")
 	case errors.Is(err, tenant.ErrCompanyExists):
 		writeErr(w, http.StatusConflict, "tenant already has a company (one company per tenant)")
 	case errors.Is(err, tenant.ErrNoCompany):

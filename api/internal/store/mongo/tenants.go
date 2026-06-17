@@ -55,25 +55,20 @@ func (s *Store) UpdateTenantPlan(ctx context.Context, id, plan string, at time.T
 	})
 }
 
-// AssignTenantShard places a tenant's central DB on a shard (the tenant→{shard,db}
-// map). The shard_db_unique index rejects a db name already taken on that shard.
-func (s *Store) AssignTenantShard(ctx context.Context, id, shardID, dbName string, at time.Time) error {
+// SetTenantDBName provisions a tenant's central DB on the sync server (sets the
+// tenant→db map). The db_name_unique index rejects a name already in use.
+func (s *Store) SetTenantDBName(ctx context.Context, id, dbName string, at time.Time) error {
 	return s.updateTenant(ctx, id, bson.D{
-		{Key: "shard_id", Value: shardID},
 		{Key: "db_name", Value: dbName},
 		{Key: "updated_at", Value: at},
 	})
 }
 
-// CountTenantsOnShard returns how many tenants are placed on a shard.
-func (s *Store) CountTenantsOnShard(ctx context.Context, shardID string) (int64, error) {
-	return s.Tenants.CountDocuments(ctx, bson.D{{Key: "shard_id", Value: shardID}})
-}
-
-// TenantsOnShard lists every tenant placed on a shard (fleet rollout, E3).
-func (s *Store) TenantsOnShard(ctx context.Context, shardID string) ([]model.Tenant, error) {
+// TenantsWithSync lists every tenant that has a central DB provisioned, i.e. is
+// subscribed to sync (fleet rollout, E3).
+func (s *Store) TenantsWithSync(ctx context.Context) ([]model.Tenant, error) {
 	cur, err := s.Tenants.Find(ctx,
-		bson.D{{Key: "shard_id", Value: shardID}},
+		bson.D{{Key: "db_name", Value: bson.D{{Key: "$exists", Value: true}, {Key: "$gt", Value: ""}}}},
 		options.Find().SetSort(bson.D{{Key: "_id", Value: 1}}))
 	if err != nil {
 		return nil, err

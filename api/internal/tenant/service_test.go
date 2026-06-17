@@ -41,6 +41,17 @@ func testService(t *testing.T) (*Service, context.Context) {
 	if err != nil {
 		t.Fatalf("generate sync key: %v", err)
 	}
+	// Seed the single test shard so ProvisionSync / IssueSyncToken have a target.
+	now := time.Now().UTC()
+	if err := store.UpsertShard(ctx, &model.Shard{
+		ID:         "shd_test",
+		GatewayURL: "https://sync.aribpos.test",
+		Status:     model.ShardActive,
+		CreatedAt:  now,
+		UpdatedAt:  now,
+	}); err != nil {
+		t.Fatalf("seed shard: %v", err)
+	}
 	return New(store, key, time.Hour), ctx
 }
 
@@ -195,20 +206,16 @@ func TestSyncTokenIssuance(t *testing.T) {
 		t.Fatalf("bind: %v", err)
 	}
 
-	// No shard assigned yet → not subscribed.
+	// No central DB provisioned yet → not subscribed.
 	if _, err := s.IssueSyncToken(ctx, owner, tenantID, d.ID); !errors.Is(err, ErrNotSubscribed) {
 		t.Fatalf("token before subscription: want ErrNotSubscribed, got %v", err)
 	}
 
-	sh, err := s.CreateShard(ctx, "shard-eu-1", "10.0.0.5", "https://sync1.aribpos.com", 2)
+	placed, err := s.ProvisionSync(ctx, tenantID)
 	if err != nil {
-		t.Fatalf("create shard: %v", err)
+		t.Fatalf("provision sync: %v", err)
 	}
-	placed, err := s.AssignShard(ctx, tenantID, sh.ID)
-	if err != nil {
-		t.Fatalf("assign shard: %v", err)
-	}
-	if placed.DBName == "" || placed.ShardID != sh.ID {
+	if placed.DBName == "" {
 		t.Fatalf("placement: %+v", placed)
 	}
 
@@ -216,7 +223,7 @@ func TestSyncTokenIssuance(t *testing.T) {
 	if err != nil {
 		t.Fatalf("issue: %v", err)
 	}
-	if issued.GatewayURL != "https://sync1.aribpos.com" {
+	if issued.GatewayURL != "https://sync.aribpos.test" {
 		t.Fatalf("gateway url: %q", issued.GatewayURL)
 	}
 	parsed, err := s.ParseSyncToken(issued.Token)
@@ -224,7 +231,7 @@ func TestSyncTokenIssuance(t *testing.T) {
 		t.Fatalf("parse: %v", err)
 	}
 	if parsed.TenantID != tenantID || parsed.BranchID != branchID || parsed.DeviceID != d.ID ||
-		parsed.ShardID != sh.ID || parsed.DBName != issued.Claims.DBName {
+		parsed.DBName != issued.Claims.DBName {
 		t.Fatalf("claims round-trip: %+v", parsed)
 	}
 	if !parsed.ExpiresAt.After(time.Now()) || parsed.ExpiresAt.After(time.Now().Add(2*time.Hour)) {
@@ -245,21 +252,24 @@ func TestSyncTokenIssuance(t *testing.T) {
 	}
 }
 
-func TestShardCapacity(t *testing.T) {
+func TestProvisionSyncIdempotent(t *testing.T) {
 	s, ctx := testService(t)
 
-	sh, err := s.CreateShard(ctx, "shard-tiny", "10.0.0.9", "https://sync9.aribpos.com", 1)
+	tn, _ := s.Register(ctx, owner, "T1")
+
+	first, err := s.ProvisionSync(ctx, tn.ID)
 	if err != nil {
-		t.Fatalf("create shard: %v", err)
+		t.Fatalf("provision 1: %v", err)
 	}
-
-	t1, _ := s.Register(ctx, owner, "T1")
-	t2, _ := s.Register(ctx, owner, "T2")
-
-	if _, err := s.AssignShard(ctx, t1.ID, sh.ID); err != nil {
-		t.Fatalf("assign 1: %v", err)
+	if first.DBName == "" {
+		t.Fatalf("no db name assigned: %+v", first)
 	}
-	if _, err := s.AssignShard(ctx, t2.ID, sh.ID); !errors.Is(err, ErrShardFull) {
-		t.Fatalf("assign over capacity: want ErrShardFull, got %v", err)
+	// Re-provisioning derives the same name and must not error.
+	second, err := s.ProvisionSync(ctx, tn.ID)
+	if err != nil {
+		t.Fatalf("provision 2: %v", err)
+	}
+	if second.DBName != first.DBName {
+		t.Fatalf("db name not deterministic: %q != %q", second.DBName, first.DBName)
 	}
 }

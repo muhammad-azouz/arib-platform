@@ -162,26 +162,36 @@ const (
 	RolloutFailed    RolloutStatus = "failed"    // last migrate failed; retried on the next rollout
 )
 
-// ShardStatus controls whether new tenant DBs may be placed on a shard.
+// ShardStatus is the operational state of a sync shard.
 type ShardStatus string
 
 const (
-	ShardActive   ShardStatus = "active"   // accepting new tenants
-	ShardFull     ShardStatus = "full"     // serving, not accepting
-	ShardDraining ShardStatus = "draining" // being evacuated
+	ShardActive   ShardStatus = "active"
+	ShardDraining ShardStatus = "draining"
 )
 
-// Tenant is the multi-tenant subscription unit owned by an account. ShardID
-// and DBName form the tenant→{shard,db} map; both stay empty until the tenant
-// subscribes to sync and a central DB is provisioned (sync is optional).
+// Shard is one gateway process + the SQL instance it fronts. The control plane
+// only stores the gateway URL; the connection string stays gateway-side
+// (SQL_CS_TEMPLATE env), so moving a shard's SQL to an elastic pool is pure ops.
+type Shard struct {
+	ID         string      `bson:"_id"`
+	GatewayURL string      `bson:"gateway_url"`
+	Status     ShardStatus `bson:"status"`
+	CreatedAt  time.Time   `bson:"created_at"`
+	UpdatedAt  time.Time   `bson:"updated_at"`
+}
+
+// Tenant is the multi-tenant subscription unit owned by an account. DBName is
+// the tenant's central DB on the single sync server; it stays empty until the
+// tenant subscribes to sync and a central DB is provisioned (sync is optional).
 type Tenant struct {
 	ID        string       `bson:"_id"` // tnt_...
 	AccountID string       `bson:"account_id"`
 	Name      string       `bson:"name"` // business display name
 	Status    TenantStatus `bson:"status"`
 	Plan      string       `bson:"plan,omitempty"`     // subscription plan code; empty = standalone
-	ShardID   string       `bson:"shard_id,omitempty"` // set on sync provisioning
-	DBName    string       `bson:"db_name,omitempty"`  // central DB on that shard
+	DBName    string       `bson:"db_name,omitempty"`  // central DB; set on sync provisioning
+	ShardID   string       `bson:"shard_id,omitempty"` // assigned shard; empty = unassigned (legacy)
 	CreatedAt time.Time    `bson:"created_at"`
 	UpdatedAt time.Time    `bson:"updated_at"`
 
@@ -245,16 +255,4 @@ type BranchDevice struct {
 	BoundAt     time.Time    `bson:"bound_at"`
 	LastSeenAt  time.Time    `bson:"last_seen_at"`
 	ReleasedAt  *time.Time   `bson:"released_at,omitempty"`
-}
-
-// Shard is one central VPS hosting tenant DBs behind a sync gateway.
-type Shard struct {
-	ID         string      `bson:"_id"`  // shd_...
-	Name       string      `bson:"name"` // unique, e.g. "shard-eu-1"
-	Host       string      `bson:"host"` // private address (provisioner/web app)
-	GatewayURL string      `bson:"gateway_url"`
-	MaxTenants int         `bson:"max_tenants"`
-	Status     ShardStatus `bson:"status"`
-	CreatedAt  time.Time   `bson:"created_at"`
-	UpdatedAt  time.Time   `bson:"updated_at"`
 }

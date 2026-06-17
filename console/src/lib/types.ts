@@ -20,7 +20,6 @@ export interface Tenant {
   Name: string
   Status: TenantStatus
   Plan?: string
-  ShardID?: string
   DBName?: string
   CreatedAt: string
   UpdatedAt: string
@@ -82,7 +81,6 @@ export interface Bundle {
 export interface SyncToken {
   token: string
   expires_at: string
-  shard_id: string
   db_name: string
   gateway_url: string
 }

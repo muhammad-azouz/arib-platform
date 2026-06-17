@@ -22,9 +22,14 @@ type Config struct {
 	AccessTokenTTL  time.Duration
 	RefreshTokenTTL time.Duration
 
-	// Sync tokens authorize a bound device against a shard's DMS gateway.
-	// The secret is shared with the gateways; defaults to JWT_SECRET.
-	SyncTokenTTL    time.Duration
+	// Sync tokens authorize a bound device against the DMS gateway.
+	SyncTokenTTL time.Duration
+	// SyncGatewayURL is the fallback DMS gateway URL. Used only when SYNC_SHARDS
+	// is unset (single-gateway dev/bootstrap); always synthesized into Shards[0].
+	SyncGatewayURL string
+	// Shards is the parsed shard registry seeded at startup. At least one entry
+	// is always present (synthesized from SyncGatewayURL when SYNC_SHARDS unset).
+	Shards []ShardConfig
 
 	RevalidateAfter    time.Duration
 	HardExpireAfter    time.Duration
@@ -88,9 +93,11 @@ func Load() (*Config, error) {
 	}
 	c.JWTSecret = []byte(secret)
 
-	// Sync tokens are RS256-signed with the license RSA key (gateways hold
+	// Sync tokens are RS256-signed with the license RSA key (the gateway holds
 	// only the public key); SYNC_TOKEN_SECRET is gone with the HS256 scheme.
 	c.SyncTokenTTL = dur("SYNC_TOKEN_TTL", time.Hour)
+	c.SyncGatewayURL = strings.TrimRight(env("SYNC_GATEWAY_URL", "http://127.0.0.1:5310"), "/")
+	c.Shards = parseShards(os.Getenv("SYNC_SHARDS"), c.SyncGatewayURL)
 
 	if c.MongoURI == "" {
 		return nil, fmt.Errorf("MONGO_URI is required")
@@ -163,6 +170,41 @@ func splitCSV(s string) []string {
 		if t := strings.TrimSpace(p); t != "" {
 			out = append(out, t)
 		}
+	}
+	return out
+}
+
+// ShardConfig is one shard entry from SYNC_SHARDS.
+type ShardConfig struct {
+	ID         string
+	GatewayURL string
+}
+
+// parseShards parses SYNC_SHARDS ("shd_a=http://gw-a:5310;shd_b=http://gw-b:5310").
+// Falls back to a single "shd_default" entry pointing at fallbackURL when raw
+// is empty, preserving single-gateway backwards compatibility.
+func parseShards(raw, fallbackURL string) []ShardConfig {
+	if strings.TrimSpace(raw) == "" {
+		return []ShardConfig{{ID: "shd_default", GatewayURL: strings.TrimRight(fallbackURL, "/")}}
+	}
+	var out []ShardConfig
+	for _, entry := range strings.Split(raw, ";") {
+		entry = strings.TrimSpace(entry)
+		if entry == "" {
+			continue
+		}
+		parts := strings.SplitN(entry, "=", 2)
+		if len(parts) != 2 {
+			continue
+		}
+		id := strings.TrimSpace(parts[0])
+		url := strings.TrimRight(strings.TrimSpace(parts[1]), "/")
+		if id != "" && url != "" {
+			out = append(out, ShardConfig{ID: id, GatewayURL: url})
+		}
+	}
+	if len(out) == 0 {
+		return []ShardConfig{{ID: "shd_default", GatewayURL: strings.TrimRight(fallbackURL, "/")}}
 	}
 	return out
 }

@@ -6,6 +6,7 @@ import type {
   LicenseStatus,
   Session,
   Stats,
+  Tenant,
 } from './types'
 
 const BASE = import.meta.env.VITE_API_BASE_URL ?? ''
@@ -194,6 +195,9 @@ export const adminApi = {
 
   forceRelease: (deviceId: string) =>
     request<{ status: string }>(`/v1/admin/devices/${deviceId}/release`, body({})),
+
+  provisionSync: (tenantId: string) =>
+    request<Tenant>(`/v1/admin/tenants/${tenantId}/provision-sync`, body({})),
 
   audit: () =>
     request<{ audit: AuditLog[] | null }>('/v1/admin/audit').then(

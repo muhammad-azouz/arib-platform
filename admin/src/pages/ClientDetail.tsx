@@ -3,6 +3,8 @@ import { Link, useParams } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
   ArrowLeft,
+  Building2,
+  DatabaseZap,
   FileSignature,
   HardDrive,
   KeyRound,
@@ -25,6 +27,7 @@ import {
   licenseStatusTone,
   licenseTypeTone,
   relative,
+  tenantStatusTone,
 } from '@/lib/format'
 import type { Device, License, LicenseStatus } from '@/lib/types'
 import { PageHeader } from '@/components/PageHeader'
@@ -90,6 +93,15 @@ export function ClientDetail() {
     onError: (e) => toast.error(errorMessage(e)),
   })
 
+  const provisionMutation = useMutation({
+    mutationFn: (tenantId: string) => adminApi.provisionSync(tenantId),
+    onSuccess: (t) => {
+      toast.success(`Sync provisioned: ${t.DBName}`)
+      invalidate()
+    },
+    onError: (e) => toast.error(errorMessage(e)),
+  })
+
   if (query.isLoading) {
     return (
       <div className="grid gap-4">
@@ -116,7 +128,7 @@ export function ClientDetail() {
     )
   }
 
-  const { account, licenses = [], devices = [] } = query.data
+  const { account, licenses = [], devices = [], tenants = [] } = query.data
 
   return (
     <div className="animate-rise">
@@ -170,6 +182,68 @@ export function ClientDetail() {
           </CardContent>
         </Card>
       )}
+
+      {/* Tenants */}
+      <Card className="mb-6 overflow-hidden">
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2">
+            <Building2 className="size-4 text-muted-foreground" />
+            Tenants
+            <span className="text-sm font-normal text-muted-foreground">
+              ({tenants.length})
+            </span>
+          </CardTitle>
+        </CardHeader>
+        <CardContent className="p-0">
+          {tenants.length === 0 ? (
+            <EmptyRow text="No tenants yet." />
+          ) : (
+            <Table>
+              <TableHeader>
+                <TableRow className="hover:bg-transparent">
+                  <TableHead>Name</TableHead>
+                  <TableHead>Status</TableHead>
+                  <TableHead>DB name</TableHead>
+                  <TableHead className="w-40" />
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {tenants.map((t) => (
+                  <TableRow key={t.ID} className="hover:bg-transparent">
+                    <TableCell className="font-medium">{t.Name}</TableCell>
+                    <TableCell>
+                      <Badge tone={tenantStatusTone(t.Status)} className="capitalize">
+                        {t.Status}
+                      </Badge>
+                    </TableCell>
+                    <TableCell>
+                      {t.DBName ? (
+                        <CopyId value={t.DBName} label="DB name" />
+                      ) : (
+                        <span className="text-sm text-muted-foreground">—</span>
+                      )}
+                    </TableCell>
+                    <TableCell className="text-right">
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        disabled={
+                          provisionMutation.isPending &&
+                          provisionMutation.variables === t.ID
+                        }
+                        onClick={() => provisionMutation.mutate(t.ID)}
+                      >
+                        <DatabaseZap className="size-4" />
+                        {t.DBName ? 'Re-provision sync' : 'Provision sync'}
+                      </Button>
+                    </TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+          )}
+        </CardContent>
+      </Card>
 
       {/* Licenses */}
       <Card className="mb-6 overflow-hidden">

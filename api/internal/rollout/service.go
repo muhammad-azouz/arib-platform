@@ -1,9 +1,9 @@
 // Package rollout drives operator-triggered fleet schema rollouts (roadmap E3).
 //
 // When the schema changes, every tenant's central DB needs the new shape. Only
-// the shard gateway can reach the shard's localhost-only SQL Server (D11), so
-// this orchestrator does not touch DBs directly: it reads a shard gateway's
-// current schema version, walks the shard's tenants from the registry, and asks
+// the gateway can reach the central server's localhost-only SQL Server (D11), so
+// this orchestrator does not touch DBs directly: it reads the gateway's current
+// schema version, walks the sync-subscribed tenants from the registry, and asks
 // the gateway to migrate the ones that are behind — recording each result back
 // into the tenant doc (the per-tenant schema-version registry).
 package rollout
@@ -15,7 +15,6 @@ import (
 	"fmt"
 	"net/http"
 	"sort"
-	"strings"
 	"time"
 
 	"github.com/aribpos/license-api/internal/model"
@@ -29,9 +28,9 @@ const maxAttempts = 2
 
 // Store is the slice of the registry the orchestrator needs.
 type Store interface {
-	ShardByID(ctx context.Context, id string) (*model.Shard, error)
-	TenantsOnShard(ctx context.Context, shardID string) ([]model.Tenant, error)
+	TenantsWithSync(ctx context.Context) ([]model.Tenant, error)
 	UpdateTenantSchema(ctx context.Context, id string, version int, status model.RolloutStatus, errMsg string, attempts int, at time.Time) error
+	ListActiveShards(ctx context.Context) ([]model.Shard, error)
 }
 
 // TokenIssuer mints the ops token the gateway's /admin endpoints require.
@@ -39,7 +38,7 @@ type TokenIssuer interface {
 	IssueOpsToken() (string, error)
 }
 
-// Service orchestrates fleet rollouts against shard gateways.
+// Service orchestrates fleet rollouts against the sync gateways.
 type Service struct {
 	store  Store
 	tokens TokenIssuer
@@ -66,59 +65,93 @@ type TenantState struct {
 
 // Report is the mixed-version view returned by a rollout or a schema-report.
 type Report struct {
-	ShardID   string        `json:"shard_id"`
-	Target    int           `json:"target_version"`
-	Tenants   []TenantState `json:"tenants"`
-	ByVersion map[int]int   `json:"by_version"`
-	Failed    []string      `json:"failed"`
+	Target            int           `json:"target_version"`
+	Tenants           []TenantState `json:"tenants"`
+	ByVersion         map[int]int   `json:"by_version"`
+	Failed            []string      `json:"failed"`
+	UnreachableShards []string      `json:"unreachable_shards,omitempty"`
 }
 
-// RolloutShard migrates every tenant on the shard that is behind the gateway's
+// Rollout migrates every sync-subscribed tenant that is behind its shard's
 // current schema version (or previously failed), then returns a mixed-version
 // report. Idempotent: tenants already at the target are skipped.
-func (s *Service) RolloutShard(ctx context.Context, shardID string) (*Report, error) {
-	sh, err := s.store.ShardByID(ctx, shardID)
+func (s *Service) Rollout(ctx context.Context) (*Report, error) {
+	shards, err := s.store.ListActiveShards(ctx)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("list shards: %w", err)
 	}
-	gateway := strings.TrimRight(sh.GatewayURL, "/")
-	target, err := s.gatewayVersion(ctx, gateway)
-	if err != nil {
-		return nil, fmt.Errorf("gateway %s healthz: %w", gateway, err)
-	}
-	tenants, err := s.store.TenantsOnShard(ctx, shardID)
+	tenants, err := s.store.TenantsWithSync(ctx)
 	if err != nil {
 		return nil, err
 	}
 
+	// Group sync-subscribed tenants by their assigned shard.
+	byShardID := make(map[string][]*model.Tenant, len(shards))
 	for i := range tenants {
 		t := &tenants[i]
 		if t.DBName == "" {
-			continue // not placed on a shard yet
+			continue
 		}
-		if t.SchemaVersion >= target && t.RolloutStatus != model.RolloutFailed {
-			continue // already current
-		}
-		s.migrateTenant(ctx, gateway, t, target)
+		byShardID[t.ShardID] = append(byShardID[t.ShardID], t)
 	}
-	return s.report(shardID, target, tenants), nil
+
+	var overallTarget int
+	var reachable int
+	unreachable := make(map[string]bool, len(shards))
+	for _, shard := range shards {
+		target, err := s.gatewayVersion(ctx, shard.GatewayURL)
+		if err != nil {
+			// Gateway unreachable: skip its tenants, don't abort the whole rollout —
+			// but remember it so the report can't claim a false "all idle" green.
+			unreachable[shard.ID] = true
+			continue
+		}
+		reachable++
+		if target > overallTarget {
+			overallTarget = target
+		}
+		for _, t := range byShardID[shard.ID] {
+			if t.SchemaVersion >= target && t.RolloutStatus != model.RolloutFailed {
+				continue
+			}
+			s.migrateTenant(ctx, shard.GatewayURL, t, target)
+		}
+	}
+	if len(shards) > 0 && reachable == 0 {
+		return nil, fmt.Errorf("rollout aborted: all %d shard gateway(s) unreachable", len(shards))
+	}
+	return s.report(overallTarget, tenants, unreachable), nil
 }
 
-// ShardReport returns the current mixed-version view without migrating anything.
-func (s *Service) ShardReport(ctx context.Context, shardID string) (*Report, error) {
-	sh, err := s.store.ShardByID(ctx, shardID)
+// SchemaReport returns the current mixed-version view without migrating anything.
+func (s *Service) SchemaReport(ctx context.Context) (*Report, error) {
+	shards, err := s.store.ListActiveShards(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("list shards: %w", err)
+	}
+	tenants, err := s.store.TenantsWithSync(ctx)
 	if err != nil {
 		return nil, err
 	}
-	target, err := s.gatewayVersion(ctx, strings.TrimRight(sh.GatewayURL, "/"))
-	if err != nil {
-		return nil, fmt.Errorf("gateway healthz: %w", err)
+	// Use the first reachable shard's version as the report target (all shards
+	// run the same binary, so SyncScope.SchemaVersion is a build constant).
+	var target int
+	var foundTarget bool
+	unreachable := make(map[string]bool, len(shards))
+	for _, shard := range shards {
+		if v, err := s.gatewayVersion(ctx, shard.GatewayURL); err == nil {
+			if !foundTarget {
+				target = v
+				foundTarget = true
+			}
+		} else {
+			unreachable[shard.ID] = true
+		}
 	}
-	tenants, err := s.store.TenantsOnShard(ctx, shardID)
-	if err != nil {
-		return nil, err
+	if len(shards) > 0 && !foundTarget {
+		return nil, fmt.Errorf("schema report aborted: all %d shard gateway(s) unreachable", len(shards))
 	}
-	return s.report(shardID, target, tenants), nil
+	return s.report(target, tenants, unreachable), nil
 }
 
 // migrateTenant runs (and records) one tenant's migrate, mutating t in place so
@@ -146,8 +179,13 @@ func (s *Service) migrateTenant(ctx context.Context, gateway string, t *model.Te
 	_ = s.store.UpdateTenantSchema(ctx, t.ID, version, model.RolloutIdle, "", t.RolloutAttempts, now)
 }
 
-func (s *Service) report(shardID string, target int, tenants []model.Tenant) *Report {
-	rep := &Report{ShardID: shardID, Target: target, ByVersion: map[int]int{}}
+// report builds the mixed-version view. unreachableShards is the set of shard
+// IDs whose gateway didn't answer /healthz during this call: their tenants are
+// reported with a distinct "shard_unreachable" status (instead of silently
+// looking idle/up-to-date) and the shard IDs are surfaced in UnreachableShards
+// so an outage is visible even when some shards are still healthy.
+func (s *Service) report(target int, tenants []model.Tenant, unreachableShards map[string]bool) *Report {
+	rep := &Report{Target: target, ByVersion: map[int]int{}}
 	for i := range tenants {
 		t := &tenants[i]
 		if t.DBName == "" {
@@ -156,6 +194,9 @@ func (s *Service) report(shardID string, target int, tenants []model.Tenant) *Re
 		status := string(t.RolloutStatus)
 		if status == "" {
 			status = string(model.RolloutIdle)
+		}
+		if unreachableShards[t.ShardID] {
+			status = "shard_unreachable"
 		}
 		rep.Tenants = append(rep.Tenants, TenantState{
 			TenantID: t.ID, DBName: t.DBName, Version: t.SchemaVersion,
@@ -167,10 +208,14 @@ func (s *Service) report(shardID string, target int, tenants []model.Tenant) *Re
 		}
 	}
 	sort.Strings(rep.Failed)
+	for id := range unreachableShards {
+		rep.UnreachableShards = append(rep.UnreachableShards, id)
+	}
+	sort.Strings(rep.UnreachableShards)
 	return rep
 }
 
-// gatewayVersion reads the shard gateway's current schema version from /healthz.
+// gatewayVersion reads the gateway's current schema version from /healthz.
 func (s *Service) gatewayVersion(ctx context.Context, gateway string) (int, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, gateway+"/healthz", nil)
 	if err != nil {

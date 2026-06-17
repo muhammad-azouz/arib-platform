@@ -28,11 +28,13 @@ func New(store *mongostore.Store, licenses *license.Service) *Service {
 	return &Service{store: store, licenses: licenses}
 }
 
-// ClientView bundles an account with its licenses and devices for the dashboard.
+// ClientView bundles an account with its licenses, devices and tenants for
+// the dashboard.
 type ClientView struct {
 	Account  *model.Account  `json:"account"`
 	Licenses []model.License `json:"licenses"`
 	Devices  []model.Device  `json:"devices"`
+	Tenants  []model.Tenant  `json:"tenants"`
 }
 
 // FindOrCreateClient looks up an account by email, creating it if missing.
@@ -193,6 +195,10 @@ func (s *Service) GetClient(ctx context.Context, accountID string) (*ClientView,
 	if err != nil {
 		return nil, err
 	}
+	tenants, err := s.store.TenantsByAccount(ctx, accountID)
+	if err != nil {
+		return nil, err
+	}
 	// Ensure slices serialize as [] not null when empty.
 	if lics == nil {
 		lics = []model.License{}
@@ -200,7 +206,10 @@ func (s *Service) GetClient(ctx context.Context, accountID string) (*ClientView,
 	if devs == nil {
 		devs = []model.Device{}
 	}
-	return &ClientView{Account: acc, Licenses: lics, Devices: devs}, nil
+	if tenants == nil {
+		tenants = []model.Tenant{}
+	}
+	return &ClientView{Account: acc, Licenses: lics, Devices: devs, Tenants: tenants}, nil
 }
 
 // SearchClients lists accounts matching a query.

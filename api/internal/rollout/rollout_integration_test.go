@@ -11,16 +11,15 @@ import (
 	"time"
 
 	"github.com/aribpos/license-api/internal/model"
-	mongostore "github.com/aribpos/license-api/internal/store/mongo"
 	"github.com/aribpos/license-api/internal/tenant"
 )
 
 // TestE3FleetRollout drives the real fleet-rollout flow against a live local
-// shard gateway (roadmap E3 verify: "simulated 3-tenant rollout with one
-// induced failure recovers cleanly"). It uses an in-memory registry (the
-// Store interface) so the rollout/retry/report logic is exercised end-to-end
-// without host access to Mongo; the gateway it calls is real, so SQL
-// provisioning, version stamping and ops-token verification are all genuine.
+// gateway (roadmap E3 verify: "simulated 3-tenant rollout with one induced
+// failure recovers cleanly"). It uses an in-memory registry (the Store
+// interface) so the rollout/retry/report logic is exercised end-to-end without
+// host access to Mongo; the gateway it calls is real, so SQL provisioning,
+// version stamping and ops-token verification are all genuine.
 //
 // Requires a gateway started with the public key matching E3_SYNC_KEY:
 //
@@ -36,19 +35,18 @@ func TestE3FleetRollout(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
 
-	const shardID = "shd_E3SMOKE"
 	const tA, tB, tC = "tnt_E3SMOKEA", "tnt_E3SMOKEB", "tnt_E3SMOKEC"
-	store := newFakeStore(shardID, gateway,
-		tenantOn(shardID, tA, "arib_e3smokea"),
-		tenantOn(shardID, tB, "arib_e3smokeb"),
-		tenantOn(shardID, tC, "arib_e3smokec"))
+	store := newFakeStore(gateway,
+		syncTenant(tA, "arib_e3smokea"),
+		syncTenant(tB, "arib_e3smokeb"),
+		syncTenant(tC, "arib_e3smokec"))
 
 	// Real signer → real ops tokens the gateway verifies with its public key.
 	signer := tenant.New(nil, parseRSAKey(t, keyPath), time.Hour)
 	svc := New(store, signer, &http.Client{Timeout: 3 * time.Minute})
 
 	// --- Phase 1: clean rollout brings all three DBs to the gateway version ---
-	rep, err := svc.RolloutShard(ctx, shardID)
+	rep, err := svc.Rollout(ctx)
 	if err != nil {
 		t.Fatalf("phase 1 rollout: %v", err)
 	}
@@ -74,7 +72,7 @@ func TestE3FleetRollout(t *testing.T) {
 	store.tenants[tC].SchemaVersion = 0      // mark behind so the rollout retries it
 	store.tenants[tC].RolloutStatus = model.RolloutIdle
 
-	rep, err = svc.RolloutShard(ctx, shardID)
+	rep, err = svc.Rollout(ctx)
 	if err != nil {
 		t.Fatalf("phase 2 rollout (the rollout itself must succeed): %v", err)
 	}
@@ -91,7 +89,7 @@ func TestE3FleetRollout(t *testing.T) {
 
 	// --- Phase 3: fix the root cause and re-run; only the failed tenant retries ---
 	store.tenants[tC].DBName = "arib_e3smokec"
-	rep, err = svc.RolloutShard(ctx, shardID)
+	rep, err = svc.Rollout(ctx)
 	if err != nil {
 		t.Fatalf("phase 3 rollout: %v", err)
 	}
@@ -110,19 +108,13 @@ func TestE3FleetRollout(t *testing.T) {
 // --- in-memory registry implementing rollout.Store ---
 
 type fakeStore struct {
-	shard   *model.Shard
 	tenants map[string]*model.Tenant
 	order   []string
+	gateway string
 }
 
-func newFakeStore(shardID, gateway string, ts ...*model.Tenant) *fakeStore {
-	f := &fakeStore{
-		shard: &model.Shard{
-			ID: shardID, Name: shardID, GatewayURL: gateway,
-			MaxTenants: 100, Status: model.ShardActive,
-		},
-		tenants: map[string]*model.Tenant{},
-	}
+func newFakeStore(gateway string, ts ...*model.Tenant) *fakeStore {
+	f := &fakeStore{tenants: map[string]*model.Tenant{}, gateway: gateway}
 	for _, t := range ts {
 		f.tenants[t.ID] = t
 		f.order = append(f.order, t.ID)
@@ -130,24 +122,17 @@ func newFakeStore(shardID, gateway string, ts ...*model.Tenant) *fakeStore {
 	return f
 }
 
-func tenantOn(shardID, id, dbName string) *model.Tenant {
+func syncTenant(id, dbName string) *model.Tenant {
 	return &model.Tenant{
 		ID: id, Name: id, Status: model.TenantActive,
-		ShardID: shardID, DBName: dbName, RolloutStatus: model.RolloutIdle,
+		DBName: dbName, ShardID: "shd_e3", RolloutStatus: model.RolloutIdle,
 	}
 }
 
-func (f *fakeStore) ShardByID(_ context.Context, id string) (*model.Shard, error) {
-	if f.shard != nil && f.shard.ID == id {
-		return f.shard, nil
-	}
-	return nil, mongostore.ErrNotFound
-}
-
-func (f *fakeStore) TenantsOnShard(_ context.Context, shardID string) ([]model.Tenant, error) {
+func (f *fakeStore) TenantsWithSync(_ context.Context) ([]model.Tenant, error) {
 	var out []model.Tenant
 	for _, id := range f.order {
-		if t := f.tenants[id]; t.ShardID == shardID {
+		if t := f.tenants[id]; t.DBName != "" {
 			out = append(out, *t) // copies, like the Mongo store
 		}
 	}
@@ -158,6 +143,14 @@ func (f *fakeStore) UpdateTenantSchema(_ context.Context, id string, version int
 	t := f.tenants[id]
 	t.SchemaVersion, t.RolloutStatus, t.RolloutError, t.RolloutAttempts = version, status, errMsg, attempts
 	return nil
+}
+
+func (f *fakeStore) ListActiveShards(_ context.Context) ([]model.Shard, error) {
+	return []model.Shard{{
+		ID:         "shd_e3",
+		GatewayURL: f.gateway,
+		Status:     model.ShardActive,
+	}}, nil
 }
 
 func parseRSAKey(t *testing.T, path string) *rsa.PrivateKey {

@@ -18,6 +18,7 @@ import (
 	"github.com/aribpos/license-api/internal/httpapi"
 	"github.com/aribpos/license-api/internal/license"
 	"github.com/aribpos/license-api/internal/mail"
+	"github.com/aribpos/license-api/internal/model"
 	"github.com/aribpos/license-api/internal/rollout"
 	mongostore "github.com/aribpos/license-api/internal/store/mongo"
 	"github.com/aribpos/license-api/internal/tenant"
@@ -75,6 +76,24 @@ func main() {
 		log.Error("parse sync signing key", "err", err)
 		os.Exit(1)
 	}
+
+	// Seed the configured shards into Mongo so the shard registry is authoritative
+	// at runtime. Existing shards are updated in place; new ones are inserted.
+	now := time.Now().UTC()
+	for _, sc := range cfg.Shards {
+		sh := &model.Shard{
+			ID:         sc.ID,
+			GatewayURL: sc.GatewayURL,
+			Status:     model.ShardActive,
+			CreatedAt:  now,
+			UpdatedAt:  now,
+		}
+		if err := store.UpsertShard(ctx, sh); err != nil {
+			log.Error("upsert shard", "id", sc.ID, "err", err)
+			os.Exit(1)
+		}
+	}
+
 	tenantSvc := tenant.New(store, syncKey, cfg.SyncTokenTTL)
 	rolloutSvc := rollout.New(store, tenantSvc, nil)
 

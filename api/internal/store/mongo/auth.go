@@ -16,9 +16,10 @@ import (
 // UpsertOTP replaces any pending OTP for the email with a fresh one.
 func (s *Store) UpsertOTP(ctx context.Context, o *model.OTP) error {
 	o.Email = normEmail(o.Email)
-	_, err := s.OTPs.ReplaceOne(ctx,
-		bson.D{{Key: "email", Value: o.Email}}, o,
-		options.Replace().SetUpsert(true))
+	// Remove any existing OTP for this email (old OTP has a different _id).
+	_, _ = s.OTPs.DeleteOne(ctx, bson.D{{Key: "email", Value: o.Email}})
+	// Insert the new OTP.
+	_, err := s.OTPs.InsertOne(ctx, o)
 	return err
 }
 

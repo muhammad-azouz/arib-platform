@@ -106,14 +106,13 @@ func (s *Store) EnsureIndexes(ctx context.Context) error {
 
 		// --- Multi-tenant registry ---
 		{s.Tenants, mongo.IndexModel{Keys: bson.D{{Key: "account_id", Value: 1}}}},
-		{s.Tenants, mongo.IndexModel{Keys: bson.D{{Key: "shard_id", Value: 1}}}},
-		// One DB name per shard (only for tenants actually placed on a shard).
+		// Globally-unique central DB name (only for sync-provisioned tenants).
 		{s.Tenants, mongo.IndexModel{
-			Keys: bson.D{{Key: "shard_id", Value: 1}, {Key: "db_name", Value: 1}},
+			Keys: bson.D{{Key: "db_name", Value: 1}},
 			Options: options.Index().
-				SetName("shard_db_unique").
+				SetName("db_name_unique").
 				SetUnique(true).
-				SetPartialFilterExpression(bson.D{{Key: "shard_id", Value: bson.D{{Key: "$exists", Value: true}, {Key: "$gt", Value: ""}}}}),
+				SetPartialFilterExpression(bson.D{{Key: "db_name", Value: bson.D{{Key: "$exists", Value: true}, {Key: "$gt", Value: ""}}}}),
 		}},
 		// One company per tenant (D15).
 		{s.Companies, mongo.IndexModel{Keys: bson.D{{Key: "tenant_id", Value: 1}}, Options: options.Index().SetUnique(true)}},
@@ -131,7 +130,6 @@ func (s *Store) EnsureIndexes(ctx context.Context) error {
 				SetUnique(true).
 				SetPartialFilterExpression(bson.D{{Key: "status", Value: string("active")}}),
 		}},
-		{s.Shards, mongo.IndexModel{Keys: bson.D{{Key: "name", Value: 1}}, Options: options.Index().SetUnique(true)}},
 	}
 	for _, sp := range specs {
 		if _, err := sp.coll.Indexes().CreateOne(ctx, sp.model); err != nil {

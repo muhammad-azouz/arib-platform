@@ -32,7 +32,7 @@ import {
   Hashtag,
   MapPoint,
   KeyMinimalistic,
-  Routing,
+  Database,
   ShieldKeyhole,
   MonitorSmartphone,
   Monitor,
@@ -81,7 +81,7 @@ export const PhoneIcon = Phone
 export const TaxIcon = Hashtag
 export const AddressIcon = MapPoint
 export const SyncTokenIcon = KeyMinimalistic
-export const ShardIcon = Routing
+export const DatabaseIcon = Database
 export const SecurityIcon = ShieldKeyhole
 export const DeviceIcon = MonitorSmartphone
 export const DesktopIcon = Monitor

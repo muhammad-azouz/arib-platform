@@ -26,8 +26,7 @@ var (
 	ErrBranchInactive  = errors.New("branch is deactivated")
 	ErrSeatLimit       = errors.New("branch seat limit reached")
 	ErrNotBound        = errors.New("no such device binding")
-	ErrNotSubscribed   = errors.New("tenant has no sync subscription (no shard assigned)")
-	ErrShardFull       = errors.New("shard is full or not accepting tenants")
+	ErrNotSubscribed   = errors.New("tenant has no sync subscription (no central DB provisioned)")
 	ErrCompanyExists   = errors.New("tenant already has a company (one company per tenant)")
 	ErrNoCompany       = errors.New("tenant has no company yet")
 	ErrNotFound        = mongostore.ErrNotFound
@@ -40,9 +39,10 @@ type Service struct {
 	syncTTL time.Duration
 }
 
-// New builds a tenant Service. syncKey signs sync tokens (RS256 — gateways
-// hold only the public key, so a compromised shard cannot mint tokens);
-// syncTTL is their lifetime.
+// New builds a tenant Service. syncKey signs sync tokens (RS256 — the gateway
+// holds only the public key, so a compromised gateway cannot mint tokens);
+// syncTTL is their lifetime. The gateway URL for each tenant is resolved at
+// token-issuance time from the shard registry stored in Mongo.
 func New(store *mongostore.Store, syncKey *rsa.PrivateKey, syncTTL time.Duration) *Service {
 	return &Service{store: store, syncKey: syncKey, syncTTL: syncTTL}
 }
@@ -55,13 +55,13 @@ type Bundle struct {
 	Branches []model.Branch
 }
 
-// SyncClaims is the JWT a bound device presents to a shard's DMS gateway.
+// SyncClaims is the JWT a bound device presents to the DMS gateway.
 type SyncClaims struct {
 	TenantID string `json:"tenant_id"`
 	BranchID string `json:"branch_id"`
 	DeviceID string `json:"device_id"`
-	ShardID  string `json:"shard_id"`
 	DBName   string `json:"db_name"`
+	ShardID  string `json:"shard_id,omitempty"` // defense-in-depth: gateway validates this matches its SHARD_ID
 	jwt.RegisteredClaims
 }
 
@@ -381,23 +381,23 @@ func (s *Service) ReleaseDevice(ctx context.Context, accountID, tenantID, device
 // --- sync tokens ---
 
 // IssuedSyncToken is the result of IssueSyncToken: the signed JWT, its
-// claims, and the shard gateway the device must sync against.
+// claims, and the gateway the device must sync against.
 type IssuedSyncToken struct {
 	Token      string
 	Claims     *SyncClaims
 	GatewayURL string
 }
 
-// IssueSyncToken mints the JWT a bound device presents to its shard's DMS
-// gateway (RS256; gateways verify with the public key only). Requires an
-// active tenant with a shard assignment, an active branch, and an active
-// device binding owned by the caller.
+// IssueSyncToken mints the JWT a bound device presents to the DMS gateway
+// (RS256; the gateway verifies with the public key only). Requires an active
+// tenant with a provisioned central DB, an active branch, and an active device
+// binding owned by the caller.
 func (s *Service) IssueSyncToken(ctx context.Context, accountID, tenantID, deviceID string) (*IssuedSyncToken, error) {
 	t, err := s.activeTenant(ctx, accountID, tenantID)
 	if err != nil {
 		return nil, err
 	}
-	if t.ShardID == "" || t.DBName == "" {
+	if t.DBName == "" {
 		return nil, ErrNotSubscribed
 	}
 	d, err := s.store.BranchDeviceByID(ctx, deviceID)
@@ -420,9 +420,12 @@ func (s *Service) IssueSyncToken(ctx context.Context, accountID, tenantID, devic
 	if b.Status != model.BranchActive {
 		return nil, ErrBranchInactive
 	}
-	sh, err := s.store.ShardByID(ctx, t.ShardID)
+
+	// Resolve the tenant's shard. For legacy tenants provisioned before sharding,
+	// assign one now (same least-loaded path as ProvisionSync).
+	shard, err := s.resolveShard(ctx, t)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("resolve shard: %w", err)
 	}
 
 	now := time.Now().UTC()
@@ -430,8 +433,8 @@ func (s *Service) IssueSyncToken(ctx context.Context, accountID, tenantID, devic
 		TenantID: tenantID,
 		BranchID: d.BranchID,
 		DeviceID: d.ID,
-		ShardID:  t.ShardID,
 		DBName:   t.DBName,
+		ShardID:  shard.ID,
 		RegisteredClaims: jwt.RegisteredClaims{
 			Subject:   d.ID,
 			IssuedAt:  jwt.NewNumericDate(now),
@@ -443,11 +446,11 @@ func (s *Service) IssueSyncToken(ctx context.Context, accountID, tenantID, devic
 		return nil, err
 	}
 	_ = s.store.TouchBranchDeviceSeen(ctx, d.ID, now)
-	return &IssuedSyncToken{Token: tok, Claims: claims, GatewayURL: sh.GatewayURL}, nil
+	return &IssuedSyncToken{Token: tok, Claims: claims, GatewayURL: shard.GatewayURL}, nil
 }
 
-// OpsClaims is the JWT the fleet-rollout orchestrator presents to a shard
-// gateway's /admin endpoints (roadmap E3). It carries no tenant/branch binding
+// OpsClaims is the JWT the fleet-rollout orchestrator presents to the gateway's
+// /admin endpoints (roadmap E3). It carries no tenant/branch binding
 // — only an "ops" scope — and is signed/verified with the same RS256 key as
 // sync tokens, so only the license server can mint one.
 type OpsClaims struct {
@@ -469,8 +472,43 @@ func (s *Service) IssueOpsToken() (string, error) {
 	return jwt.NewWithClaims(jwt.SigningMethodRS256, claims).SignedString(s.syncKey)
 }
 
+// VerifySyncToken parses and verifies a sync token this server minted
+// (IssueSyncToken, RS256). The gateway forwards the client's own sync token to
+// the internal registry endpoint as proof it is serving that tenant; we trust
+// our own signature and return the claims. (E5/D18)
+func (s *Service) VerifySyncToken(tokenStr string) (*SyncClaims, error) {
+	claims := &SyncClaims{}
+	if _, err := jwt.ParseWithClaims(tokenStr, claims, func(t *jwt.Token) (any, error) {
+		if _, ok := t.Method.(*jwt.SigningMethodRSA); !ok {
+			return nil, fmt.Errorf("unexpected signing method: %v", t.Header["alg"])
+		}
+		return &s.syncKey.PublicKey, nil
+	}); err != nil {
+		return nil, err
+	}
+	if claims.TenantID == "" {
+		return nil, errors.New("sync token missing tenant")
+	}
+	return claims, nil
+}
+
+// TenantRegistry returns a tenant's company (may be nil) and branches so the
+// gateway can materialise them as FK anchors in the central DB (E5/D18).
+// Authorised by a valid sync token, not account ownership.
+func (s *Service) TenantRegistry(ctx context.Context, tenantID string) (*model.Company, []model.Branch, error) {
+	company, err := s.store.CompanyByTenant(ctx, tenantID)
+	if err != nil && !errors.Is(err, mongostore.ErrNotFound) {
+		return nil, nil, err
+	}
+	branches, err := s.store.BranchesByTenant(ctx, tenantID)
+	if err != nil {
+		return nil, nil, err
+	}
+	return company, branches, nil
+}
+
 // SyncPublicKeyPEM returns the PKIX PEM of the sync-token verification key —
-// what a shard gateway needs to validate tokens offline.
+// what the gateway needs to validate tokens offline.
 func (s *Service) SyncPublicKeyPEM() (string, error) {
 	der, err := x509.MarshalPKIXPublicKey(&s.syncKey.PublicKey)
 	if err != nil {
@@ -495,60 +533,89 @@ func (s *Service) ParseSyncToken(token string) (*SyncClaims, error) {
 	return &claims, nil
 }
 
-// --- shards (admin/billing; HTTP layer restricts callers) ---
+// --- sync provisioning (admin/billing; HTTP layer restricts callers) ---
 
-// CreateShard registers a central VPS.
-func (s *Service) CreateShard(ctx context.Context, name, host, gatewayURL string, maxTenants int) (*model.Shard, error) {
-	if strings.TrimSpace(name) == "" || strings.TrimSpace(gatewayURL) == "" {
-		return nil, errors.New("shard name and gateway url required")
-	}
-	if maxTenants < 1 {
-		return nil, errors.New("max tenants must be >= 1")
-	}
-	now := time.Now().UTC()
-	sh := &model.Shard{
-		ID: idgen.New("shd"), Name: name, Host: host, GatewayURL: gatewayURL,
-		MaxTenants: maxTenants, Status: model.ShardActive,
-		CreatedAt: now, UpdatedAt: now,
-	}
-	if err := s.store.InsertShard(ctx, sh); err != nil {
-		return nil, err
-	}
-	return sh, nil
-}
-
-// Shards lists all shards.
-func (s *Service) Shards(ctx context.Context) ([]model.Shard, error) {
-	return s.store.ListShards(ctx)
-}
-
-// AssignShard places a tenant's central DB on a shard (sync provisioning).
-// The DB name is derived deterministically from the tenant id.
-func (s *Service) AssignShard(ctx context.Context, tenantID, shardID string) (*model.Tenant, error) {
+// ProvisionSync subscribes a tenant to sync by assigning its central DB and a
+// shard. The DB name is derived deterministically from the tenant id; calling it
+// again is idempotent (same derived name, same shard if already assigned). The
+// gateway lazily creates and migrates the DB on the tenant's first sync.
+func (s *Service) ProvisionSync(ctx context.Context, tenantID string) (*model.Tenant, error) {
 	t, err := s.store.TenantByID(ctx, tenantID)
 	if err != nil {
 		return nil, err
 	}
-	sh, err := s.store.ShardByID(ctx, shardID)
-	if err != nil {
-		return nil, err
+	now := time.Now().UTC()
+
+	// Assign shard before setting db_name so the tenant never appears in
+	// TenantsWithSync (which filters on db_name != "") without a shard. A
+	// rollout running between the two writes would otherwise see the tenant
+	// with an empty ShardID and silently skip it.
+	if t.ShardID == "" {
+		shard, err := s.store.LeastLoadedShard(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("assign shard: %w", err)
+		}
+		if err := s.store.SetTenantShard(ctx, tenantID, shard.ID, now); err != nil {
+			return nil, err
+		}
+		t.ShardID = shard.ID
 	}
-	if sh.Status != model.ShardActive {
-		return nil, ErrShardFull
-	}
-	n, err := s.store.CountTenantsOnShard(ctx, shardID)
-	if err != nil {
-		return nil, err
-	}
-	if int(n) >= sh.MaxTenants {
-		return nil, ErrShardFull
-	}
+
 	dbName := "arib_" + strings.ToLower(strings.TrimPrefix(tenantID, "tnt_"))
-	if err := s.store.AssignTenantShard(ctx, tenantID, shardID, dbName, time.Now().UTC()); err != nil {
+	if err := s.store.SetTenantDBName(ctx, tenantID, dbName, now); err != nil {
 		return nil, err
 	}
-	t.ShardID, t.DBName = shardID, dbName
+	t.DBName = dbName
 	return t, nil
+}
+
+// resolveShard returns the tenant's assigned shard, assigning a least-loaded one
+// on the fly for legacy tenants that predate sharding or tenants whose shard has
+// been decommissioned/deleted.
+func (s *Service) resolveShard(ctx context.Context, t *model.Tenant) (*model.Shard, error) {
+	if t.ShardID != "" {
+		shard, err := s.store.ShardByID(ctx, t.ShardID)
+		if err == nil {
+			return shard, nil
+		}
+		if !errors.Is(err, mongostore.ErrNotFound) {
+			return nil, err
+		}
+		// Shard was decommissioned; force-assign to a live shard (ops-time event,
+		// not steady-state, so an unconditional write is acceptable here).
+		shard, err = s.store.LeastLoadedShard(ctx)
+		if err != nil {
+			return nil, err
+		}
+		if err := s.store.SetTenantShard(ctx, t.ID, shard.ID, time.Now().UTC()); err != nil {
+			return nil, err
+		}
+		t.ShardID = shard.ID
+		return shard, nil
+	}
+	// Legacy tenant (no shard assigned yet). Use a DB-level CAS so that two
+	// concurrent IssueSyncToken calls for the same tenant both end up with the
+	// same shard_id — the loser re-reads and returns the winner's choice.
+	shard, err := s.store.LeastLoadedShard(ctx)
+	if err != nil {
+		return nil, err
+	}
+	assigned, err := s.store.AssignShardIfEmpty(ctx, t.ID, shard.ID, time.Now().UTC())
+	if err != nil {
+		return nil, err
+	}
+	if assigned {
+		t.ShardID = shard.ID
+		return shard, nil
+	}
+	// Lost the CAS race — another concurrent call already wrote a shard.
+	// Re-fetch to get the actual assignment and return that shard.
+	fresh, err := s.store.TenantByID(ctx, t.ID)
+	if err != nil {
+		return nil, err
+	}
+	t.ShardID = fresh.ShardID
+	return s.store.ShardByID(ctx, fresh.ShardID)
 }
 
 // --- helpers ---

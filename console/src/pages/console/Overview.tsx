@@ -9,7 +9,7 @@ import {
   CompanyIcon,
   BranchIcon,
   WalletIcon,
-  ShardIcon,
+  DatabaseIcon,
   DangerIcon,
   InfoIcon,
   PhoneIcon,
@@ -87,10 +87,9 @@ export function Overview() {
         />
 
         <StatCard
-          icon={ShardIcon}
+          icon={DatabaseIcon}
           label="مكان البيانات"
           value={t.DBName ?? '—'}
-          hint={t.ShardID ? `الخادم: ${t.ShardID}` : 'لم يُخصّص خادم بعد'}
           mono
         />
       </div>

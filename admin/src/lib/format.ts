@@ -4,6 +4,7 @@ import type {
   DeviceStatus,
   LicenseStatus,
   LicenseType,
+  TenantStatus,
 } from './types'
 
 const ZERO = '0001-01-01T00:00:00Z'
@@ -49,6 +50,10 @@ export function licenseTypeTone(t: LicenseType): Tone {
 
 export function deviceStatusTone(s: DeviceStatus): Tone {
   return s === 'active' ? 'success' : 'neutral'
+}
+
+export function tenantStatusTone(s: TenantStatus): Tone {
+  return s === 'active' ? 'success' : 'danger'
 }
 
 const ACTION_LABELS: Record<string, string> = {

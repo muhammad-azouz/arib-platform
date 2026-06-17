@@ -9,6 +9,7 @@ export type Provider = 'email' | 'google' | 'facebook'
 export type LicenseType = 'trial' | 'paid'
 export type LicenseStatus = 'active' | 'suspended' | 'expired'
 export type DeviceStatus = 'active' | 'released'
+export type TenantStatus = 'active' | 'suspended'
 
 export interface Account {
   ID: string
@@ -61,11 +62,22 @@ export interface AuditLog {
   CreatedAt: string
 }
 
+export interface Tenant {
+  ID: string
+  AccountID: string
+  Name: string
+  Status: TenantStatus
+  DBName?: string
+  CreatedAt: string
+  UpdatedAt: string
+}
+
 // ClientView carries json tags -> lowercase keys.
 export interface ClientView {
   account: Account
   licenses: License[]
   devices: Device[]
+  tenants: Tenant[]
 }
 
 // Stats carries json tags -> snake_case keys.

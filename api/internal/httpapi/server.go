@@ -85,6 +85,12 @@ func (s *Server) Router() http.Handler {
 			r.Get("/{provider}/callback", s.handleOAuthCallback)
 		})
 
+		// --- Internal (gateway → control plane): authorised by the client's
+		//     forwarded sync token, not an account session. Serves a tenant's
+		//     company+branches so the gateway can seed central FK anchors
+		//     (E5/D18). ---
+		r.Get("/internal/tenant-registry", s.handleInternalTenantRegistry)
+
 		// --- Authenticated client ---
 		r.Group(func(r chi.Router) {
 			r.Use(s.requireAuth)
@@ -124,16 +130,14 @@ func (s *Server) Router() http.Handler {
 			r.Post("/devices/{id}/release", s.handleAdminForceRelease)
 			r.Get("/audit", s.handleAdminAudit)
 
-			// Multi-tenant registry (placement & billing levers).
-			r.Post("/shards", s.handleAdminCreateShard)
-			r.Get("/shards", s.handleAdminListShards)
-			r.Post("/tenants/{id}/assign-shard", s.handleAdminAssignShard)
+			// Multi-tenant registry (subscription & billing levers).
+			r.Post("/tenants/{id}/provision-sync", s.handleAdminProvisionSync)
 			r.Post("/branches/{id}/seats", s.handleAdminBranchSeats)
 
-			// Fleet schema rollout (E3): migrate a shard's tenant DBs to the
+			// Fleet schema rollout (E3): migrate sync tenant DBs to the
 			// gateway's version; report mixed-version state.
-			r.Post("/shards/{id}/rollout", s.handleAdminShardRollout)
-			r.Get("/shards/{id}/schema-report", s.handleAdminShardSchemaReport)
+			r.Post("/rollout", s.handleAdminRollout)
+			r.Get("/schema-report", s.handleAdminSchemaReport)
 		})
 	})
 	return r
