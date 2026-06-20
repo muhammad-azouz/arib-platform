@@ -7,6 +7,7 @@ import type {
   Session,
   Stats,
   Tenant,
+  TenantDeletionResult,
 } from './types'
 
 const BASE = import.meta.env.VITE_API_BASE_URL ?? ''
@@ -198,6 +199,11 @@ export const adminApi = {
 
   provisionSync: (tenantId: string) =>
     request<Tenant>(`/v1/admin/tenants/${tenantId}/provision-sync`, body({})),
+
+  deleteTenant: (tenantId: string) =>
+    request<TenantDeletionResult>(`/v1/admin/tenants/${tenantId}`, {
+      method: 'DELETE',
+    }),
 
   audit: () =>
     request<{ audit: AuditLog[] | null }>('/v1/admin/audit').then(

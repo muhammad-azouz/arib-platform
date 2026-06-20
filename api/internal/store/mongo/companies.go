@@ -30,6 +30,16 @@ func (s *Store) CompanyByTenant(ctx context.Context, tenantID string) (*model.Co
 	return &c, err
 }
 
+// DeleteCompanyByTenant removes the tenant's company, if any, returning
+// whether one existed.
+func (s *Store) DeleteCompanyByTenant(ctx context.Context, tenantID string) (bool, error) {
+	res, err := s.Companies.DeleteOne(ctx, bson.D{{Key: "tenant_id", Value: tenantID}})
+	if err != nil {
+		return false, err
+	}
+	return res.DeletedCount > 0, nil
+}
+
 // CompanyByID returns a company by its GUID.
 func (s *Store) CompanyByID(ctx context.Context, id string) (*model.Company, error) {
 	var c model.Company

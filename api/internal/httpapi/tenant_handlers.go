@@ -274,6 +274,18 @@ func (s *Server) handleAdminProvisionSync(w http.ResponseWriter, r *http.Request
 	writeJSON(w, http.StatusOK, t)
 }
 
+// handleAdminDeleteTenant permanently removes a tenant and its company,
+// branches, device seat bindings, and central DB (if sync-provisioned).
+func (s *Server) handleAdminDeleteTenant(w http.ResponseWriter, r *http.Request) {
+	c := claimsFrom(r.Context())
+	res, err := s.tenant.DeleteTenant(r.Context(), c.Email, chi.URLParam(r, "id"))
+	if err != nil {
+		s.writeTenantError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, res)
+}
+
 func (s *Server) handleAdminBranchSeats(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Seats int `json:"seats"`

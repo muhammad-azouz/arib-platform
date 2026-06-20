@@ -91,6 +91,15 @@ export interface Stats {
   licenses_expiring_30d: number
 }
 
+// TenantDeletionResult carries json tags -> snake_case keys.
+export interface TenantDeletionResult {
+  tenant_id: string
+  branches_deleted: number
+  devices_deleted: number
+  company_deleted: boolean
+  db_dropped: boolean
+}
+
 export interface Session {
   access_token: string
   refresh_token: string

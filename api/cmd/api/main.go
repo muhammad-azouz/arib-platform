@@ -94,7 +94,7 @@ func main() {
 		}
 	}
 
-	tenantSvc := tenant.New(store, syncKey, cfg.SyncTokenTTL)
+	tenantSvc := tenant.New(store, syncKey, cfg.SyncTokenTTL, nil)
 	rolloutSvc := rollout.New(store, tenantSvc, nil)
 
 	mailer := mail.New(mail.Config{

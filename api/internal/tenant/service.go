@@ -3,12 +3,15 @@
 package tenant
 
 import (
+	"bytes"
 	"context"
 	"crypto/rsa"
 	"crypto/x509"
+	"encoding/json"
 	"encoding/pem"
 	"errors"
 	"fmt"
+	"net/http"
 	"strings"
 	"time"
 
@@ -37,14 +40,20 @@ type Service struct {
 	store   *mongostore.Store
 	syncKey *rsa.PrivateKey
 	syncTTL time.Duration
+	http    *http.Client
 }
 
 // New builds a tenant Service. syncKey signs sync tokens (RS256 — the gateway
 // holds only the public key, so a compromised gateway cannot mint tokens);
 // syncTTL is their lifetime. The gateway URL for each tenant is resolved at
-// token-issuance time from the shard registry stored in Mongo.
-func New(store *mongostore.Store, syncKey *rsa.PrivateKey, syncTTL time.Duration) *Service {
-	return &Service{store: store, syncKey: syncKey, syncTTL: syncTTL}
+// token-issuance time from the shard registry stored in Mongo. httpClient is
+// used for gateway admin calls (e.g. dropping a tenant's central DB on
+// deletion); a nil value gets a default with a generous timeout.
+func New(store *mongostore.Store, syncKey *rsa.PrivateKey, syncTTL time.Duration, httpClient *http.Client) *Service {
+	if httpClient == nil {
+		httpClient = &http.Client{Timeout: 2 * time.Minute}
+	}
+	return &Service{store: store, syncKey: syncKey, syncTTL: syncTTL, http: httpClient}
 }
 
 // Bundle is everything the app needs at activation/login: the tenant plus its
@@ -567,6 +576,117 @@ func (s *Service) ProvisionSync(ctx context.Context, tenantID string) (*model.Te
 	}
 	t.DBName = dbName
 	return t, nil
+}
+
+// DeletionResult summarizes what DeleteTenant tore down, for the admin response.
+type DeletionResult struct {
+	TenantID        string `json:"tenant_id"`
+	BranchesDeleted int64  `json:"branches_deleted"`
+	DevicesDeleted  int64  `json:"devices_deleted"`
+	CompanyDeleted  bool   `json:"company_deleted"`
+	DBDropped       bool   `json:"db_dropped"`
+}
+
+// DeleteTenant permanently removes a tenant and everything under it: its
+// central DB on the gateway (if sync-provisioned), branch-device seat
+// bindings, branches, company and the tenant record itself. Admin/billing
+// operation; the HTTP layer restricts who may call it.
+//
+// The central DB is dropped first — if the gateway call fails, nothing else
+// is deleted, so a retry after the gateway recovers is safe. A tenant whose
+// shard has since been decommissioned has its DB drop skipped (unreachable
+// via the registry); the operator must clean it up out of band.
+func (s *Service) DeleteTenant(ctx context.Context, actor, tenantID string) (*DeletionResult, error) {
+	t, err := s.store.TenantByID(ctx, tenantID)
+	if err != nil {
+		return nil, err
+	}
+	res := &DeletionResult{TenantID: tenantID}
+
+	if t.DBName != "" && t.ShardID != "" {
+		shard, err := s.store.ShardByID(ctx, t.ShardID)
+		if err != nil && !errors.Is(err, mongostore.ErrNotFound) {
+			return nil, err
+		}
+		if err == nil {
+			if err := s.dropCentralDB(ctx, shard.GatewayURL, t.DBName); err != nil {
+				return nil, fmt.Errorf("drop central db: %w", err)
+			}
+			res.DBDropped = true
+		}
+	}
+
+	devCount, err := s.store.DeleteBranchDevicesByTenant(ctx, tenantID)
+	if err != nil {
+		return nil, err
+	}
+	res.DevicesDeleted = devCount
+
+	branchCount, err := s.store.DeleteBranchesByTenant(ctx, tenantID)
+	if err != nil {
+		return nil, err
+	}
+	res.BranchesDeleted = branchCount
+
+	companyDeleted, err := s.store.DeleteCompanyByTenant(ctx, tenantID)
+	if err != nil {
+		return nil, err
+	}
+	res.CompanyDeleted = companyDeleted
+
+	if err := s.store.DeleteTenant(ctx, tenantID); err != nil {
+		return nil, err
+	}
+
+	_ = s.store.InsertAudit(ctx, &model.AuditLog{
+		ID:     idgen.New("aud"),
+		Actor:  actor,
+		Action: "delete_tenant",
+		Target: tenantID,
+		Meta: map[string]any{
+			"db_name":          t.DBName,
+			"shard_id":         t.ShardID,
+			"db_dropped":       res.DBDropped,
+			"branches_deleted": res.BranchesDeleted,
+			"devices_deleted":  res.DevicesDeleted,
+			"company_deleted":  res.CompanyDeleted,
+		},
+		CreatedAt: time.Now().UTC(),
+	})
+	return res, nil
+}
+
+// dropCentralDB asks the gateway to drop a tenant's central DB (the teardown
+// counterpart of rollout.Service's migrate call).
+func (s *Service) dropCentralDB(ctx context.Context, gateway, dbName string) error {
+	tok, err := s.IssueOpsToken()
+	if err != nil {
+		return fmt.Errorf("mint ops token: %w", err)
+	}
+	payload, _ := json.Marshal(map[string]string{"db_name": dbName})
+	req, err := http.NewRequestWithContext(ctx, http.MethodDelete, gateway+"/admin/db", bytes.NewReader(payload))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Authorization", "Bearer "+tok)
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := s.http.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	var body struct {
+		OK    bool   `json:"ok"`
+		Error string `json:"error"`
+	}
+	_ = json.NewDecoder(resp.Body).Decode(&body)
+	if resp.StatusCode != http.StatusOK || !body.OK {
+		if body.Error != "" {
+			return fmt.Errorf("%s", body.Error)
+		}
+		return fmt.Errorf("gateway status %d", resp.StatusCode)
+	}
+	return nil
 }
 
 // resolveShard returns the tenant's assigned shard, assigning a least-loaded one

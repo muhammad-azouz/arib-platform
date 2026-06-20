@@ -57,6 +57,16 @@ func (s *Store) SetBranchSeats(ctx context.Context, id string, seats int, at tim
 	})
 }
 
+// DeleteBranchesByTenant removes every branch owned by the tenant, returning
+// the count deleted.
+func (s *Store) DeleteBranchesByTenant(ctx context.Context, tenantID string) (int64, error) {
+	res, err := s.Branches.DeleteMany(ctx, bson.D{{Key: "tenant_id", Value: tenantID}})
+	if err != nil {
+		return 0, err
+	}
+	return res.DeletedCount, nil
+}
+
 func (s *Store) updateBranch(ctx context.Context, id string, set bson.D) error {
 	res, err := s.Branches.UpdateByID(ctx, id, bson.D{{Key: "$set", Value: set}})
 	if err != nil {

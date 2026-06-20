@@ -132,6 +132,7 @@ func (s *Server) Router() http.Handler {
 
 			// Multi-tenant registry (subscription & billing levers).
 			r.Post("/tenants/{id}/provision-sync", s.handleAdminProvisionSync)
+			r.Delete("/tenants/{id}", s.handleAdminDeleteTenant)
 			r.Post("/branches/{id}/seats", s.handleAdminBranchSeats)
 
 			// Fleet schema rollout (E3): migrate sync tenant DBs to the

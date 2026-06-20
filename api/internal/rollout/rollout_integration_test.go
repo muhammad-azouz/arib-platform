@@ -42,7 +42,7 @@ func TestE3FleetRollout(t *testing.T) {
 		syncTenant(tC, "arib_e3smokec"))
 
 	// Real signer → real ops tokens the gateway verifies with its public key.
-	signer := tenant.New(nil, parseRSAKey(t, keyPath), time.Hour)
+	signer := tenant.New(nil, parseRSAKey(t, keyPath), time.Hour, nil)
 	svc := New(store, signer, &http.Client{Timeout: 3 * time.Minute})
 
 	// --- Phase 1: clean rollout brings all three DBs to the gateway version ---

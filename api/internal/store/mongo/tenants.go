@@ -91,6 +91,19 @@ func (s *Store) UpdateTenantSchema(ctx context.Context, id string, version int, 
 	})
 }
 
+// DeleteTenant removes a tenant's registry record. Callers must tear down its
+// dependent data (company, branches, devices) and central DB first.
+func (s *Store) DeleteTenant(ctx context.Context, id string) error {
+	res, err := s.Tenants.DeleteOne(ctx, bson.D{{Key: "_id", Value: id}})
+	if err != nil {
+		return err
+	}
+	if res.DeletedCount == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
 func (s *Store) updateTenant(ctx context.Context, id string, set bson.D) error {
 	res, err := s.Tenants.UpdateByID(ctx, id, bson.D{{Key: "$set", Value: set}})
 	if err != nil {

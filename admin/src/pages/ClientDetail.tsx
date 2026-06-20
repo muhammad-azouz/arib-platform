@@ -13,6 +13,7 @@ import {
   Play,
   Plus,
   PowerOff,
+  Trash2,
   Unplug,
 } from 'lucide-react'
 import { toast } from 'sonner'
@@ -29,7 +30,7 @@ import {
   relative,
   tenantStatusTone,
 } from '@/lib/format'
-import type { Device, License, LicenseStatus } from '@/lib/types'
+import type { Device, License, LicenseStatus, Tenant } from '@/lib/types'
 import { PageHeader } from '@/components/PageHeader'
 import { CopyId } from '@/components/CopyId'
 import { ConfirmDialog } from '@/components/ConfirmDialog'
@@ -68,6 +69,7 @@ export function ClientDetail() {
   const [editOpen, setEditOpen] = useState(false)
   const [signLicense, setSignLicense] = useState<License | null>(null)
   const [releaseDevice, setReleaseDevice] = useState<Device | null>(null)
+  const [deleteTenant, setDeleteTenant] = useState<Tenant | null>(null)
 
   const invalidate = () => {
     qc.invalidateQueries({ queryKey: qk.client(id) })
@@ -97,6 +99,19 @@ export function ClientDetail() {
     mutationFn: (tenantId: string) => adminApi.provisionSync(tenantId),
     onSuccess: (t) => {
       toast.success(`Sync provisioned: ${t.DBName}`)
+      invalidate()
+    },
+    onError: (e) => toast.error(errorMessage(e)),
+  })
+
+  const deleteMutation = useMutation({
+    mutationFn: (tenantId: string) => adminApi.deleteTenant(tenantId),
+    onSuccess: (r) => {
+      toast.success(
+        r.db_dropped
+          ? 'Tenant deleted'
+          : 'Tenant deleted (no DB was provisioned)',
+      )
       invalidate()
     },
     onError: (e) => toast.error(errorMessage(e)),
@@ -224,18 +239,29 @@ export function ClientDetail() {
                       )}
                     </TableCell>
                     <TableCell className="text-right">
-                      <Button
-                        variant="outline"
-                        size="sm"
-                        disabled={
-                          provisionMutation.isPending &&
-                          provisionMutation.variables === t.ID
-                        }
-                        onClick={() => provisionMutation.mutate(t.ID)}
-                      >
-                        <DatabaseZap className="size-4" />
-                        {t.DBName ? 'Re-provision sync' : 'Provision sync'}
-                      </Button>
+                      <div className="flex justify-end gap-2">
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          disabled={
+                            provisionMutation.isPending &&
+                            provisionMutation.variables === t.ID
+                          }
+                          onClick={() => provisionMutation.mutate(t.ID)}
+                        >
+                          <DatabaseZap className="size-4" />
+                          {t.DBName ? 'Re-provision sync' : 'Provision sync'}
+                        </Button>
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          className="size-8 text-danger hover:bg-danger/10 hover:text-danger"
+                          title="Delete tenant"
+                          onClick={() => setDeleteTenant(t)}
+                        >
+                          <Trash2 className="size-4" />
+                        </Button>
+                      </div>
                     </TableCell>
                   </TableRow>
                 ))}
@@ -469,6 +495,26 @@ export function ClientDetail() {
         destructive
         onConfirm={async () => {
           if (releaseDevice) await releaseMutation.mutateAsync(releaseDevice.ID)
+        }}
+      />
+      <ConfirmDialog
+        open={!!deleteTenant}
+        onOpenChange={(o) => !o && setDeleteTenant(null)}
+        title="Delete tenant?"
+        description={
+          <>
+            This permanently deletes{' '}
+            <span className="font-mono text-foreground/80">
+              {deleteTenant?.Name}
+            </span>
+            , its company, branches, device seat bindings, and its central
+            sync database. This action cannot be undone.
+          </>
+        }
+        confirmLabel="Delete"
+        destructive
+        onConfirm={async () => {
+          if (deleteTenant) await deleteMutation.mutateAsync(deleteTenant.ID)
         }}
       />
     </div>

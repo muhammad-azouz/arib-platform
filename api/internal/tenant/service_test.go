@@ -52,7 +52,7 @@ func testService(t *testing.T) (*Service, context.Context) {
 	}); err != nil {
 		t.Fatalf("seed shard: %v", err)
 	}
-	return New(store, key, time.Hour), ctx
+	return New(store, key, time.Hour, nil), ctx
 }
 
 const owner = "acc_owner"
@@ -271,5 +271,66 @@ func TestProvisionSyncIdempotent(t *testing.T) {
 	}
 	if second.DBName != first.DBName {
 		t.Fatalf("db name not deterministic: %q != %q", second.DBName, first.DBName)
+	}
+}
+
+func TestDeleteTenant_RemovesAllData(t *testing.T) {
+	s, ctx := testService(t)
+	tenantID, _, branchID := setupTenant(t, s, ctx)
+
+	dev, err := s.BindDevice(ctx, owner, tenantID, branchID, "machine-1", "POS-1", "windows")
+	if err != nil {
+		t.Fatalf("bind device: %v", err)
+	}
+
+	res, err := s.DeleteTenant(ctx, "admin@aribpos.test", tenantID)
+	if err != nil {
+		t.Fatalf("delete tenant: %v", err)
+	}
+	if res.BranchesDeleted != 1 || res.DevicesDeleted != 1 || !res.CompanyDeleted || res.DBDropped {
+		t.Fatalf("unexpected deletion summary: %+v", res)
+	}
+
+	if _, err := s.store.TenantByID(ctx, tenantID); !errors.Is(err, mongostore.ErrNotFound) {
+		t.Fatalf("tenant still present: %v", err)
+	}
+	if _, err := s.store.CompanyByTenant(ctx, tenantID); !errors.Is(err, mongostore.ErrNotFound) {
+		t.Fatalf("company still present: %v", err)
+	}
+	if _, err := s.store.BranchByID(ctx, branchID); !errors.Is(err, mongostore.ErrNotFound) {
+		t.Fatalf("branch still present: %v", err)
+	}
+	if _, err := s.store.BranchDeviceByID(ctx, dev.ID); !errors.Is(err, mongostore.ErrNotFound) {
+		t.Fatalf("branch device still present: %v", err)
+	}
+}
+
+func TestDeleteTenant_NotFound(t *testing.T) {
+	s, ctx := testService(t)
+	if _, err := s.DeleteTenant(ctx, "admin@aribpos.test", "tnt_missing"); !errors.Is(err, mongostore.ErrNotFound) {
+		t.Fatalf("expected ErrNotFound, got %v", err)
+	}
+}
+
+// TestDeleteTenant_GatewayFailureAbortsDeletion verifies the central-DB drop
+// runs first: if the gateway is unreachable, nothing else is deleted, so a
+// retry once the gateway recovers is safe.
+func TestDeleteTenant_GatewayFailureAbortsDeletion(t *testing.T) {
+	s, ctx := testService(t)
+	tenantID, _, _ := setupTenant(t, s, ctx)
+
+	if _, err := s.ProvisionSync(ctx, tenantID); err != nil {
+		t.Fatalf("provision sync: %v", err)
+	}
+
+	if _, err := s.DeleteTenant(ctx, "admin@aribpos.test", tenantID); err == nil {
+		t.Fatalf("expected gateway drop failure, got nil error")
+	}
+
+	if _, err := s.store.TenantByID(ctx, tenantID); err != nil {
+		t.Fatalf("tenant should still exist after aborted deletion: %v", err)
+	}
+	if _, err := s.store.CompanyByTenant(ctx, tenantID); err != nil {
+		t.Fatalf("company should still exist after aborted deletion: %v", err)
 	}
 }

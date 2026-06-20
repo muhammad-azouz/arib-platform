@@ -79,6 +79,16 @@ func (s *Store) ReleaseBranchDevice(ctx context.Context, id string, at time.Time
 	return nil
 }
 
+// DeleteBranchDevicesByTenant removes every seat binding (active or released)
+// owned by the tenant, returning the count deleted.
+func (s *Store) DeleteBranchDevicesByTenant(ctx context.Context, tenantID string) (int64, error) {
+	res, err := s.BranchDevices.DeleteMany(ctx, bson.D{{Key: "tenant_id", Value: tenantID}})
+	if err != nil {
+		return 0, err
+	}
+	return res.DeletedCount, nil
+}
+
 // TouchBranchDeviceSeen updates the heartbeat timestamp.
 func (s *Store) TouchBranchDeviceSeen(ctx context.Context, id string, at time.Time) error {
 	_, err := s.BranchDevices.UpdateByID(ctx, id, bson.D{{Key: "$set", Value: bson.D{
