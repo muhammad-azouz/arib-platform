@@ -1,3 +1,5 @@
+name: arib-platform
+
 services:
   mongodb:
     image: mongo:7
@@ -5,7 +7,7 @@ services:
     environment:
       MONGO_INITDB_ROOT_USERNAME: ${MONGO_USER}
       MONGO_INITDB_ROOT_PASSWORD: ${MONGO_PASS}
-      MONGO_INITDB_DATABASE: arib_license
+      MONGO_INITDB_DATABASE: ${MONGO_DB}
     volumes:
       - mongo_data:/data/db
     networks: [arib-platform]
@@ -21,7 +23,7 @@ services:
     env_file: api/.env
     environment:
       HTTP_ADDR: 0.0.0.0:8080
-      MONGO_URI: mongodb://${MONGO_USER}:${MONGO_PASS}@mongodb:27017/arib_license?authSource=admin
+      MONGO_URI: mongodb://${MONGO_USER}:${MONGO_PASS}@mongodb:27017/${MONGO_DB}?authSource=admin
     volumes:
       - ./api/keys:/app/keys:ro
     ports:
