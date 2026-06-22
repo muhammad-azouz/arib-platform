@@ -132,8 +132,9 @@ func (s *Service) Stats(ctx context.Context) (*Stats, error) {
 	return out, nil
 }
 
-// AssignLicenses creates n paid license seats for a client (by email).
-func (s *Service) AssignLicenses(ctx context.Context, email, features string, expiresAt time.Time, count int, adminEmail, notes string) ([]model.License, error) {
+// AssignLicenses creates n paid license seats for a client (by email),
+// granting the given modules. A nil expiresAt makes the licenses perpetual.
+func (s *Service) AssignLicenses(ctx context.Context, email string, modules []string, expiresAt *time.Time, count int, adminEmail, notes string) ([]model.License, error) {
 	if count < 1 {
 		count = 1
 	}
@@ -143,13 +144,13 @@ func (s *Service) AssignLicenses(ctx context.Context, email, features string, ex
 	}
 	out := make([]model.License, 0, count)
 	for i := 0; i < count; i++ {
-		l, err := s.licenses.CreatePaid(ctx, acc.ID, features, expiresAt, adminEmail, notes)
+		l, err := s.licenses.CreatePaid(ctx, acc.ID, modules, expiresAt, "manual_admin", "", adminEmail, notes)
 		if err != nil {
 			return nil, err
 		}
 		out = append(out, *l)
 	}
-	s.audit(ctx, adminEmail, "assign_licenses", acc.ID, map[string]any{"count": count, "features": features})
+	s.audit(ctx, adminEmail, "assign_licenses", acc.ID, map[string]any{"count": count, "modules": modules})
 	return out, nil
 }
 
@@ -224,7 +225,7 @@ func (s *Service) SignOffline(ctx context.Context, adminEmail, licenseID, machin
 	if err != nil {
 		return "", err
 	}
-	tok, err := s.licenses.SignOffline(machineID, l.Features, l.ExpiresAt, l.ID)
+	tok, err := s.licenses.SignOffline(machineID, l.Modules, l.ExpiresAt, l.ID)
 	if err != nil {
 		return "", err
 	}

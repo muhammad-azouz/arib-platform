@@ -84,6 +84,14 @@ func (s *Store) EnsureIndexes(ctx context.Context) error {
 		{s.Accounts, mongo.IndexModel{Keys: bson.D{{Key: "email", Value: 1}}, Options: options.Index().SetUnique(true)}},
 		{s.Licenses, mongo.IndexModel{Keys: bson.D{{Key: "key", Value: 1}}, Options: options.Index().SetUnique(true)}},
 		{s.Licenses, mongo.IndexModel{Keys: bson.D{{Key: "account_id", Value: 1}}}},
+		// Dedupes Phase-2 billing webhook retries (only set for billing-sourced issuance).
+		{s.Licenses, mongo.IndexModel{
+			Keys: bson.D{{Key: "external_ref", Value: 1}},
+			Options: options.Index().
+				SetName("external_ref_unique").
+				SetUnique(true).
+				SetPartialFilterExpression(bson.D{{Key: "external_ref", Value: bson.D{{Key: "$exists", Value: true}, {Key: "$gt", Value: ""}}}}),
+		}},
 		{s.Devices, mongo.IndexModel{Keys: bson.D{{Key: "account_id", Value: 1}}}},
 		{s.Devices, mongo.IndexModel{Keys: bson.D{{Key: "license_id", Value: 1}}}},
 		{s.Devices, mongo.IndexModel{Keys: bson.D{{Key: "machine_id", Value: 1}}}},

@@ -57,12 +57,18 @@ type License struct {
 	AccountID  string        `bson:"account_id"`
 	Type       LicenseType   `bson:"type"`
 	Features   string        `bson:"features"`
+	Modules    []string      `bson:"modules,omitempty"`
 	Status     LicenseStatus `bson:"status"`
-	ExpiresAt  time.Time     `bson:"expires_at"`
+	ExpiresAt  *time.Time    `bson:"expires_at,omitempty"`  // nil = perpetual
 	AssignedBy string        `bson:"assigned_by,omitempty"` // admin email, empty for trial
 	Notes      string        `bson:"notes,omitempty"`
-	CreatedAt  time.Time     `bson:"created_at"`
-	UpdatedAt  time.Time     `bson:"updated_at"`
+	// Source/ExternalRef are a forward seam for Phase-2 billing issuance
+	// (provider webhooks); Phase 1 only writes signup_trial/manual_admin and
+	// leaves ExternalRef empty.
+	Source      string    `bson:"source,omitempty"`
+	ExternalRef string    `bson:"external_ref,omitempty"`
+	CreatedAt   time.Time `bson:"created_at"`
+	UpdatedAt   time.Time `bson:"updated_at"`
 }
 
 // Device is the binding of a license to one physical machine.

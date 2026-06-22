@@ -315,7 +315,7 @@ export function ClientDetail() {
                         </Badge>
                       </TableCell>
                       <TableCell className="text-sm text-muted-foreground">
-                        {lic.Features}
+                        {lic.Modules?.length ? lic.Modules.join(', ') : lic.Features}
                       </TableCell>
                       <TableCell>
                         <Badge tone={licenseStatusTone(lic.Status)} className="capitalize">
@@ -329,7 +329,7 @@ export function ClientDetail() {
                             : 'text-sm text-muted-foreground'
                         }
                       >
-                        {fmtDate(lic.ExpiresAt)}
+                        {lic.ExpiresAt === null ? 'Perpetual' : fmtDate(lic.ExpiresAt)}
                         {expired && (
                           <span className="ml-1 text-xs">(expired)</span>
                         )}

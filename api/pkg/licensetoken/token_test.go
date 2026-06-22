@@ -60,6 +60,32 @@ func TestTamperFails(t *testing.T) {
 	}
 }
 
+func TestSignVerifyRoundTripModules(t *testing.T) {
+	s := loadSigner(t)
+	now := time.Now().UTC().Truncate(time.Second)
+	in := Payload{
+		MachineID:    "abc123machine",
+		Features:     "v1:sales,accounting",
+		HardExpiry:   now.AddDate(100, 0, 0),
+		RevalidateBy: now,
+		LicenseID:    "lic_0002",
+	}
+	lic, err := s.Sign(in)
+	if err != nil {
+		t.Fatalf("Sign: %v", err)
+	}
+	out, err := s.Verify(lic)
+	if err != nil {
+		t.Fatalf("Verify: %v", err)
+	}
+	if out.Features != in.Features {
+		t.Fatalf("features mismatch: %q != %q", out.Features, in.Features)
+	}
+	if !out.HardExpiry.Equal(in.HardExpiry) || !out.RevalidateBy.Equal(in.RevalidateBy) {
+		t.Fatalf("time mismatch: %v/%v", out.HardExpiry, out.RevalidateBy)
+	}
+}
+
 func TestLegacyThreeFieldDecodes(t *testing.T) {
 	if _, err := decodePayload("machineX|Trial|" + time.Now().UTC().Format(time.RFC3339)); err != nil {
 		t.Fatalf("legacy decode failed: %v", err)

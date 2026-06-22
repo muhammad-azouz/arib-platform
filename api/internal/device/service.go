@@ -47,6 +47,7 @@ type Result struct {
 	License      string    `json:"license"` // signed token for license.lic
 	LicenseID    string    `json:"license_id"`
 	Features     string    `json:"features"`
+	Modules      []string  `json:"modules"`
 	RevalidateBy time.Time `json:"revalidate_by"`
 	HardExpiry   time.Time `json:"hard_expiry"`
 	DeviceID     string    `json:"device_id"`
@@ -201,6 +202,7 @@ func (s *Service) issue(ctx context.Context, l *model.License, d *model.Device, 
 		License:      tok,
 		LicenseID:    l.ID,
 		Features:     l.Features,
+		Modules:      l.Modules,
 		RevalidateBy: reval,
 		HardExpiry:   hard,
 		DeviceID:     d.ID,
@@ -225,7 +227,14 @@ func pickLicense(licenses []model.License, activeSeat map[string]bool) *model.Li
 		if (a.Type == model.LicensePaid) != (b.Type == model.LicensePaid) {
 			return a.Type == model.LicensePaid // paid first
 		}
-		return a.ExpiresAt.After(b.ExpiresAt) // then latest expiry
+		// Then latest expiry; perpetual (nil ExpiresAt) beats any dated one.
+		if (a.ExpiresAt == nil) != (b.ExpiresAt == nil) {
+			return a.ExpiresAt == nil
+		}
+		if a.ExpiresAt == nil {
+			return false
+		}
+		return a.ExpiresAt.After(*b.ExpiresAt)
 	})
 	return candidates[0]
 }

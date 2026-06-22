@@ -86,24 +86,26 @@ func (s *Server) handleAdminStats(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleAdminAssignLicenses(w http.ResponseWriter, r *http.Request) {
 	c := claimsFrom(r.Context())
 	var req struct {
-		Email     string    `json:"email"`
-		Features  string    `json:"features"`
-		ExpiresAt time.Time `json:"expires_at"`
-		Count     int       `json:"count"`
-		Notes     string    `json:"notes"`
+		Email     string     `json:"email"`
+		Modules   []string   `json:"modules"`
+		ExpiresAt *time.Time `json:"expires_at"` // nil/omitted = perpetual
+		Count     int        `json:"count"`
+		Notes     string     `json:"notes"`
 	}
 	if err := decode(r, &req); err != nil {
 		writeErr(w, http.StatusBadRequest, "invalid body")
 		return
 	}
-	if req.Features == "" {
-		req.Features = "Pro"
-	}
-	if req.ExpiresAt.IsZero() {
-		writeErr(w, http.StatusBadRequest, "expires_at is required")
+	modules, err := model.NormalizeModules(req.Modules)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	lics, err := s.admin.AssignLicenses(r.Context(), req.Email, req.Features, req.ExpiresAt, req.Count, c.Email, req.Notes)
+	if len(modules) == 0 {
+		writeErr(w, http.StatusBadRequest, "at least one module is required")
+		return
+	}
+	lics, err := s.admin.AssignLicenses(r.Context(), req.Email, modules, req.ExpiresAt, req.Count, c.Email, req.Notes)
 	if err != nil {
 		writeErr(w, http.StatusBadRequest, err.Error())
 		return

@@ -19,10 +19,11 @@ import {
   DialogTitle,
 } from '@/components/ui/dialog'
 import { Field } from './Field'
+import { MODULES, type ModuleCode } from '@/lib/types'
 
 const schema = z.object({
-  features: z.string().trim().min(1, 'Required'),
-  expires_at: z.string().min(1, 'Pick an expiry date'),
+  modules: z.array(z.string()).min(1, 'Pick at least one module'),
+  expires_at: z.string().optional().default(''), // blank = perpetual
   count: z.coerce.number().int().min(1, 'At least 1').max(50, 'Max 50'),
   notes: z.string().trim().optional().default(''),
 })
@@ -35,11 +36,7 @@ interface Props {
   onOpenChange: (open: boolean) => void
 }
 
-function defaultExpiry(): string {
-  const d = new Date()
-  d.setFullYear(d.getFullYear() + 1)
-  return d.toISOString().slice(0, 10)
-}
+const defaultModules: ModuleCode[] = [...MODULES]
 
 export function AssignLicenseDialog({
   email,
@@ -52,25 +49,37 @@ export function AssignLicenseDialog({
     register,
     handleSubmit,
     reset,
+    watch,
+    setValue,
     formState: { errors },
   } = useForm<Values>({
     resolver: zodResolver(schema),
-    defaultValues: { features: 'Pro', count: 1, expires_at: defaultExpiry(), notes: '' },
+    defaultValues: { modules: defaultModules, count: 1, expires_at: '', notes: '' },
   })
+  const selectedModules = watch('modules') ?? []
 
   useEffect(() => {
     if (open) {
-      reset({ features: 'Pro', count: 1, expires_at: defaultExpiry(), notes: '' })
+      reset({ modules: defaultModules, count: 1, expires_at: '', notes: '' })
     }
   }, [open, reset])
+
+  function toggleModule(m: ModuleCode) {
+    const next = selectedModules.includes(m)
+      ? selectedModules.filter((x) => x !== m)
+      : [...selectedModules, m]
+    setValue('modules', next, { shouldValidate: true })
+  }
 
   const mutation = useMutation({
     mutationFn: (v: Values) =>
       adminApi.assignLicenses({
         email,
-        features: v.features,
-        // Expire at end of the chosen day, in ISO form the Go API parses.
-        expires_at: new Date(`${v.expires_at}T23:59:59Z`).toISOString(),
+        modules: v.modules,
+        // Blank = perpetual; otherwise expire at end of the chosen day.
+        expires_at: v.expires_at
+          ? new Date(`${v.expires_at}T23:59:59Z`).toISOString()
+          : null,
         count: Number(v.count),
         notes: v.notes ?? '',
       }),
@@ -99,21 +108,40 @@ export function AssignLicenseDialog({
           onSubmit={handleSubmit((v) => mutation.mutate(v))}
           className="grid gap-4"
         >
+          <Field label="Modules" error={errors.modules?.message}>
+            <div className="flex flex-wrap gap-3">
+              {MODULES.map((m) => (
+                <label
+                  key={m}
+                  className="flex items-center gap-1.5 text-sm capitalize"
+                >
+                  <input
+                    type="checkbox"
+                    checked={selectedModules.includes(m)}
+                    onChange={() => toggleModule(m)}
+                    className="size-4 rounded border-input"
+                  />
+                  {m}
+                </label>
+              ))}
+            </div>
+          </Field>
           <div className="grid grid-cols-2 gap-3">
-            <Field label="Features" error={errors.features?.message}>
-              <Input {...register('features')} />
-            </Field>
             <Field label="Seats" error={errors.count?.message}>
               <Input type="number" min={1} max={50} {...register('count')} />
             </Field>
+            <Field
+              label="Expires"
+              error={errors.expires_at?.message}
+              hint="Blank = perpetual"
+            >
+              <Input
+                type="date"
+                min={new Date().toISOString().slice(0, 10)}
+                {...register('expires_at')}
+              />
+            </Field>
           </div>
-          <Field label="Expires" error={errors.expires_at?.message}>
-            <Input
-              type="date"
-              min={new Date().toISOString().slice(0, 10)}
-              {...register('expires_at')}
-            />
-          </Field>
           <Field label="Notes">
             <Textarea {...register('notes')} />
           </Field>

@@ -23,14 +23,18 @@ export interface Account {
   UpdatedAt: string
 }
 
+export const MODULES = ['purchase', 'sales', 'customers', 'accounting'] as const
+export type ModuleCode = (typeof MODULES)[number]
+
 export interface License {
   ID: string
   Key: string
   AccountID: string
   Type: LicenseType
   Features: string
+  Modules: string[] | null
   Status: LicenseStatus
-  ExpiresAt: string
+  ExpiresAt: string | null // null = perpetual
   AssignedBy?: string
   Notes?: string
   CreatedAt: string

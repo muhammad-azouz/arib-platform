@@ -78,7 +78,7 @@ func (s *Server) writeDeviceError(w http.ResponseWriter, err error) {
 	case errors.Is(err, device.ErrNotBound):
 		writeErr(w, http.StatusNotFound, "this device is not bound to a license")
 	case errors.Is(err, device.ErrLicenseInactive):
-		writeErr(w, http.StatusForbidden, "license is suspended or expired")
+		writeJSON(w, http.StatusForbidden, map[string]string{"code": "license_inactive", "error": "license is suspended or expired"})
 	case errors.Is(err, device.ErrCooldown):
 		writeErr(w, http.StatusTooManyRequests, "device released too recently; try again later")
 	case errors.Is(err, device.ErrReleaseLimit):

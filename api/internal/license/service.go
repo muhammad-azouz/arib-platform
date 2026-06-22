@@ -3,6 +3,7 @@ package license
 
 import (
 	"context"
+	"strings"
 	"time"
 
 	"github.com/aribpos/license-api/internal/idgen"
@@ -10,6 +11,11 @@ import (
 	mongostore "github.com/aribpos/license-api/internal/store/mongo"
 	"github.com/aribpos/license-api/pkg/licensetoken"
 )
+
+// perpetualHorizon is the far-future hard-expiry stamped on perpetual paid
+// licenses, so an offline machine is never blocked by inability to reach the
+// server; suspension only takes effect once a revalidation succeeds.
+const perpetualHorizon = 100 * 365 * 24 * time.Hour
 
 // Clocks configures token validity windows.
 type Clocks struct {
@@ -30,17 +36,21 @@ func New(store *mongostore.Store, signer *licensetoken.Signer, clocks Clocks) *S
 	return &Service{store: store, signer: signer, clocks: clocks}
 }
 
-// CreateTrial provisions the one-per-account 7-day trial license created at signup.
+// CreateTrial provisions the one-per-account time-limited trial license
+// created at signup, granting every module.
 func (s *Service) CreateTrial(ctx context.Context, accountID string) (*model.License, error) {
 	now := time.Now().UTC()
+	expiresAt := now.Add(s.clocks.TrialDuration)
 	l := &model.License{
 		ID:        idgen.New("lic"),
 		Key:       idgen.LicenseKey(),
 		AccountID: accountID,
 		Type:      model.LicenseTrial,
 		Features:  "Trial",
+		Modules:   model.AllModules,
 		Status:    model.LicenseActive,
-		ExpiresAt: now.Add(s.clocks.TrialDuration),
+		ExpiresAt: &expiresAt,
+		Source:    "signup_trial",
 		CreatedAt: now,
 		UpdatedAt: now,
 	}
@@ -50,21 +60,29 @@ func (s *Service) CreateTrial(ctx context.Context, accountID string) (*model.Lic
 	return l, nil
 }
 
-// CreatePaid provisions an admin-assigned license for an account.
-func (s *Service) CreatePaid(ctx context.Context, accountID, features string, expiresAt time.Time, assignedBy, notes string) (*model.License, error) {
+// CreatePaid provisions a license for an account granting the given modules.
+// A nil expiresAt makes the license perpetual (no expiry).
+func (s *Service) CreatePaid(ctx context.Context, accountID string, modules []string, expiresAt *time.Time, source, externalRef, assignedBy, notes string) (*model.License, error) {
 	now := time.Now().UTC()
+	var exp *time.Time
+	if expiresAt != nil {
+		v := expiresAt.UTC()
+		exp = &v
+	}
 	l := &model.License{
-		ID:         idgen.New("lic"),
-		Key:        idgen.LicenseKey(),
-		AccountID:  accountID,
-		Type:       model.LicensePaid,
-		Features:   features,
-		Status:     model.LicenseActive,
-		ExpiresAt:  expiresAt.UTC(),
-		AssignedBy: assignedBy,
-		Notes:      notes,
-		CreatedAt:  now,
-		UpdatedAt:  now,
+		ID:          idgen.New("lic"),
+		Key:         idgen.LicenseKey(),
+		AccountID:   accountID,
+		Type:        model.LicensePaid,
+		Modules:     modules,
+		Status:      model.LicenseActive,
+		ExpiresAt:   exp,
+		Source:      source,
+		ExternalRef: externalRef,
+		AssignedBy:  assignedBy,
+		Notes:       notes,
+		CreatedAt:   now,
+		UpdatedAt:   now,
 	}
 	if err := s.store.InsertLicense(ctx, l); err != nil {
 		return nil, err
@@ -72,15 +90,23 @@ func (s *Service) CreatePaid(ctx context.Context, accountID, features string, ex
 	return l, nil
 }
 
-// TokenFor mints a signed token binding a license to a machine, with the
-// revalidate/hard-expiry clocks clamped to the license's own expiry.
+// TokenFor mints a signed token binding a license to a machine. Perpetual
+// licenses (nil ExpiresAt) get a far-future hard expiry and a hard-expiry
+// always-due revalidation clock; dated licenses (trials) clamp both clocks to
+// the license's own expiry.
 func (s *Service) TokenFor(l *model.License, machineID string) (string, time.Time, time.Time, error) {
 	now := time.Now().UTC()
-	reval := earliest(now.Add(s.clocks.RevalidateAfter), l.ExpiresAt)
-	hard := earliest(now.Add(s.clocks.HardExpireAfter), l.ExpiresAt)
+	var reval, hard time.Time
+	if l.ExpiresAt == nil {
+		hard = now.Add(perpetualHorizon)
+		reval = now
+	} else {
+		reval = earliest(now.Add(s.clocks.RevalidateAfter), *l.ExpiresAt)
+		hard = *l.ExpiresAt
+	}
 	tok, err := s.signer.Sign(licensetoken.Payload{
 		MachineID:    machineID,
-		Features:     l.Features,
+		Features:     encodeModules(l.Modules),
 		HardExpiry:   hard,
 		RevalidateBy: reval,
 		LicenseID:    l.ID,
@@ -89,20 +115,40 @@ func (s *Service) TokenFor(l *model.License, machineID string) (string, time.Tim
 }
 
 // SignOffline mints a fully-offline token (no revalidation expected) for the
-// hidden manual-entry fallback. Both clocks are set to expiry.
-func (s *Service) SignOffline(machineID, features string, expiry time.Time, licenseID string) (string, error) {
+// hidden manual-entry fallback. A nil expiry mints a perpetual sentinel; both
+// clocks are otherwise set to expiry.
+func (s *Service) SignOffline(machineID string, modules []string, expiry *time.Time, licenseID string) (string, error) {
+	now := time.Now().UTC()
+	hard, reval := now.Add(perpetualHorizon), now
+	if expiry != nil {
+		hard, reval = expiry.UTC(), expiry.UTC()
+	}
 	return s.signer.Sign(licensetoken.Payload{
 		MachineID:    machineID,
-		Features:     features,
-		HardExpiry:   expiry.UTC(),
-		RevalidateBy: expiry.UTC(),
+		Features:     encodeModules(modules),
+		HardExpiry:   hard,
+		RevalidateBy: reval,
 		LicenseID:    licenseID,
 	})
 }
 
-// Usable reports whether a license can currently back a binding.
+// encodeModules renders the versioned module encoding carried in the token's
+// features field. The "v1:" prefix discriminates this format from legacy
+// free-text Features labels and lets the encoding extend later without
+// re-breaking the client. Empty Modules (legacy/in-flight rows) fall back to
+// AllModules — never the raw legacy label, which a module-aware client can't
+// parse and would grant nothing.
+func encodeModules(modules []string) string {
+	if len(modules) == 0 {
+		modules = model.AllModules
+	}
+	return "v1:" + strings.Join(modules, ",")
+}
+
+// Usable reports whether a license can currently back a binding. A nil
+// ExpiresAt (perpetual) never expires.
 func Usable(l *model.License) bool {
-	return l.Status == model.LicenseActive && time.Now().UTC().Before(l.ExpiresAt)
+	return l.Status == model.LicenseActive && (l.ExpiresAt == nil || time.Now().UTC().Before(*l.ExpiresAt))
 }
 
 func earliest(a, b time.Time) time.Time {

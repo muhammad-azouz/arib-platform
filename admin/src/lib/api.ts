@@ -173,8 +173,8 @@ export const adminApi = {
 
   assignLicenses: (input: {
     email: string
-    features: string
-    expires_at: string
+    modules: string[]
+    expires_at: string | null // null = perpetual
     count: number
     notes: string
   }) =>
