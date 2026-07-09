@@ -113,7 +113,7 @@ func main() {
 		OTPTTL: cfg.OTPTTL, OTPMaxAttempts: cfg.OTPMaxAttempts,
 	})
 
-	srv := httpapi.New(authSvc, deviceSvc, adminSvc, tenantSvc, rolloutSvc, cfg.DashboardOrigins, log)
+	srv := httpapi.New(authSvc, deviceSvc, adminSvc, tenantSvc, rolloutSvc, cfg.DashboardOrigins, log, cfg.UpdatesDir)
 
 	httpServer := &http.Server{
 		Addr:              cfg.HTTPAddr,

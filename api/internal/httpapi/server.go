@@ -28,11 +28,13 @@ type Server struct {
 
 	corsOrigins []string
 	otpLimiter  *keyedLimiter
+	updatesDir  string
 }
 
 // New builds an HTTP Server. corsOrigins are the browser origins (admin
-// dashboard) allowed to call the API; nil disables CORS.
-func New(authSvc *auth.Service, deviceSvc *device.Service, adminSvc *admin.Service, tenantSvc *tenant.Service, rolloutSvc *rollout.Service, corsOrigins []string, log *slog.Logger) *Server {
+// dashboard) allowed to call the API; nil disables CORS. updatesDir is the
+// root of the Velopack update feed served at /updates/*; empty disables it.
+func New(authSvc *auth.Service, deviceSvc *device.Service, adminSvc *admin.Service, tenantSvc *tenant.Service, rolloutSvc *rollout.Service, corsOrigins []string, log *slog.Logger, updatesDir string) *Server {
 	return &Server{
 		auth:        authSvc,
 		device:      deviceSvc,
@@ -42,6 +44,7 @@ func New(authSvc *auth.Service, deviceSvc *device.Service, adminSvc *admin.Servi
 		log:         log,
 		corsOrigins: corsOrigins,
 		otpLimiter:  newKeyedLimiter(rateEvery(time.Minute), 3),
+		updatesDir:  updatesDir,
 	}
 }
 
@@ -60,10 +63,19 @@ func (s *Server) Router() http.Handler {
 			MaxAge:           300,
 		}))
 	}
-	r.Use(middleware.Timeout(30 * time.Second))
+	// Velopack update feed. Outside the API timeout group: package downloads
+	// are ~75 MB and must not be cut off after 30s on slow POS connections.
+	r.Group(func(r chi.Router) {
+		r.Get("/updates/*", s.handleUpdates)
+		r.Head("/updates/*", s.handleUpdates)
+	})
 
-	r.Get("/healthz", func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) })
-	r.Get("/v1/sync-public-key", func(w http.ResponseWriter, _ *http.Request) {
+	// Everything below (the API proper) keeps the 30s timeout; chi forbids
+	// r.Use after routes are registered, so it's applied per-registration.
+	apiTimeout := middleware.Timeout(30 * time.Second)
+
+	r.With(apiTimeout).Get("/healthz", func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) })
+	r.With(apiTimeout).Get("/v1/sync-public-key", func(w http.ResponseWriter, _ *http.Request) {
 		pemStr, err := s.tenant.SyncPublicKeyPEM()
 		if err != nil {
 			writeErr(w, http.StatusInternalServerError, "key unavailable")
@@ -73,7 +85,7 @@ func (s *Server) Router() http.Handler {
 		_, _ = w.Write([]byte(pemStr))
 	})
 
-	r.Route("/v1", func(r chi.Router) {
+	r.With(apiTimeout).Route("/v1", func(r chi.Router) {
 		// --- Public auth ---
 		r.Route("/auth", func(r chi.Router) {
 			r.With(s.rateLimitOTP).Post("/email/start", s.handleEmailStart)

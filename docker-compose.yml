@@ -24,8 +24,11 @@ services:
     environment:
       HTTP_ADDR: 0.0.0.0:8080
       MONGO_URI: mongodb://${MONGO_USER}:${MONGO_PASS}@mongodb:27017/${MONGO_DB}?authSource=admin
+      UPDATES_DIR: /app/updates
     volumes:
       - ./api/keys:/app/keys:ro
+      # Velopack update feed ({channel}/{rid}/...), populated by desktop/ops/release.sh
+      - /srv/arib/updates:/app/updates:ro
     ports:
       - "127.0.0.1:8080:8080"
     networks: [arib-platform]

@@ -55,6 +55,15 @@ type Config struct {
 	// DashboardOrigins are the browser origins allowed to call the API via CORS
 	// (the admin dashboard). Bearer-token auth, so credentials are not used.
 	DashboardOrigins []string
+
+	// UpdatesDir is the root of the Velopack update feed served at /updates/*
+	// (layout: {channel}/{rid}/... — see tasks/spec-app-updates.md in the
+	// desktop repo).
+	UpdatesDir string
+	// UpdatesAuth enables the entitlement gate on the feed (token-filtered
+	// manifest, gated packages). Default off until the gate ships; it will
+	// then default to on with UPDATES_AUTH=off as the dev escape hatch.
+	UpdatesAuth bool
 }
 
 // Load reads configuration from the process environment, applying defaults and
@@ -85,6 +94,8 @@ func Load() (*Config, error) {
 		FacebookClientSecret: os.Getenv("FACEBOOK_CLIENT_SECRET"),
 		AdminEmails:          splitCSV(os.Getenv("ADMIN_EMAILS")),
 		DashboardOrigins:     splitCSV(os.Getenv("DASHBOARD_ORIGINS")),
+		UpdatesDir:           env("UPDATES_DIR", "/app/updates"),
+		UpdatesAuth:          env("UPDATES_AUTH", "off") != "off",
 	}
 
 	secret := os.Getenv("JWT_SECRET")
