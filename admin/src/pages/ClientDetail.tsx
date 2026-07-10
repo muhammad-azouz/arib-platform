@@ -4,6 +4,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
   ArrowLeft,
   Building2,
+  CalendarClock,
   DatabaseZap,
   FileSignature,
   HardDrive,
@@ -35,6 +36,7 @@ import { PageHeader } from '@/components/PageHeader'
 import { CopyId } from '@/components/CopyId'
 import { ConfirmDialog } from '@/components/ConfirmDialog'
 import { AssignLicenseDialog } from '@/components/dialogs/AssignLicenseDialog'
+import { ExtendUpdatesDialog } from '@/components/dialogs/ExtendUpdatesDialog'
 import { SignOfflineDialog } from '@/components/dialogs/SignOfflineDialog'
 import { EditClientDialog } from '@/components/dialogs/EditClientDialog'
 import { Button } from '@/components/ui/button'
@@ -68,6 +70,7 @@ export function ClientDetail() {
   const [assignOpen, setAssignOpen] = useState(false)
   const [editOpen, setEditOpen] = useState(false)
   const [signLicense, setSignLicense] = useState<License | null>(null)
+  const [updatesLicense, setUpdatesLicense] = useState<License | null>(null)
   const [releaseDevice, setReleaseDevice] = useState<Device | null>(null)
   const [deleteTenant, setDeleteTenant] = useState<Tenant | null>(null)
 
@@ -298,6 +301,7 @@ export function ClientDetail() {
                   <TableHead>Features</TableHead>
                   <TableHead>Status</TableHead>
                   <TableHead>Expires</TableHead>
+                  <TableHead>Updates until</TableHead>
                   <TableHead className="w-8" />
                 </TableRow>
               </TableHeader>
@@ -334,6 +338,9 @@ export function ClientDetail() {
                           <span className="ml-1 text-xs">(expired)</span>
                         )}
                       </TableCell>
+                      <TableCell className="text-sm text-muted-foreground">
+                        {lic.UpdatesUntil ? fmtDate(lic.UpdatesUntil) : 'Unlimited'}
+                      </TableCell>
                       <TableCell>
                         <DropdownMenu>
                           <DropdownMenuTrigger asChild>
@@ -368,6 +375,12 @@ export function ClientDetail() {
                                 Activate
                               </DropdownMenuItem>
                             )}
+                            <DropdownMenuItem
+                              onSelect={() => setUpdatesLicense(lic)}
+                            >
+                              <CalendarClock className="size-4" />
+                              Updates window…
+                            </DropdownMenuItem>
                             <DropdownMenuItem
                               onSelect={() => setSignLicense(lic)}
                             >
@@ -470,6 +483,15 @@ export function ClientDetail() {
         open={assignOpen}
         onOpenChange={setAssignOpen}
       />
+      {updatesLicense && (
+        <ExtendUpdatesDialog
+          key={updatesLicense.ID}
+          license={updatesLicense}
+          accountId={account.ID}
+          open={!!updatesLicense}
+          onOpenChange={(o) => !o && setUpdatesLicense(null)}
+        />
+      )}
       {signLicense && (
         <SignOfflineDialog
           key={signLicense.ID}

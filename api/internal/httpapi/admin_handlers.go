@@ -159,6 +159,30 @@ func (s *Server) handleAdminSignOffline(w http.ResponseWriter, r *http.Request) 
 	writeJSON(w, http.StatusOK, map[string]string{"license": token})
 }
 
+// handleAdminExtendUpdates moves a license's update-entitlement window (the
+// renewal lever — desktop/tasks/spec-app-updates.md). null/omitted clears it
+// to unlimited (grandfathered). Returns the updated license.
+func (s *Server) handleAdminExtendUpdates(w http.ResponseWriter, r *http.Request) {
+	c := claimsFrom(r.Context())
+	var req struct {
+		UpdatesUntil *time.Time `json:"updates_until"`
+	}
+	if err := decode(r, &req); err != nil {
+		writeErr(w, http.StatusBadRequest, "invalid body")
+		return
+	}
+	l, err := s.admin.ExtendUpdates(r.Context(), c.Email, chi.URLParam(r, "id"), req.UpdatesUntil)
+	if errors.Is(err, mongostore.ErrNotFound) {
+		writeErr(w, http.StatusNotFound, "license not found")
+		return
+	}
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, "update failed")
+		return
+	}
+	writeJSON(w, http.StatusOK, l)
+}
+
 func (s *Server) handleAdminForceRelease(w http.ResponseWriter, r *http.Request) {
 	c := claimsFrom(r.Context())
 	err := s.admin.ForceRelease(r.Context(), c.Email, chi.URLParam(r, "id"))

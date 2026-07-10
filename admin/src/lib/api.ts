@@ -188,6 +188,12 @@ export const adminApi = {
       body({ status }),
     ),
 
+  extendUpdates: (id: string, updatesUntil: string | null) =>
+    request<License>(
+      `/v1/admin/licenses/${id}/extend-updates`,
+      body({ updates_until: updatesUntil }),
+    ),
+
   signOffline: (id: string, machineId: string) =>
     request<{ license: string }>(
       `/v1/admin/licenses/${id}/sign-offline`,

@@ -163,6 +163,21 @@ func (s *Service) SetLicenseStatus(ctx context.Context, adminEmail, licenseID st
 	return nil
 }
 
+// ExtendUpdates moves a license's update-entitlement window (the renewal
+// lever — releases published up to the new date become installable). A nil
+// until clears the window: unlimited updates (grandfathered).
+func (s *Service) ExtendUpdates(ctx context.Context, adminEmail, licenseID string, until *time.Time) (*model.License, error) {
+	if err := s.store.SetLicenseUpdatesUntil(ctx, licenseID, until); err != nil {
+		return nil, err
+	}
+	l, err := s.store.LicenseByID(ctx, licenseID)
+	if err != nil {
+		return nil, err
+	}
+	s.audit(ctx, adminEmail, "extend_updates", licenseID, map[string]any{"updates_until": until})
+	return l, nil
+}
+
 // ForceRelease releases any device binding regardless of cooldown.
 func (s *Service) ForceRelease(ctx context.Context, adminEmail, deviceID string) error {
 	dev, err := s.store.DeviceByID(ctx, deviceID)

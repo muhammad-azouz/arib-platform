@@ -147,6 +147,7 @@ func (s *Server) Router() http.Handler {
 			r.Post("/licenses", s.handleAdminAssignLicenses)
 			r.Post("/licenses/{id}/status", s.handleAdminLicenseStatus)
 			r.Post("/licenses/{id}/sign-offline", s.handleAdminSignOffline)
+			r.Post("/licenses/{id}/extend-updates", s.handleAdminExtendUpdates)
 			r.Post("/devices/{id}/release", s.handleAdminForceRelease)
 			r.Get("/audit", s.handleAdminAudit)
 

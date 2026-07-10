@@ -47,3 +47,19 @@ func (s *Store) SetLicenseStatus(ctx context.Context, id string, status model.Li
 	}}})
 	return err
 }
+
+// SetLicenseUpdatesUntil moves a license's update-entitlement window
+// (renewal). nil clears it to unlimited (grandfathered).
+func (s *Store) SetLicenseUpdatesUntil(ctx context.Context, id string, until *time.Time) error {
+	res, err := s.Licenses.UpdateByID(ctx, id, bson.D{{Key: "$set", Value: bson.D{
+		{Key: "updates_until", Value: until},
+		{Key: "updated_at", Value: time.Now().UTC()},
+	}}})
+	if err != nil {
+		return err
+	}
+	if res.MatchedCount == 0 {
+		return ErrNotFound
+	}
+	return nil
+}

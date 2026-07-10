@@ -35,6 +35,7 @@ export interface License {
   Modules: string[] | null
   Status: LicenseStatus
   ExpiresAt: string | null // null = perpetual
+  UpdatesUntil?: string | null // null = unlimited updates (grandfathered)
   AssignedBy?: string
   Notes?: string
   CreatedAt: string
