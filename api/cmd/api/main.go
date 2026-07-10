@@ -65,6 +65,7 @@ func main() {
 		RevalidateAfter: cfg.RevalidateAfter,
 		HardExpireAfter: cfg.HardExpireAfter,
 		TrialDuration:   cfg.TrialDuration,
+		UpdatesWindow:   cfg.UpdatesWindow,
 	})
 	deviceSvc := device.New(store, licenseSvc, device.CooldownPolicy{
 		MinInterval: cfg.ReleaseCooldown,

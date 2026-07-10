@@ -55,7 +55,9 @@ type Result struct {
 
 // Bind attaches a machine to one of the account's free license seats (or
 // re-issues a token if the machine is already bound), returning a signed token.
-func (s *Service) Bind(ctx context.Context, accountID, machineID, machineName, os string) (*Result, error) {
+// appVersion is the client's self-reported app version; non-empty means the
+// client can parse the 6-field token (update entitlement) — see TokenFor.
+func (s *Service) Bind(ctx context.Context, accountID, machineID, machineName, os, appVersion string) (*Result, error) {
 	if machineID == "" {
 		return nil, errors.New("machine id required")
 	}
@@ -79,7 +81,7 @@ func (s *Service) Bind(ctx context.Context, accountID, machineID, machineName, o
 		if d.Status == model.DeviceActive && d.MachineID == machineID {
 			l := byID[d.LicenseID]
 			if l != nil && license.Usable(l) {
-				return s.issue(ctx, l, d, machineID)
+				return s.issue(ctx, l, d, machineID, appVersion != "")
 			}
 		}
 	}
@@ -123,19 +125,19 @@ func (s *Service) Bind(ctx context.Context, accountID, machineID, machineName, o
 	if err := s.store.InsertDevice(ctx, dev); err != nil {
 		if mongostore.IsDuplicateKey(err) {
 			// Someone bound this seat concurrently; retry the whole flow.
-			return s.Bind(ctx, accountID, machineID, machineName, os)
+			return s.Bind(ctx, accountID, machineID, machineName, os, appVersion)
 		}
 		return nil, err
 	}
 	if pick.Type == model.LicenseTrial {
 		_ = s.store.RecordTrial(ctx, &model.TrialLedger{MachineID: machineID, AccountID: accountID, UsedAt: now})
 	}
-	return s.issue(ctx, pick, dev, machineID)
+	return s.issue(ctx, pick, dev, machineID, appVersion != "")
 }
 
 // Validate re-checks an active binding and returns a fresh token (resetting the
 // revalidate/hard-expiry clocks).
-func (s *Service) Validate(ctx context.Context, accountID, machineID string) (*Result, error) {
+func (s *Service) Validate(ctx context.Context, accountID, machineID, appVersion string) (*Result, error) {
 	devices, err := s.store.DevicesByAccount(ctx, accountID)
 	if err != nil {
 		return nil, err
@@ -157,7 +159,7 @@ func (s *Service) Validate(ctx context.Context, accountID, machineID string) (*R
 	if !license.Usable(l) {
 		return nil, ErrLicenseInactive
 	}
-	return s.issue(ctx, l, dev, machineID)
+	return s.issue(ctx, l, dev, machineID, appVersion != "")
 }
 
 // Release frees a seat. selfService enforces the abuse cooldown.
@@ -192,8 +194,8 @@ func (s *Service) Release(ctx context.Context, accountID, deviceID string, selfS
 	return s.store.ReleaseDevice(ctx, dev.ID, now, selfService)
 }
 
-func (s *Service) issue(ctx context.Context, l *model.License, d *model.Device, machineID string) (*Result, error) {
-	tok, reval, hard, err := s.licenses.TokenFor(l, machineID)
+func (s *Service) issue(ctx context.Context, l *model.License, d *model.Device, machineID string, includeUpdatesUntil bool) (*Result, error) {
+	tok, reval, hard, err := s.licenses.TokenFor(l, machineID, includeUpdatesUntil)
 	if err != nil {
 		return nil, err
 	}

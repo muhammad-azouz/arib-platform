@@ -1,7 +1,9 @@
 package licensetoken
 
 import (
+	"encoding/base64"
 	"os"
+	"strings"
 	"testing"
 	"time"
 )
@@ -89,5 +91,57 @@ func TestSignVerifyRoundTripModules(t *testing.T) {
 func TestLegacyThreeFieldDecodes(t *testing.T) {
 	if _, err := decodePayload("machineX|Trial|" + time.Now().UTC().Format(time.RFC3339)); err != nil {
 		t.Fatalf("legacy decode failed: %v", err)
+	}
+}
+
+func TestSignVerifyRoundTripUpdatesUntil(t *testing.T) {
+	s := loadSigner(t)
+	until := time.Date(2026, 12, 1, 0, 0, 0, 0, time.UTC)
+	in := Payload{
+		MachineID:    "machine-6f",
+		Features:     "v1:sales",
+		HardExpiry:   time.Date(2027, 1, 1, 0, 0, 0, 0, time.UTC),
+		RevalidateBy: time.Date(2026, 11, 1, 0, 0, 0, 0, time.UTC),
+		LicenseID:    "lic_6f",
+		UpdatesUntil: &until,
+	}
+	tok, err := s.Sign(in)
+	if err != nil {
+		t.Fatalf("Sign: %v", err)
+	}
+	// The envelope must literally contain 6 pipe-delimited fields.
+	rawB64 := strings.Split(tok, ".")[0]
+	raw, err := base64.StdEncoding.DecodeString(rawB64)
+	if err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if got := len(strings.Split(string(raw), "|")); got != 6 {
+		t.Fatalf("expected 6 payload fields, got %d (%s)", got, raw)
+	}
+	out, err := s.Verify(tok)
+	if err != nil {
+		t.Fatalf("Verify: %v", err)
+	}
+	if out.UpdatesUntil == nil || !out.UpdatesUntil.Equal(until) {
+		t.Fatalf("UpdatesUntil mismatch: %v", out.UpdatesUntil)
+	}
+
+	// Omitting UpdatesUntil must produce the legacy 5-field payload.
+	in.UpdatesUntil = nil
+	tok, err = s.Sign(in)
+	if err != nil {
+		t.Fatalf("Sign: %v", err)
+	}
+	rawB64 = strings.Split(tok, ".")[0]
+	raw, _ = base64.StdEncoding.DecodeString(rawB64)
+	if got := len(strings.Split(string(raw), "|")); got != 5 {
+		t.Fatalf("expected 5 payload fields, got %d (%s)", got, raw)
+	}
+	out, err = s.Verify(tok)
+	if err != nil {
+		t.Fatalf("Verify: %v", err)
+	}
+	if out.UpdatesUntil != nil {
+		t.Fatalf("expected nil UpdatesUntil, got %v", out.UpdatesUntil)
 	}
 }

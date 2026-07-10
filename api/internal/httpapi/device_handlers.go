@@ -23,12 +23,15 @@ func (s *Server) handleBind(w http.ResponseWriter, r *http.Request) {
 		MachineID   string `json:"machine_id"`
 		MachineName string `json:"machine_name"`
 		OS          string `json:"os"`
+		// Optional; sending it marks the client as 6-field-token capable
+		// (update entitlement — desktop/tasks/spec-app-updates.md).
+		AppVersion string `json:"app_version"`
 	}
 	if err := decode(r, &req); err != nil {
 		writeErr(w, http.StatusBadRequest, "invalid body")
 		return
 	}
-	res, err := s.device.Bind(r.Context(), c.Subject, req.MachineID, req.MachineName, req.OS)
+	res, err := s.device.Bind(r.Context(), c.Subject, req.MachineID, req.MachineName, req.OS, req.AppVersion)
 	if err != nil {
 		s.writeDeviceError(w, err)
 		return
@@ -40,12 +43,14 @@ func (s *Server) handleValidate(w http.ResponseWriter, r *http.Request) {
 	c := claimsFrom(r.Context())
 	var req struct {
 		MachineID string `json:"machine_id"`
+		// Optional; see handleBind.
+		AppVersion string `json:"app_version"`
 	}
 	if err := decode(r, &req); err != nil {
 		writeErr(w, http.StatusBadRequest, "invalid body")
 		return
 	}
-	res, err := s.device.Validate(r.Context(), c.Subject, req.MachineID)
+	res, err := s.device.Validate(r.Context(), c.Subject, req.MachineID, req.AppVersion)
 	if err != nil {
 		s.writeDeviceError(w, err)
 		return

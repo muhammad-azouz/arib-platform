@@ -34,6 +34,9 @@ type Config struct {
 	RevalidateAfter    time.Duration
 	HardExpireAfter    time.Duration
 	TrialDuration      time.Duration
+	// UpdatesWindow is the update-entitlement period granted to new paid
+	// licenses (UpdatesUntil = issuance + window). Trials use TrialDuration.
+	UpdatesWindow time.Duration
 	ReleaseCooldown    time.Duration
 	ReleaseMaxPerMonth int
 
@@ -79,6 +82,8 @@ func Load() (*Config, error) {
 		RevalidateAfter:      dur("REVALIDATE_AFTER", 14*24*time.Hour),
 		HardExpireAfter:      dur("HARD_EXPIRE_AFTER", 28*24*time.Hour),
 		TrialDuration:        dur("TRIAL_DURATION", 7*24*time.Hour),
+		UpdatesWindow:        dur("UPDATES_WINDOW", 150*24*time.Hour), // ≈5 months
+
 		ReleaseCooldown:      dur("RELEASE_COOLDOWN", 72*time.Hour),
 		ReleaseMaxPerMonth:   integer("RELEASE_MAX_PER_MONTH", 3),
 		SMTPHost:             os.Getenv("SMTP_HOST"),

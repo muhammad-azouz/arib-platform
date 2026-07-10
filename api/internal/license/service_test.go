@@ -26,7 +26,7 @@ func loadSigner(t *testing.T) *licensetoken.Signer {
 func TestTokenForPerpetualPaid(t *testing.T) {
 	svc := &Service{signer: loadSigner(t), clocks: Clocks{RevalidateAfter: 14 * 24 * time.Hour, HardExpireAfter: 28 * 24 * time.Hour}}
 	l := &model.License{ID: "lic_1", Modules: []string{"sales", "accounting"}, ExpiresAt: nil}
-	tok, reval, hard, err := svc.TokenFor(l, "machine-1")
+	tok, reval, hard, err := svc.TokenFor(l, "machine-1", false)
 	if err != nil {
 		t.Fatalf("TokenFor: %v", err)
 	}
@@ -46,7 +46,7 @@ func TestTokenForTrial(t *testing.T) {
 	svc := &Service{signer: loadSigner(t), clocks: Clocks{RevalidateAfter: 14 * 24 * time.Hour, TrialDuration: 7 * 24 * time.Hour}}
 	end := time.Now().UTC().Add(7 * 24 * time.Hour)
 	l := &model.License{ID: "lic_2", Modules: model.AllModules, ExpiresAt: &end}
-	_, reval, hard, err := svc.TokenFor(l, "machine-1")
+	_, reval, hard, err := svc.TokenFor(l, "machine-1", false)
 	if err != nil {
 		t.Fatalf("TokenFor: %v", err)
 	}
@@ -100,5 +100,52 @@ func TestNormalizeModulesDedupesAndLowercases(t *testing.T) {
 	}
 	if len(got) != 2 || got[0] != "sales" || got[1] != "accounting" {
 		t.Fatalf("unexpected result: %v", got)
+	}
+}
+
+func TestTokenForUpdatesUntilGating(t *testing.T) {
+	signer := loadSigner(t)
+	svc := &Service{signer: signer, clocks: Clocks{RevalidateAfter: 14 * 24 * time.Hour}}
+	until := time.Now().UTC().Add(150 * 24 * time.Hour).Truncate(time.Second)
+	l := &model.License{ID: "lic_u", Modules: model.AllModules, UpdatesUntil: &until}
+
+	// Old client (no appVersion) → 5-field token, no UpdatesUntil.
+	tok, _, _, err := svc.TokenFor(l, "m1", false)
+	if err != nil {
+		t.Fatalf("TokenFor: %v", err)
+	}
+	p, err := signer.Verify(tok)
+	if err != nil {
+		t.Fatalf("Verify: %v", err)
+	}
+	if p.UpdatesUntil != nil {
+		t.Fatalf("5-field token must not carry UpdatesUntil, got %v", p.UpdatesUntil)
+	}
+
+	// New client → 6-field token carrying the window.
+	tok, _, _, err = svc.TokenFor(l, "m1", true)
+	if err != nil {
+		t.Fatalf("TokenFor: %v", err)
+	}
+	p, err = signer.Verify(tok)
+	if err != nil {
+		t.Fatalf("Verify: %v", err)
+	}
+	if p.UpdatesUntil == nil || !p.UpdatesUntil.Equal(until) {
+		t.Fatalf("expected UpdatesUntil=%v, got %v", until, p.UpdatesUntil)
+	}
+
+	// Grandfathered license (nil window) → field omitted even for new clients.
+	l2 := &model.License{ID: "lic_g", Modules: model.AllModules}
+	tok, _, _, err = svc.TokenFor(l2, "m1", true)
+	if err != nil {
+		t.Fatalf("TokenFor: %v", err)
+	}
+	p, err = signer.Verify(tok)
+	if err != nil {
+		t.Fatalf("Verify: %v", err)
+	}
+	if p.UpdatesUntil != nil {
+		t.Fatalf("grandfathered license must omit UpdatesUntil, got %v", p.UpdatesUntil)
 	}
 }

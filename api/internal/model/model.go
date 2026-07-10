@@ -59,8 +59,13 @@ type License struct {
 	Features   string        `bson:"features"`
 	Modules    []string      `bson:"modules,omitempty"`
 	Status     LicenseStatus `bson:"status"`
-	ExpiresAt  *time.Time    `bson:"expires_at,omitempty"`  // nil = perpetual
-	AssignedBy string        `bson:"assigned_by,omitempty"` // admin email, empty for trial
+	ExpiresAt  *time.Time    `bson:"expires_at,omitempty"` // nil = perpetual
+	// UpdatesUntil ends the update-entitlement window (maintenance model,
+	// desktop/tasks/spec-app-updates.md): releases published before it stay
+	// installable forever; later ones need a paid extension. nil = unlimited
+	// (grandfathered pre-entitlement licenses). Independent of ExpiresAt.
+	UpdatesUntil *time.Time `bson:"updates_until,omitempty"`
+	AssignedBy   string     `bson:"assigned_by,omitempty"` // admin email, empty for trial
 	Notes      string        `bson:"notes,omitempty"`
 	// Source/ExternalRef are a forward seam for Phase-2 billing issuance
 	// (provider webhooks); Phase 1 only writes signup_trial/manual_admin and

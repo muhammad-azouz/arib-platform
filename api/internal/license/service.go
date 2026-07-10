@@ -22,6 +22,10 @@ type Clocks struct {
 	RevalidateAfter time.Duration // -> token.revalidateBy
 	HardExpireAfter time.Duration // -> token.hardExpiry
 	TrialDuration   time.Duration
+	// UpdatesWindow is the update-entitlement period granted to a new paid
+	// license (license.UpdatesUntil = issuance + window). Trials get their
+	// trial expiry instead.
+	UpdatesWindow time.Duration
 }
 
 // Service issues licenses and signs tokens.
@@ -50,9 +54,11 @@ func (s *Service) CreateTrial(ctx context.Context, accountID string) (*model.Lic
 		Modules:   model.AllModules,
 		Status:    model.LicenseActive,
 		ExpiresAt: &expiresAt,
-		Source:    "signup_trial",
-		CreatedAt: now,
-		UpdatedAt: now,
+		// Trials get updates for exactly the trial period.
+		UpdatesUntil: &expiresAt,
+		Source:       "signup_trial",
+		CreatedAt:    now,
+		UpdatedAt:    now,
 	}
 	if err := s.store.InsertLicense(ctx, l); err != nil {
 		return nil, err
@@ -69,20 +75,22 @@ func (s *Service) CreatePaid(ctx context.Context, accountID string, modules []st
 		v := expiresAt.UTC()
 		exp = &v
 	}
+	updatesUntil := now.Add(s.clocks.UpdatesWindow)
 	l := &model.License{
-		ID:          idgen.New("lic"),
-		Key:         idgen.LicenseKey(),
-		AccountID:   accountID,
-		Type:        model.LicensePaid,
-		Modules:     modules,
-		Status:      model.LicenseActive,
-		ExpiresAt:   exp,
-		Source:      source,
-		ExternalRef: externalRef,
-		AssignedBy:  assignedBy,
-		Notes:       notes,
-		CreatedAt:   now,
-		UpdatedAt:   now,
+		ID:           idgen.New("lic"),
+		Key:          idgen.LicenseKey(),
+		AccountID:    accountID,
+		Type:         model.LicensePaid,
+		Modules:      modules,
+		Status:       model.LicenseActive,
+		ExpiresAt:    exp,
+		UpdatesUntil: &updatesUntil,
+		Source:       source,
+		ExternalRef:  externalRef,
+		AssignedBy:   assignedBy,
+		Notes:        notes,
+		CreatedAt:    now,
+		UpdatedAt:    now,
 	}
 	if err := s.store.InsertLicense(ctx, l); err != nil {
 		return nil, err
@@ -94,7 +102,13 @@ func (s *Service) CreatePaid(ctx context.Context, accountID string, modules []st
 // licenses (nil ExpiresAt) get a far-future hard expiry and a hard-expiry
 // always-due revalidation clock; dated licenses (trials) clamp both clocks to
 // the license's own expiry.
-func (s *Service) TokenFor(l *model.License, machineID string) (string, time.Time, time.Time, error) {
+//
+// includeUpdatesUntil appends the 6th payload field (update entitlement).
+// It must only be true when the requesting client advertised an appVersion:
+// deployed pre-updater clients parse by field count and would reject a
+// 6-field token at revalidation, bricking their license state. A nil
+// license UpdatesUntil (grandfathered) always omits the field.
+func (s *Service) TokenFor(l *model.License, machineID string, includeUpdatesUntil bool) (string, time.Time, time.Time, error) {
 	now := time.Now().UTC()
 	var reval, hard time.Time
 	if l.ExpiresAt == nil {
@@ -104,13 +118,17 @@ func (s *Service) TokenFor(l *model.License, machineID string) (string, time.Tim
 		reval = earliest(now.Add(s.clocks.RevalidateAfter), *l.ExpiresAt)
 		hard = *l.ExpiresAt
 	}
-	tok, err := s.signer.Sign(licensetoken.Payload{
+	p := licensetoken.Payload{
 		MachineID:    machineID,
 		Features:     encodeModules(l.Modules),
 		HardExpiry:   hard,
 		RevalidateBy: reval,
 		LicenseID:    l.ID,
-	})
+	}
+	if includeUpdatesUntil {
+		p.UpdatesUntil = l.UpdatesUntil
+	}
+	tok, err := s.signer.Sign(p)
 	return tok, reval, hard, err
 }
 

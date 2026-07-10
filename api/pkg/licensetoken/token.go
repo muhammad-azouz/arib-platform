@@ -32,6 +32,12 @@ type Payload struct {
 	HardExpiry   time.Time // app blocks after this instant
 	RevalidateBy time.Time // app should re-check the server after this instant
 	LicenseID    string
+	// UpdatesUntil is the end of the license's update-entitlement window
+	// (desktop/tasks/spec-app-updates.md). nil omits the field entirely and
+	// encodes the legacy 5-field payload — REQUIRED for deployed clients,
+	// whose parser switches on field count and rejects 6 fields. Callers only
+	// set it for clients that advertised they can parse it (appVersion sent).
+	UpdatesUntil *time.Time
 }
 
 // Signer holds the RSA private key used to sign license payloads.
@@ -49,13 +55,17 @@ func NewSigner(privateKeyXML string) (*Signer, error) {
 }
 
 func encodePayload(p Payload) string {
-	return strings.Join([]string{
+	fields := []string{
 		p.MachineID,
 		p.Features,
 		p.HardExpiry.UTC().Format(time.RFC3339),
 		p.RevalidateBy.UTC().Format(time.RFC3339),
 		p.LicenseID,
-	}, "|")
+	}
+	if p.UpdatesUntil != nil {
+		fields = append(fields, p.UpdatesUntil.UTC().Format(time.RFC3339))
+	}
+	return strings.Join(fields, "|")
 }
 
 // Sign returns the encoded, signed license string for the given payload.
@@ -95,7 +105,7 @@ func (s *Signer) Verify(license string) (Payload, error) {
 func decodePayload(raw string) (Payload, error) {
 	f := strings.Split(raw, "|")
 	switch len(f) {
-	case 5:
+	case 5, 6:
 		hard, err := time.Parse(time.RFC3339, f[2])
 		if err != nil {
 			return Payload{}, fmt.Errorf("parse hardExpiry: %w", err)
@@ -104,13 +114,21 @@ func decodePayload(raw string) (Payload, error) {
 		if err != nil {
 			return Payload{}, fmt.Errorf("parse revalidateBy: %w", err)
 		}
-		return Payload{
+		p := Payload{
 			MachineID:    f[0],
 			Features:     f[1],
 			HardExpiry:   hard,
 			RevalidateBy: reval,
 			LicenseID:    f[4],
-		}, nil
+		}
+		if len(f) == 6 {
+			u, err := time.Parse(time.RFC3339, f[5])
+			if err != nil {
+				return Payload{}, fmt.Errorf("parse updatesUntil: %w", err)
+			}
+			p.UpdatesUntil = &u
+		}
+		return p, nil
 	case 3:
 		// Legacy offline format: machineId|features|expiry
 		exp, err := time.Parse(time.RFC3339, f[2])
