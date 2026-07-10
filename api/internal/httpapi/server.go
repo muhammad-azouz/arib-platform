@@ -12,6 +12,7 @@ import (
 	"github.com/aribpos/license-api/internal/device"
 	"github.com/aribpos/license-api/internal/rollout"
 	"github.com/aribpos/license-api/internal/tenant"
+	"github.com/aribpos/license-api/pkg/licensetoken"
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
 	"github.com/go-chi/cors"
@@ -28,23 +29,30 @@ type Server struct {
 
 	corsOrigins []string
 	otpLimiter  *keyedLimiter
-	updatesDir  string
+
+	updatesDir    string
+	updatesAuth   bool
+	tokenVerifier *licensetoken.Signer
 }
 
 // New builds an HTTP Server. corsOrigins are the browser origins (admin
 // dashboard) allowed to call the API; nil disables CORS. updatesDir is the
 // root of the Velopack update feed served at /updates/*; empty disables it.
-func New(authSvc *auth.Service, deviceSvc *device.Service, adminSvc *admin.Service, tenantSvc *tenant.Service, rolloutSvc *rollout.Service, corsOrigins []string, log *slog.Logger, updatesDir string) *Server {
+// updatesAuth turns on the feed entitlement gate, verifying license tokens
+// with tokenVerifier (the same RSA keypair that signs them).
+func New(authSvc *auth.Service, deviceSvc *device.Service, adminSvc *admin.Service, tenantSvc *tenant.Service, rolloutSvc *rollout.Service, corsOrigins []string, log *slog.Logger, updatesDir string, updatesAuth bool, tokenVerifier *licensetoken.Signer) *Server {
 	return &Server{
-		auth:        authSvc,
-		device:      deviceSvc,
-		admin:       adminSvc,
-		tenant:      tenantSvc,
-		rollout:     rolloutSvc,
-		log:         log,
-		corsOrigins: corsOrigins,
-		otpLimiter:  newKeyedLimiter(rateEvery(time.Minute), 3),
-		updatesDir:  updatesDir,
+		auth:          authSvc,
+		device:        deviceSvc,
+		admin:         adminSvc,
+		tenant:        tenantSvc,
+		rollout:       rolloutSvc,
+		log:           log,
+		corsOrigins:   corsOrigins,
+		otpLimiter:    newKeyedLimiter(rateEvery(time.Minute), 3),
+		updatesDir:    updatesDir,
+		updatesAuth:   updatesAuth,
+		tokenVerifier: tokenVerifier,
 	}
 }
 

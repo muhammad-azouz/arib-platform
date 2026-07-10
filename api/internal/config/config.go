@@ -64,8 +64,8 @@ type Config struct {
 	// desktop repo).
 	UpdatesDir string
 	// UpdatesAuth enables the entitlement gate on the feed (token-filtered
-	// manifest, gated packages). Default off until the gate ships; it will
-	// then default to on with UPDATES_AUTH=off as the dev escape hatch.
+	// manifest, gated packages). Defaults on; UPDATES_AUTH=off is the dev
+	// escape hatch (serves everything anonymously and unfiltered).
 	UpdatesAuth bool
 }
 
@@ -100,7 +100,7 @@ func Load() (*Config, error) {
 		AdminEmails:          splitCSV(os.Getenv("ADMIN_EMAILS")),
 		DashboardOrigins:     splitCSV(os.Getenv("DASHBOARD_ORIGINS")),
 		UpdatesDir:           env("UPDATES_DIR", "/app/updates"),
-		UpdatesAuth:          env("UPDATES_AUTH", "off") != "off",
+		UpdatesAuth:          env("UPDATES_AUTH", "on") != "off",
 	}
 
 	secret := os.Getenv("JWT_SECRET")
