@@ -75,7 +75,17 @@ func (s *Server) handleRelease(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) writeDeviceError(w http.ResponseWriter, err error) {
+	var notEntitled *device.VersionNotEntitledError
 	switch {
+	case errors.As(err, &notEntitled):
+		// Typed refusal (spec: revalidation enforcement). The client surfaces
+		// updates_until + max_entitled_version in its license-nag UI.
+		writeJSON(w, http.StatusForbidden, map[string]any{
+			"code":                 "version_not_entitled",
+			"error":                "this app version is not covered by the license's update plan — renew, or reinstall an entitled version",
+			"updates_until":        notEntitled.UpdatesUntil,
+			"max_entitled_version": notEntitled.MaxEntitledVersion,
+		})
 	case errors.Is(err, device.ErrNoLicense):
 		writeErr(w, http.StatusPaymentRequired, "no available license to bind — contact support")
 	case errors.Is(err, device.ErrTrialUsed):

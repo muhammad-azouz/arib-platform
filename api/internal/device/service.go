@@ -11,6 +11,7 @@ import (
 	"github.com/aribpos/license-api/internal/license"
 	"github.com/aribpos/license-api/internal/model"
 	mongostore "github.com/aribpos/license-api/internal/store/mongo"
+	"github.com/aribpos/license-api/internal/updates"
 )
 
 // Service errors surfaced to clients.
@@ -24,6 +25,20 @@ var (
 	ErrForbidden       = errors.New("device does not belong to this account")
 )
 
+// VersionNotEntitledError refuses token issuance when the client's
+// self-reported app version was published after the license's update window.
+// It only ever fires for a version the changelogs know — grandfathered
+// licenses, old clients (no appVersion) and changelog-unknown versions all
+// pass, so this can never brick an existing install.
+type VersionNotEntitledError struct {
+	UpdatesUntil       time.Time
+	MaxEntitledVersion string // newest in-window release; empty when none is known
+}
+
+func (e *VersionNotEntitledError) Error() string {
+	return "app version is not covered by the license's update plan"
+}
+
 // CooldownPolicy limits self-service releases.
 type CooldownPolicy struct {
 	MinInterval time.Duration
@@ -35,11 +50,13 @@ type Service struct {
 	store    *mongostore.Store
 	licenses *license.Service
 	cooldown CooldownPolicy
+	versions *updates.Resolver // nil disables the version-entitlement check
 }
 
-// New builds a device Service.
-func New(store *mongostore.Store, licenses *license.Service, cooldown CooldownPolicy) *Service {
-	return &Service{store: store, licenses: licenses, cooldown: cooldown}
+// New builds a device Service. versions resolves app versions to feed publish
+// dates for the version_not_entitled refusal; nil disables the check.
+func New(store *mongostore.Store, licenses *license.Service, cooldown CooldownPolicy, versions *updates.Resolver) *Service {
+	return &Service{store: store, licenses: licenses, cooldown: cooldown, versions: versions}
 }
 
 // Result is returned to the client after bind/validate.
@@ -81,7 +98,7 @@ func (s *Service) Bind(ctx context.Context, accountID, machineID, machineName, o
 		if d.Status == model.DeviceActive && d.MachineID == machineID {
 			l := byID[d.LicenseID]
 			if l != nil && license.Usable(l) {
-				return s.issue(ctx, l, d, machineID, appVersion != "")
+				return s.issue(ctx, l, d, machineID, appVersion)
 			}
 		}
 	}
@@ -132,7 +149,7 @@ func (s *Service) Bind(ctx context.Context, accountID, machineID, machineName, o
 	if pick.Type == model.LicenseTrial {
 		_ = s.store.RecordTrial(ctx, &model.TrialLedger{MachineID: machineID, AccountID: accountID, UsedAt: now})
 	}
-	return s.issue(ctx, pick, dev, machineID, appVersion != "")
+	return s.issue(ctx, pick, dev, machineID, appVersion)
 }
 
 // Validate re-checks an active binding and returns a fresh token (resetting the
@@ -159,7 +176,7 @@ func (s *Service) Validate(ctx context.Context, accountID, machineID, appVersion
 	if !license.Usable(l) {
 		return nil, ErrLicenseInactive
 	}
-	return s.issue(ctx, l, dev, machineID, appVersion != "")
+	return s.issue(ctx, l, dev, machineID, appVersion)
 }
 
 // Release frees a seat. selfService enforces the abuse cooldown.
@@ -194,8 +211,11 @@ func (s *Service) Release(ctx context.Context, accountID, deviceID string, selfS
 	return s.store.ReleaseDevice(ctx, dev.ID, now, selfService)
 }
 
-func (s *Service) issue(ctx context.Context, l *model.License, d *model.Device, machineID string, includeUpdatesUntil bool) (*Result, error) {
-	tok, reval, hard, err := s.licenses.TokenFor(l, machineID, includeUpdatesUntil)
+func (s *Service) issue(ctx context.Context, l *model.License, d *model.Device, machineID string, appVersion string) (*Result, error) {
+	if err := s.checkVersionEntitled(l, appVersion); err != nil {
+		return nil, err
+	}
+	tok, reval, hard, err := s.licenses.TokenFor(l, machineID, appVersion != "")
 	if err != nil {
 		return nil, err
 	}
@@ -209,6 +229,23 @@ func (s *Service) issue(ctx context.Context, l *model.License, d *model.Device, 
 		HardExpiry:   hard,
 		DeviceID:     d.ID,
 	}, nil
+}
+
+// checkVersionEntitled refuses issuance when appVersion is a *known* release
+// published after the license's update window (anti-sideload: a lapsed client
+// that installed a newer build from the website gets no fresh token). Fails
+// open for grandfathered licenses (nil UpdatesUntil), old clients (empty
+// appVersion), a disabled resolver and changelog-unknown versions.
+func (s *Service) checkVersionEntitled(l *model.License, appVersion string) error {
+	if l.UpdatesUntil == nil || appVersion == "" {
+		return nil
+	}
+	published, known := s.versions.PublishDate(appVersion)
+	if !known || !published.After(*l.UpdatesUntil) {
+		return nil
+	}
+	maxEntitled, _ := s.versions.MaxEntitledVersion(*l.UpdatesUntil)
+	return &VersionNotEntitledError{UpdatesUntil: *l.UpdatesUntil, MaxEntitledVersion: maxEntitled}
 }
 
 // pickLicense chooses a usable license with a free seat, preferring paid over

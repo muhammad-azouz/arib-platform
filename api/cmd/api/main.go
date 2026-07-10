@@ -22,6 +22,7 @@ import (
 	"github.com/aribpos/license-api/internal/rollout"
 	mongostore "github.com/aribpos/license-api/internal/store/mongo"
 	"github.com/aribpos/license-api/internal/tenant"
+	"github.com/aribpos/license-api/internal/updates"
 	"github.com/aribpos/license-api/pkg/licensetoken"
 	"github.com/joho/godotenv"
 )
@@ -70,7 +71,7 @@ func main() {
 	deviceSvc := device.New(store, licenseSvc, device.CooldownPolicy{
 		MinInterval: cfg.ReleaseCooldown,
 		MaxPerMonth: cfg.ReleaseMaxPerMonth,
-	})
+	}, updates.NewResolver(cfg.UpdatesDir))
 	adminSvc := admin.New(store, licenseSvc)
 	syncKey, err := licensetoken.ParsePrivateKeyXML(cfg.PrivateKeyXML)
 	if err != nil {
