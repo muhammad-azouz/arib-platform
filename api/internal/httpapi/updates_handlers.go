@@ -19,14 +19,18 @@ import (
 //
 //   - changelog.{channel}.json — free. The upsell surface: every machine can
 //     always see what exists; it also doubles as the version→publish-date map.
+//   - Setup.exe / Portable.zip — free, same as changelog. A browser download
+//     (in-app "download installer" handoff, or a website link) can't attach a
+//     token, and gating them added nothing: the actual entitlement boundary is
+//     the auto-update feed below (which stays gated) plus version_not_entitled
+//     on validate/bind — an installer of the head is no more of a bypass than
+//     any commercial installer being downloadable without a license.
 //   - releases.{channel}.json — requires a valid license token; the served
 //     manifest is FILTERED to releases published inside the token's
 //     updatesUntil window, so the client's Velopack naturally targets the
 //     newest entitled version.
 //   - *.nupkg — requires a token; 403 when the package's publish date is past
 //     the window (defense in depth behind the filtered manifest).
-//   - Setup.exe / Portable.zip — requires a token; gated by the channel
-//     head's publish date (they always contain the head).
 //   - anything else (RELEASES-*, assets.*.json) — requires a token; metadata
 //     only, no date check.
 //
@@ -60,8 +64,9 @@ func (s *Server) handleUpdates(w http.ResponseWriter, r *http.Request) {
 
 	gateOff := !s.updatesAuth || s.tokenVerifier == nil
 	isChangelog := base == "changelog."+channel+".json"
+	isInstaller := strings.HasSuffix(base, "Setup.exe") || strings.HasSuffix(base, "Portable.zip")
 
-	if gateOff || isChangelog {
+	if gateOff || isChangelog || isInstaller {
 		http.ServeFile(w, r, fp)
 		return
 	}
@@ -88,13 +93,6 @@ func (s *Server) handleUpdates(w http.ResponseWriter, r *http.Request) {
 				writeErr(w, http.StatusForbidden, "version not covered by this license's update plan")
 				return
 			}
-		}
-		http.ServeFile(w, r, fp)
-	case strings.HasSuffix(base, "Setup.exe") || strings.HasSuffix(base, "Portable.zip"):
-		// Always built from the channel head.
-		if head, known := s.headPublishDate(filepath.Dir(fp), channel); known && head.After(until) {
-			writeErr(w, http.StatusForbidden, "version not covered by this license's update plan")
-			return
 		}
 		http.ServeFile(w, r, fp)
 	default:
@@ -191,21 +189,6 @@ func (s *Server) changelogDates(dir, channel string) map[string]time.Time {
 func (s *Server) publishDate(dir, channel, version string) (time.Time, bool) {
 	d, ok := s.changelogDates(dir, channel)[version]
 	return d, ok
-}
-
-// headPublishDate returns the newest (first) changelog entry's date.
-func (s *Server) headPublishDate(dir, channel string) (time.Time, bool) {
-	raw, err := os.ReadFile(filepath.Join(dir, "changelog."+channel+".json"))
-	if err != nil {
-		return time.Time{}, false
-	}
-	var entries []struct {
-		PublishedAtUtc time.Time `json:"publishedAtUtc"`
-	}
-	if err := json.Unmarshal(raw, &entries); err != nil || len(entries) == 0 {
-		return time.Time{}, false
-	}
-	return entries[0].PublishedAtUtc, true
 }
 
 // nupkgVersion extracts the semver from a Velopack package filename:

@@ -188,12 +188,17 @@ func TestUpdatesFeedGate(t *testing.T) {
 		}
 	})
 
-	t.Run("Setup.exe gated by channel head", func(t *testing.T) {
-		if rec := feedGet(h, "/updates/lts/win-x64/AribONE-lts-Setup.exe", lapsedTok); rec.Code != http.StatusForbidden {
-			t.Fatalf("lapsed status = %d, want 403", rec.Code)
+	t.Run("Setup.exe is free like changelog", func(t *testing.T) {
+		// Browser downloads (in-app installer handoff, website links) can't
+		// attach a token — installers are exempt from the gate entirely, same
+		// as changelog.json. The real entitlement boundary is the auto-update
+		// feed (releases.*.json + .nupkg, still gated above) plus
+		// version_not_entitled on validate/bind.
+		if rec := feedGet(h, "/updates/lts/win-x64/AribONE-lts-Setup.exe", ""); rec.Code != http.StatusOK {
+			t.Fatalf("no-token status = %d, want 200", rec.Code)
 		}
-		if rec := feedGet(h, "/updates/lts/win-x64/AribONE-lts-Setup.exe", freshTok); rec.Code != http.StatusOK {
-			t.Fatalf("fresh status = %d, want 200", rec.Code)
+		if rec := feedGet(h, "/updates/lts/win-x64/AribONE-lts-Setup.exe", lapsedTok); rec.Code != http.StatusOK {
+			t.Fatalf("lapsed status = %d, want 200", rec.Code)
 		}
 	})
 
