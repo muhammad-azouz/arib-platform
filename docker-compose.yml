@@ -63,10 +63,13 @@ volumes:
   # project name has drifted across deploys (arib-license → platform →
   # arib-platform, the last via the top-level `name:` above), which would
   # otherwise make Compose reach for a fresh, empty {project}_mongo_data
-  # volume depending on which project name is active. Pinning here means
-  # `-p platform` is never needed again, on this host or any other.
+  # volume depending on which project name is active. `external: true` is
+  # required alongside `name:` here — without it Compose still tries to
+  # "own" the volume under the current project's label and just warns on
+  # the mismatch instead of cleanly attaching to what's already there.
   mongo_data:
     name: platform_mongo_data
+    external: true
 
 networks:
   arib-platform:
