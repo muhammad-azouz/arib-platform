@@ -12,6 +12,12 @@ import type {
 const BASE = import.meta.env.VITE_API_BASE_URL ?? ''
 const REFRESH_KEY = 'arib_console_refresh'
 
+// Public, ungated Windows installer for the desktop app (see
+// platform/api/internal/httpapi/updates_handlers.go — Setup.exe is served
+// free of the license gate). Always the `lts` channel: canary is an opt-in
+// switch inside the app itself, not something to hand out from the console.
+export const installerUrl = () => `${BASE}/updates/lts/win-x64/AribONE-lts-Setup.exe`
+
 let accessToken: string | null = null
 let onLogout: (() => void) | null = null
 

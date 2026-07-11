@@ -12,12 +12,14 @@ import {
   DatabaseIcon,
   DangerIcon,
   InfoIcon,
+  DownloadIcon,
   PhoneIcon,
   ArrowLeading,
   type IconComponent,
 } from '@/components/icon'
 import { Badge } from '@/components/ui/badge'
 import { Card } from '@/components/ui/card'
+import { Button } from '@/components/ui/button'
 
 export function Overview() {
   const { tenantId } = useParams<'tenantId'>()
@@ -29,6 +31,7 @@ export function Overview() {
   const { Tenant: t, Company: company, Branches } = bundle
   const branches = Branches ?? []
   const activeBranches = branches.filter((b) => b.Status === 'active').length
+  const deviceCount = branches.reduce((sum, b) => sum + (b.ActiveDevices ?? 0), 0)
 
   return (
     <>
@@ -54,6 +57,10 @@ export function Overview() {
           title="لا يوجد اشتراك مزامنة"
           message="فعّل اشتراك المزامنة لربط أجهزة الفروع ومزامنة بياناتها."
         />
+      )}
+
+      {t.Status !== 'suspended' && deviceCount === 0 && (
+        <OnboardingBanner tenantId={t.ID} />
       )}
 
       <div className="grid gap-4 sm:grid-cols-2">
@@ -148,6 +155,30 @@ function StatCard({
     </Link>
   ) : (
     body
+  )
+}
+
+function OnboardingBanner({ tenantId }: { tenantId: string }) {
+  return (
+    <div className="mb-4 flex flex-col items-start gap-4 rounded-xl border border-primary/30 bg-primary/5 px-5 py-4 sm:flex-row sm:items-center sm:justify-between">
+      <div className="flex items-start gap-3">
+        <div className="grid size-10 shrink-0 place-items-center rounded-xl bg-primary/10 text-primary">
+          <DownloadIcon className="size-5" />
+        </div>
+        <div>
+          <div className="text-sm font-semibold">لم يتم تثبيت التطبيق بعد</div>
+          <p className="mt-0.5 text-sm text-foreground/70">
+            نزّل تطبيق أريب لسطح المكتب على أجهزة فروعك للبدء بالبيع والمزامنة.
+          </p>
+        </div>
+      </div>
+      <Button asChild size="sm" className="shrink-0">
+        <Link to={`/tenants/${tenantId}/download`}>
+          تنزيل التطبيق
+          <ArrowLeading className="size-4" />
+        </Link>
+      </Button>
+    </div>
   )
 }
 

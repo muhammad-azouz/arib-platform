@@ -43,6 +43,7 @@ import {
   MenuDots,
   Bill,
   Wallet,
+  Download,
 } from '@solar-icons/react'
 
 /** Shared type for any icon component in this module (Solar forward-ref svg). */
@@ -88,6 +89,7 @@ export const DesktopIcon = Monitor
 export const MobileIcon = Smartphone
 export const BillingIcon = Bill
 export const WalletIcon = Wallet
+export const DownloadIcon = Download
 
 // Directional — in RTL the "forward / next" arrow points left. Components that
 // mean a literal physical direction import these explicitly.

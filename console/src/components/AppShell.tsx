@@ -7,6 +7,7 @@ import {
   DashboardIcon,
   CompanyIcon,
   BranchIcon,
+  DownloadIcon,
   SettingsIcon,
   TenantIcon,
   type IconComponent,
@@ -28,6 +29,7 @@ export function AppShell() {
     { to: base, label: 'نظرة عامة', icon: DashboardIcon, end: true },
     { to: `${base}/company`, label: 'النشاط التجاري', icon: CompanyIcon },
     { to: `${base}/branches`, label: 'الفروع', icon: BranchIcon },
+    { to: `${base}/download`, label: 'تنزيل التطبيق', icon: DownloadIcon },
     { to: `${base}/settings`, label: 'الإعدادات', icon: SettingsIcon },
   ]
 
