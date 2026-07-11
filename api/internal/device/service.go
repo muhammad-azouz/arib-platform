@@ -212,15 +212,12 @@ func (s *Service) Release(ctx context.Context, accountID, deviceID string, selfS
 }
 
 func (s *Service) issue(ctx context.Context, l *model.License, d *model.Device, machineID string, appVersion string) (*Result, error) {
-	if err := s.checkVersionEntitled(l, appVersion); err != nil {
-		return nil, err
-	}
 	tok, reval, hard, err := s.licenses.TokenFor(l, machineID, appVersion != "")
 	if err != nil {
 		return nil, err
 	}
 	_ = s.store.TouchDeviceValidated(ctx, d.ID, time.Now().UTC())
-	return &Result{
+	result := &Result{
 		License:      tok,
 		LicenseID:    l.ID,
 		Features:     l.Features,
@@ -228,7 +225,18 @@ func (s *Service) issue(ctx context.Context, l *model.License, d *model.Device, 
 		RevalidateBy: reval,
 		HardExpiry:   hard,
 		DeviceID:     d.ID,
-	}, nil
+	}
+
+	// A version refusal still hands back the token: license.lic (and every
+	// client surface that reads it — the update feed's own Authorization
+	// token, Preferences' "updates included until" text) must reflect the
+	// license's *current* state, not freeze on the last-entitled snapshot
+	// forever just because the running build itself can't be renewed into.
+	// The caller still gets the error and must surface the refusal.
+	if err := s.checkVersionEntitled(l, appVersion); err != nil {
+		return result, err
+	}
+	return result, nil
 }
 
 // checkVersionEntitled refuses issuance when appVersion is a *known* release

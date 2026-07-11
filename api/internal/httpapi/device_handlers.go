@@ -33,7 +33,7 @@ func (s *Server) handleBind(w http.ResponseWriter, r *http.Request) {
 	}
 	res, err := s.device.Bind(r.Context(), c.Subject, req.MachineID, req.MachineName, req.OS, req.AppVersion)
 	if err != nil {
-		s.writeDeviceError(w, err)
+		s.writeDeviceError(w, err, res)
 		return
 	}
 	writeJSON(w, http.StatusOK, res)
@@ -52,7 +52,7 @@ func (s *Server) handleValidate(w http.ResponseWriter, r *http.Request) {
 	}
 	res, err := s.device.Validate(r.Context(), c.Subject, req.MachineID, req.AppVersion)
 	if err != nil {
-		s.writeDeviceError(w, err)
+		s.writeDeviceError(w, err, res)
 		return
 	}
 	writeJSON(w, http.StatusOK, res)
@@ -68,24 +68,35 @@ func (s *Server) handleRelease(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := s.device.Release(r.Context(), c.Subject, req.DeviceID, true); err != nil {
-		s.writeDeviceError(w, err)
+		s.writeDeviceError(w, err, nil)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "released"})
 }
 
-func (s *Server) writeDeviceError(w http.ResponseWriter, err error) {
+func (s *Server) writeDeviceError(w http.ResponseWriter, err error, res *device.Result) {
 	var notEntitled *device.VersionNotEntitledError
 	switch {
 	case errors.As(err, &notEntitled):
 		// Typed refusal (spec: revalidation enforcement). The client surfaces
 		// updates_until + max_entitled_version in its license-nag UI.
-		writeJSON(w, http.StatusForbidden, map[string]any{
+		body := map[string]any{
 			"code":                 "version_not_entitled",
 			"error":                "this app version is not covered by the license's update plan — renew, or reinstall an entitled version",
 			"updates_until":        notEntitled.UpdatesUntil,
 			"max_entitled_version": notEntitled.MaxEntitledVersion,
-		})
+		}
+		if res != nil {
+			// issue() still mints a token reflecting the license's *current*
+			// state even on refusal — the client caches it so license.lic (and
+			// the feed's own Authorization token, sourced from that same file)
+			// isn't stuck on the last-entitled snapshot forever.
+			body["license"] = res.License
+			body["license_id"] = res.LicenseID
+			body["revalidate_by"] = res.RevalidateBy
+			body["hard_expiry"] = res.HardExpiry
+		}
+		writeJSON(w, http.StatusForbidden, body)
 	case errors.Is(err, device.ErrNoLicense):
 		writeErr(w, http.StatusPaymentRequired, "no available license to bind — contact support")
 	case errors.Is(err, device.ErrTrialUsed):
