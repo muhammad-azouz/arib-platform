@@ -59,7 +59,14 @@ services:
       api: { condition: service_healthy }
 
 volumes:
+  # Pinned to the volume already holding real tenant data — the compose
+  # project name has drifted across deploys (arib-license → platform →
+  # arib-platform, the last via the top-level `name:` above), which would
+  # otherwise make Compose reach for a fresh, empty {project}_mongo_data
+  # volume depending on which project name is active. Pinning here means
+  # `-p platform` is never needed again, on this host or any other.
   mongo_data:
+    name: platform_mongo_data
 
 networks:
   arib-platform:
