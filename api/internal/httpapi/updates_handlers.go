@@ -38,6 +38,12 @@ import (
 // odd filenames) is never blocked, and a token without updatesUntil
 // (grandfathered) sees everything. Directory listings stay disabled.
 func (s *Server) handleUpdates(w http.ResponseWriter, r *http.Request) {
+	// releases.{channel}.json is filtered per-license (serveFilteredManifest) —
+	// a shared cache (Cloudflare et al.) sitting in front of this route must
+	// never cache any response from it, or one client's entitlement-filtered
+	// view can leak to another. Set unconditionally, before any branch below.
+	w.Header().Set("Cache-Control", "no-store")
+
 	if s.updatesDir == "" {
 		writeErr(w, http.StatusNotFound, "updates feed not configured")
 		return
