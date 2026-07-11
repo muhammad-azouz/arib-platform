@@ -194,15 +194,15 @@ handoff code is single-use and short-lived, no PKCE is required.
 
 ---
 
-## Deploy (VPS + HAProxy + Atlas)
+## Deploy (VPS + HAProxy + Docker Compose)
 
-1. Build a static binary and copy it + `keys/PrivateKey.xml` + `.env` to the VPS:
-   ```bash
-   make build               # bin/arib-license-api (CGO disabled)
-   scp bin/arib-license-api keys/PrivateKey.xml .env  user@vps:/opt/arib-license/
-   ```
-2. Run it under systemd binding to `127.0.0.1:8080` (see `HTTP_ADDR`).
-3. Point HAProxy at it and terminate TLS there, e.g.:
+Production runs the whole `platform/` stack (mongodb, api, admin, console) via
+`docker-compose.yml`, one level up from this directory. Workflow is git-pull based,
+not CI/CD:
+
+1. On the VPS: `git pull`, then `docker compose up -d --build` from `platform/`.
+2. The `api` container binds `127.0.0.1:8080` only (see `docker-compose.yml`) —
+   HAProxy in front terminates TLS and reverse-proxies to it, e.g.:
    ```
    frontend https
      bind :443 ssl crt /etc/haproxy/certs/license.arib.pem
@@ -210,28 +210,14 @@ handoff code is single-use and short-lived, no PKCE is required.
    backend arib_license
      server api 127.0.0.1:8080
    ```
-4. Set `PUBLIC_BASE_URL=https://license.arib...` so OAuth callbacks use https.
-5. Keep `keys/PrivateKey.xml` readable only by the service user. **Never commit it.**
-
-> Docker is intentionally not used yet; revisit later if you want containerized deploys.
-
-Example systemd unit:
-
-```ini
-[Unit]
-Description=Arib License API
-After=network.target
-
-[Service]
-WorkingDirectory=/opt/arib-license
-EnvironmentFile=/opt/arib-license/.env
-ExecStart=/opt/arib-license/arib-license-api
-Restart=on-failure
-User=arib
-
-[Install]
-WantedBy=multi-user.target
-```
+3. Set `PUBLIC_BASE_URL=https://license.arib...` (in `api/.env`) so OAuth callbacks
+   use https.
+4. `keys/PrivateKey.xml` is bind-mounted read-only into the container
+   (`./api/keys:/app/keys:ro`) — keep it readable only by the deploy user on the
+   host. **Never commit it.**
+5. The Velopack update feed is served from the host path bind-mounted at
+   `/srv/arib/updates:/app/updates:ro` — populated by `desktop/ops/release.sh`
+   (`--url`/`--remote` mode), not by this repo.
 
 ---
 
