@@ -17,6 +17,7 @@ export default defineConfig({
     proxy: {
       '/v1': 'http://127.0.0.1:8080',
       '/healthz': 'http://127.0.0.1:8080',
+      '/updates': 'http://127.0.0.1:8080',
     },
   },
 })
