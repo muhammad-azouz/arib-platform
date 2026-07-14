@@ -179,7 +179,7 @@ No new gateway endpoint (plan outline superseded): company KPIs are summed API-s
   - Dependencies: T16 · **Size: S**
 
 ### Checkpoint 2
-- [ ] All gates green
-- [ ] Manual e2e: Overview KPI totals match the Branches cards; desktop "Sync Now" flips Overview numbers/freshness live, no refresh
-- [ ] Stale branch (>30 min) appears as an alert; its link opens the branch detail
-- [ ] **Human review before Phase 3 (Catalog)**
+- [x] All gates green
+- [x] Manual e2e: Overview KPI totals match the Branches cards; desktop "Sync Now" flips Overview numbers/freshness live, no refresh *(human-verified 2026-07-14, including two branches + shift mode; found/fixed sync-gateway `12bc3ae`: OpenedAt serialized without TZ suffix zeroed all totals)*
+- [x] Stale branch (>30 min) appears as an alert; its link opens the branch detail *(human-verified 2026-07-14)*
+- [x] **Human review before Phase 3 (Catalog)** *(approved 2026-07-14)*

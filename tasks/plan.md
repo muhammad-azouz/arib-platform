@@ -60,10 +60,10 @@ Spec: `tasks/spec-console.md`. This plan details **Slice 0 (HQ read path + fresh
 - [x] T18: Console — alerts stub (stale-sync alerts with deep links) + quick actions row
 
 ### Checkpoint 2 (slice 2 shipped)
-- [ ] All gates green
-- [ ] Manual e2e: Overview KPI totals match the sum of the Branches cards; desktop "Sync Now" flips the Overview numbers/freshness live without refresh
-- [ ] Stale branch (>30 min) appears as an alert whose link opens that branch's detail page
-- [ ] Human review before Phase 3
+- [x] All gates green (api `go test ./...`, gateway `dotnet build`, console `pnpm build && pnpm lint` — 2026-07-14)
+- [x] Manual e2e: Overview KPI totals match the sum of the Branches cards; desktop "Sync Now" flips the Overview numbers/freshness live without refresh *(human-verified 2026-07-14; surfaced and fixed a real bug: gateway serialized open-shift OpenedAt without a timezone suffix, which zeroed all totals once shift mode was enabled — sync-gateway `12bc3ae`)*
+- [x] Stale branch (>30 min) appears as an alert whose link opens that branch's detail page *(human-verified 2026-07-14)*
+- [x] Human review before Phase 3 *(approved 2026-07-14)*
 
 ### Later phases (outline only — broken down when reached)
 - **Phase 3 — Catalog (slice 3):** master-table reads; first HQ **write** endpoint (product create / price change) + propagation-state UX. **Gated on open question 1** (branch-edit gating decision).
