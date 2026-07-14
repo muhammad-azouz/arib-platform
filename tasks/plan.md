@@ -56,7 +56,7 @@ Spec: `tasks/spec-console.md`. This plan details **Slice 0 (HQ read path + fresh
 
 - [x] T15: API — `totals` block on `GET /v1/tenants/{id}/hq/branches` (company KPIs summed from branch snapshots + offline-branch honesty count)
 - [x] T16: Console — Overview rework: KPI tiles (sales/bills/refunds/open shifts today) with freshness + offline caveat
-- [ ] T17: Console — branch health strip (per-branch dot → branch detail)
+- [x] T17: Console — branch health strip (per-branch dot → branch detail)
 - [ ] T18: Console — alerts stub (stale-sync alerts with deep links) + quick actions row
 
 ### Checkpoint 2 (slice 2 shipped)

@@ -6,6 +6,7 @@ import { cn } from '@/lib/utils'
 import { PageHeader } from '@/components/PageHeader'
 import { LoadingState } from '@/components/States'
 import { Freshness } from '@/components/Freshness'
+import { HealthDot } from '@/components/HealthDot'
 import { Skeleton } from '@/components/ui/skeleton'
 import {
   CompanyIcon,
@@ -108,6 +109,25 @@ export function Overview() {
           </p>
         )}
       </section>
+
+      {/* Branch health strip — one chip per branch, click through to detail. */}
+      {hq && hq.branches.length > 0 && (
+        <section className="mb-6">
+          <h2 className="mb-3 font-display text-base font-bold">صحة الفروع</h2>
+          <div className="flex flex-wrap gap-2">
+            {hq.branches.map((v) => (
+              <Link
+                key={v.id}
+                to={`/tenants/${t.ID}/branches/${v.id}`}
+                className="inline-flex items-center gap-2 rounded-full border border-border bg-card/50 px-3 py-1.5 text-sm font-medium transition-colors hover:border-primary/40 hover:text-primary"
+              >
+                <HealthDot health={v.health} />
+                {v.name}
+              </Link>
+            ))}
+          </div>
+        </section>
+      )}
 
       <div className="grid gap-4 sm:grid-cols-2">
         <StatCard

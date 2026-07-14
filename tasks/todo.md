@@ -161,10 +161,10 @@ No new gateway endpoint (plan outline superseded): company KPIs are summed API-s
   - Files: `console/src/lib/types.ts`, `console/src/pages/console/Overview.tsx`
   - Dependencies: T15 · **Size: M**
 
-- [ ] **T17: Console — branch health strip**
+- [x] **T17: Console — branch health strip**
   - **Description:** Compact strip on Overview: one dot+name chip per branch (health color from `BranchView.health`), click → `branches/:branchId`. Same query, no new fetch.
   - Acceptance:
-    - [ ] Every branch renders a chip with the correct tier color; click navigates to its detail page
+    - [x] Every branch renders a chip with the correct tier color; click navigates to its detail page *(HealthDot extracted to a shared component so Branches cards and the strip can't drift)*
   - Verify: `pnpm build && pnpm lint`; manual
   - Files: `console/src/pages/console/Overview.tsx` (+ small component if it earns extraction)
   - Dependencies: T16 · **Size: S**
