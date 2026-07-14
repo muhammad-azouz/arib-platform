@@ -15,4 +15,5 @@ export const qk = {
   tenants: ['tenants'] as const,
   bundle: (id: string) => ['bundle', id] as const,
   branchActivity: (id: string) => ['branch-activity', id] as const,
+  hqBranches: (id: string) => ['hq-branches', id] as const,
 }

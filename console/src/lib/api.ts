@@ -4,6 +4,7 @@ import type {
   BranchDevice,
   Bundle,
   Company,
+  HqBranchesResponse,
   MeView,
   Session,
   SyncToken,
@@ -234,4 +235,7 @@ export const api = {
   // HQ reads (freshness-enveloped, via the sync gateway)
   branchActivity: (tenantId: string) =>
     request<BranchActivityResponse>(`/v1/tenants/${tenantId}/hq/branch-activity`),
+
+  hqBranches: (tenantId: string) =>
+    request<HqBranchesResponse>(`/v1/tenants/${tenantId}/hq/branches`),
 }

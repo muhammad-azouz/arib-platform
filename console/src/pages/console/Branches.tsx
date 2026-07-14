@@ -2,17 +2,31 @@ import { useState } from 'react'
 import { useParams } from 'react-router-dom'
 import { toast } from 'sonner'
 import { errorMessage } from '@/lib/auth'
-import { useBundle, useUpdateBranch } from '@/lib/hooks'
-import { branchStatusLabel, branchStatusTone, toArabicDigits } from '@/lib/format'
+import { useBundle, useHqBranches, useUpdateBranch } from '@/lib/hooks'
+import {
+  branchStatusLabel,
+  branchStatusTone,
+  relative,
+  toArabicDigits,
+} from '@/lib/format'
 import { cn } from '@/lib/utils'
-import type { Branch } from '@/lib/types'
+import type { Branch, BranchHealth, BranchView } from '@/lib/types'
 import { PageHeader } from '@/components/PageHeader'
 import { LoadingState, EmptyState } from '@/components/States'
+import { Freshness } from '@/components/Freshness'
 import { AddBranchDialog } from '@/components/AddBranchDialog'
 import { RenameBranchDialog } from '@/components/RenameBranchDialog'
-import { AddIcon, BranchIcon, EditIcon, MenuIcon, InfoIcon } from '@/components/icon'
+import {
+  AddIcon,
+  BranchIcon,
+  DeviceIcon,
+  EditIcon,
+  MenuIcon,
+  InfoIcon,
+} from '@/components/icon'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
+import { Skeleton } from '@/components/ui/skeleton'
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -20,18 +34,27 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu'
-import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from '@/components/ui/table'
+
+// The health dot: the one-glance answer to "which branch needs attention?".
+const HEALTH_DOT: Record<BranchHealth, string> = {
+  ok: 'bg-success',
+  lagging: 'bg-warning',
+  stale: 'bg-danger',
+  never: 'bg-muted-foreground/40',
+}
+const HEALTH_LABEL: Record<BranchHealth, string> = {
+  ok: 'متزامن',
+  lagging: 'متأخر في المزامنة',
+  stale: 'منقطع عن المزامنة',
+  never: 'لم يتصل بعد',
+}
+
+const money = new Intl.NumberFormat('ar', { maximumFractionDigits: 2 })
 
 export function Branches() {
   const { tenantId } = useParams<'tenantId'>()
   const { data: bundle } = useBundle(tenantId)
+  const { data: hq, isLoading: hqLoading } = useHqBranches(tenantId)
   const update = useUpdateBranch(tenantId ?? '')
   const [addOpen, setAddOpen] = useState(false)
   const [renaming, setRenaming] = useState<Branch | null>(null)
@@ -41,6 +64,9 @@ export function Branches() {
 
   const branches = bundle.Branches ?? []
   const companyId = bundle.Company?.ID ?? ''
+  const viewById = new Map<string, BranchView>(
+    (hq?.branches ?? []).map((v) => [v.id, v]),
+  )
 
   const toggleStatus = (b: Branch) => {
     const next = b.Status === 'active' ? 'deactivated' : 'active'
@@ -58,7 +84,7 @@ export function Branches() {
     <>
       <PageHeader
         title="الفروع"
-        description="فروع نشاطك ومقاعد الأجهزة المسموح بها لكل فرع."
+        description="حالة كل فرع الآن: المزامنة والوردية ومبيعات اليوم."
         actions={
           <Button onClick={() => setAddOpen(true)} disabled={!companyId}>
             <AddIcon className="size-4" />
@@ -80,38 +106,29 @@ export function Branches() {
           }
         />
       ) : (
-        <div className="rounded-xl border border-border">
-          <Table>
-            <TableHeader>
-              <TableRow>
-                <TableHead>الفرع</TableHead>
-                <TableHead>الحالة</TableHead>
-                <TableHead>الأجهزة (المستخدم / الحد)</TableHead>
-                <TableHead className="w-12" />
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {branches.map((b) => (
-                <TableRow key={b.ID}>
-                  <TableCell className="font-medium">{b.Name}</TableCell>
-                  <TableCell>
-                    <Badge tone={branchStatusTone(b.Status)}>
-                      {branchStatusLabel(b.Status)}
-                    </Badge>
-                  </TableCell>
-                  <TableCell>
-                    <span
-                      className={cn(
-                        'dir-ltr inline-block font-mono text-sm',
-                        (b.ActiveDevices ?? 0) >= b.Seats
-                          ? 'text-warning'
-                          : 'text-muted-foreground',
-                      )}
-                    >
-                      {toArabicDigits(b.Seats)} / {toArabicDigits(b.ActiveDevices ?? 0)}
-                    </span>
-                  </TableCell>
-                  <TableCell>
+        <div className="grid gap-4 sm:grid-cols-2">
+          {branches.map((b) => {
+            const view = viewById.get(b.ID)
+            const snap = view?.snapshot.data
+            return (
+              <div
+                key={b.ID}
+                className="flex flex-col gap-3 rounded-xl border border-border bg-card/50 p-4"
+              >
+                {/* identity row: health dot, name, status, actions */}
+                <div className="flex items-center gap-2.5">
+                  <span
+                    title={view ? HEALTH_LABEL[view.health] : undefined}
+                    className={cn(
+                      'size-2.5 shrink-0 rounded-full',
+                      view ? HEALTH_DOT[view.health] : 'bg-muted-foreground/40',
+                    )}
+                  />
+                  <h3 className="min-w-0 truncate font-display font-bold">{b.Name}</h3>
+                  <Badge tone={branchStatusTone(b.Status)} className="shrink-0">
+                    {branchStatusLabel(b.Status)}
+                  </Badge>
+                  <div className="ms-auto">
                     <DropdownMenu>
                       <DropdownMenuTrigger asChild>
                         <Button variant="ghost" size="icon" aria-label="إجراءات الفرع">
@@ -132,11 +149,62 @@ export function Branches() {
                         </DropdownMenuItem>
                       </DropdownMenuContent>
                     </DropdownMenu>
-                  </TableCell>
-                </TableRow>
-              ))}
-            </TableBody>
-          </Table>
+                  </div>
+                </div>
+
+                {/* freshness */}
+                {view ? (
+                  <Freshness source={view.snapshot.source} asOf={view.last_sync_at} />
+                ) : hqLoading ? (
+                  <Skeleton className="h-6 w-40 rounded-full" />
+                ) : null}
+
+                {/* day snapshot */}
+                <div className="grid grid-cols-2 gap-3 text-sm">
+                  <div>
+                    <div className="text-xs text-muted-foreground">مبيعات اليوم</div>
+                    {view || !hqLoading ? (
+                      <div className="mt-0.5 font-medium">
+                        {snap
+                          ? `${money.format(snap.today_sales_total)} · ${toArabicDigits(snap.today_sales_count)} فاتورة`
+                          : '—'}
+                      </div>
+                    ) : (
+                      <Skeleton className="mt-1 h-5 w-24" />
+                    )}
+                  </div>
+                  <div>
+                    <div className="text-xs text-muted-foreground">الوردية الحالية</div>
+                    {view || !hqLoading ? (
+                      <div className="mt-0.5 font-medium">
+                        {snap?.open_shift
+                          ? `${snap.open_shift.opened_by} · ${relative(snap.open_shift.opened_at)}`
+                          : snap
+                            ? 'لا توجد وردية مفتوحة'
+                            : '—'}
+                      </div>
+                    ) : (
+                      <Skeleton className="mt-1 h-5 w-24" />
+                    )}
+                  </div>
+                </div>
+
+                {/* seats (management) */}
+                <div className="mt-auto flex items-center gap-1.5 border-t border-border pt-2.5 text-xs text-muted-foreground">
+                  <DeviceIcon className="size-4" />
+                  الأجهزة
+                  <span
+                    className={cn(
+                      'dir-ltr inline-block font-mono',
+                      (b.ActiveDevices ?? 0) >= b.Seats && 'text-warning',
+                    )}
+                  >
+                    {toArabicDigits(b.Seats)} / {toArabicDigits(b.ActiveDevices ?? 0)}
+                  </span>
+                </div>
+              </div>
+            )
+          })}
         </div>
       )}
 

@@ -110,6 +110,43 @@ export interface BranchActivityResponse {
   branches: Envelope<BranchSync>[]
 }
 
+// Sync-health dot for a branch: ok 🟢 <10 min, lagging 🟡 10–30, stale 🔴
+// older, never = no completed round yet.
+export type BranchHealth = 'ok' | 'lagging' | 'stale' | 'never'
+
+// An open cashier shift (one per workstation; a branch can have several).
+export interface OpenShift {
+  num: number
+  opened_by: string
+  opened_at: string
+}
+
+// One branch's day-so-far from the tenant central DB.
+export interface BranchSnapshotData {
+  branch_id: string
+  today_sales_total: number
+  today_sales_count: number
+  today_refunds_total: number
+  open_shift: OpenShift | null
+  open_shift_count: number
+}
+
+// GET /v1/tenants/{id}/hq/branches — control-plane branch + health + snapshot.
+// The snapshot degrades to {data: null, source: "offline"} when the tenant has
+// no sync subscription or the gateway is unreachable.
+export interface BranchView {
+  id: string
+  name: string
+  status: BranchStatus
+  health: BranchHealth
+  last_sync_at?: string | null
+  snapshot: Envelope<BranchSnapshotData | null>
+}
+
+export interface HqBranchesResponse {
+  branches: BranchView[]
+}
+
 // auth session (sessionResponse map in auth_handlers.go)
 export interface Session {
   access_token: string

@@ -36,6 +36,20 @@ export function useBranchActivity(tenantId: string | undefined) {
   })
 }
 
+/**
+ * Branch views for the Branches dashboard: control-plane branch + health tier
+ * + freshness-enveloped day snapshot. Same cadence rationale as
+ * `useBranchActivity`; cached data is shown while refetching (no blanking).
+ */
+export function useHqBranches(tenantId: string | undefined) {
+  return useQuery({
+    queryKey: qk.hqBranches(tenantId ?? ''),
+    queryFn: () => api.hqBranches(tenantId as string),
+    enabled: !!tenantId,
+    refetchInterval: 60_000,
+  })
+}
+
 /** Create a tenant and prime the list cache so the resolver sees it instantly. */
 export function useCreateTenant() {
   const qc = useQueryClient()
