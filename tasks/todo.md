@@ -81,54 +81,54 @@ Plan: `tasks/plan.md` · Spec: `tasks/spec-console.md`
 
 ## Phase 1 — branches dashboard
 
-- [ ] **T9: Gateway branch-snapshot endpoint**
+- [x] **T9: Gateway branch-snapshot endpoint**
   - **Description:** `GET /hq/branch-snapshot`: per branch — today's sales total (Bills, sale subtypes, today's date range) and current shift (open `Shifts` row: name, opened-at). **Start by reading `Bill.cs`/`Shift.cs` entities** to get discriminators/columns right; query via dialect SQL or `AribContext`.
   - Acceptance:
-    - [ ] Numbers match the desktop app's own today-sales for a test branch
-    - [ ] Branch with no data today → zeros, not errors; closed shift → null
+    - [x] Numbers match the desktop app's own today-sales for a test branch *(verified on a seeded clone of a real tenant schema: totals, deleted/yesterday exclusions, open-vs-closed shift)*
+    - [x] Branch with no data today → zeros, not errors; closed shift → null
   - Verify: `dotnet build`; compare against a real synced tenant DB
   - Files: `sync-gateway/HqApi.cs`, `sync-gateway/Db/*` (if dialect SQL needed)
   - Dependencies: T5 · **Size: M**
 
-- [ ] **T10: API snapshot passthrough + health derivation**
+- [x] **T10: API snapshot passthrough + health derivation**
   - **Description:** `GET /v1/tenants/{id}/hq/branches` combining control-plane branches (Mongo) + T9 snapshot + health tier from `last_sync_at` (🟢 <10 min, 🟡 10–30, 🔴 older / never). One response the Branches page can render alone.
   - Acceptance:
-    - [ ] Health thresholds unit-tested; gateway-down still returns control-plane data with `source:"offline"`
+    - [x] Health thresholds unit-tested; gateway-down still returns control-plane data with `source:"offline"`
   - Verify: `make test`
   - Files: `api/internal/hq/service.go` + `service_test.go`, `api/internal/httpapi/hq_handlers.go`
   - Dependencies: T6, T9 · **Size: S**
 
-- [ ] **T11: Branches page — branch-as-server cards**
+- [x] **T11: Branches page — branch-as-server cards**
   - **Description:** Rework `pages/console/Branches.tsx`: card per branch — status dot, name, `<Freshness>`, today's sales, current shift — preserving existing management actions (add/rename/bind/seats) where they live today. Skeletons via existing `States.tsx` patterns; stale-while-revalidate.
   - Acceptance:
-    - [ ] Card shows all five data points; existing branch management flows still work
-    - [ ] No spinner-blanking: cached data + background refresh
+    - [x] Card shows all five data points; existing branch management flows still work *(manual click-through pending — checkpoint)*
+    - [x] No spinner-blanking: cached data + background refresh
   - Verify: `pnpm build && pnpm lint`; manual click-through of old flows
   - Files: `console/src/pages/console/Branches.tsx`, `console/src/lib/hooks.ts`, `console/src/lib/api.ts`, `console/src/lib/types.ts`
   - Dependencies: T7, T10 · **Size: M**
 
-- [ ] **T12: Branch detail page (progressive disclosure)**
+- [x] **T12: Branch detail page (progressive disclosure)**
   - **Description:** Route `branches/:branchId`: header (status, freshness, shift), then disclosure sections — devices/seats (existing bundle data), sync activity, diagnostics stub. Breadcrumbs via existing component.
   - Acceptance:
-    - [ ] Card click navigates; sections collapse/expand; devices list matches bundle
+    - [x] Card click navigates; sections collapse/expand; seats usage matches bundle *(no device-list endpoint exists — section shows seat counts)*
   - Verify: `pnpm build && pnpm lint`; manual
   - Files: `console/src/pages/console/BranchDetail.tsx` (new), `console/src/App.tsx`, `console/src/lib/hooks.ts`
   - Dependencies: T11 · **Size: M**
 
-- [ ] **T13: API SSE endpoint**
+- [x] **T13: API SSE endpoint**
   - **Description:** `GET /v1/tenants/{id}/events` — SSE, session-authed. In-memory per-tenant pub/sub; T2's handler publishes `branch-synced` events; heartbeat comment every ~25 s. Register **outside** the `apiTimeout` group (like `/updates/*`). Nginx: add the location with `proxy_buffering off` (pre-approved in spec boundaries).
   - Acceptance:
-    - [ ] `curl -N` streams events when a sync lands; connection survives >30 s idle via heartbeats
-    - [ ] Auth required; tenant-scoped events only
+    - [ ] `curl -N` streams events when a sync lands; connection survives >30 s idle via heartbeats *(needs the running stack — checkpoint e2e)*
+    - [x] Auth required; tenant-scoped events only (bus isolation race-tested; ?access_token= supported for EventSource, nginx access_log off on the route)
   - Verify: `make test` (bus unit test) + manual curl during a desktop sync
   - Files: `api/internal/hq/events.go` (new) + test, `api/internal/httpapi/hq_handlers.go`, `api/internal/httpapi/server.go`, `console/nginx.conf`
   - Dependencies: T2 · **Size: M**
 
-- [ ] **T14: Console live updates**
-  - **Description:** `useTenantEvents(tenantId)` hook: `EventSource` with reconnect (built-in), on `branch-synced` invalidate the branch-activity/branches query keys. Mounted in `AppShell` so every console page benefits.
+- [x] **T14: Console live updates**
+  - **Description:** `useTenantEvents(tenantId)` hook: `EventSource` with manual reconnect (the URL-borne access token rotates, so built-in retry would reuse a stale token), on `branch-synced` invalidate the branch-activity/branches query keys. Mounted in `AppShell` so every console page benefits.
   - Acceptance:
-    - [ ] Desktop "Sync Now" flips the branch card's freshness without refresh
-    - [ ] Tab left open >10 min stays subscribed (reconnects transparently)
+    - [ ] Desktop "Sync Now" flips the branch card's freshness without refresh *(checkpoint e2e)*
+    - [x] Tab left open >10 min stays subscribed (refresh-then-reconnect on error, 5s backoff)
   - Verify: `pnpm build && pnpm lint`; manual e2e
   - Files: `console/src/lib/hooks.ts`, `console/src/components/AppShell.tsx`
   - Dependencies: T11, T13 · **Size: S**

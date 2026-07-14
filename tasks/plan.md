@@ -37,12 +37,12 @@ Spec: `tasks/spec-console.md`. This plan details **Slice 0 (HQ read path + fresh
 
 ### Phase 1 — branches dashboard (slice 1)
 
-- [ ] T9: Gateway `GET /hq/branch-snapshot` — today's sales + current shift per branch from central (Bills, Shifts)
-- [ ] T10: API passthrough + branch-health derivation (🟢 <10 min / 🟡 10–30 / 🔴 older, from `last_sync_at`)
-- [ ] T11: Console Branches page — branch-as-server cards
-- [ ] T12: Console branch detail page (progressive disclosure)
-- [ ] T13: API SSE endpoint `GET /v1/tenants/{id}/events` + nginx location
-- [ ] T14: Console live updates — `EventSource` hook invalidating query keys
+- [x] T9: Gateway `GET /hq/branch-snapshot` — today's sales + current shift per branch from central (Bills, Shifts)
+- [x] T10: API passthrough + branch-health derivation (🟢 <10 min / 🟡 10–30 / 🔴 older, from `last_sync_at`)
+- [x] T11: Console Branches page — branch-as-server cards
+- [x] T12: Console branch detail page (progressive disclosure)
+- [x] T13: API SSE endpoint `GET /v1/tenants/{id}/events` + nginx location
+- [x] T14: Console live updates — `EventSource` hook invalidating query keys
 
 ### Checkpoint 1 (slice 1 shipped)
 - [ ] All gates green
