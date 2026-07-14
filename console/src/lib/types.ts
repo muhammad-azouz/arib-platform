@@ -143,8 +143,22 @@ export interface BranchView {
   snapshot: Envelope<BranchSnapshotData | null>
 }
 
+// Company-wide day-so-far summed over the branch snapshots (Overview KPIs).
+// Stale branch data is included in the sums; honesty comes from
+// offline_branches and as_of (the oldest contributing sync).
+export interface HqTotals {
+  sales_total: number
+  sales_count: number
+  refunds_total: number
+  open_shift_count: number
+  synced_branches: number
+  offline_branches: number
+  as_of?: string | null
+}
+
 export interface HqBranchesResponse {
   branches: BranchView[]
+  totals: HqTotals
 }
 
 // auth session (sessionResponse map in auth_handlers.go)

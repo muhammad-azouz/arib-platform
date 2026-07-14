@@ -1,10 +1,12 @@
 import type { ReactNode } from 'react'
 import { Link, useParams } from 'react-router-dom'
-import { useBundle } from '@/lib/hooks'
+import { useBundle, useHqBranches } from '@/lib/hooks'
 import { tenantStatusLabel, tenantStatusTone, toArabicDigits } from '@/lib/format'
 import { cn } from '@/lib/utils'
 import { PageHeader } from '@/components/PageHeader'
 import { LoadingState } from '@/components/States'
+import { Freshness } from '@/components/Freshness'
+import { Skeleton } from '@/components/ui/skeleton'
 import {
   CompanyIcon,
   BranchIcon,
@@ -21,9 +23,12 @@ import { Badge } from '@/components/ui/badge'
 import { Card } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 
+const money = new Intl.NumberFormat('ar', { maximumFractionDigits: 2 })
+
 export function Overview() {
   const { tenantId } = useParams<'tenantId'>()
   const { data: bundle } = useBundle(tenantId)
+  const { data: hq, isLoading: hqLoading } = useHqBranches(tenantId)
 
   // The gate guarantees a complete bundle before this renders; guard anyway.
   if (!bundle) return <LoadingState />
@@ -32,6 +37,7 @@ export function Overview() {
   const branches = Branches ?? []
   const activeBranches = branches.filter((b) => b.Status === 'active').length
   const deviceCount = branches.reduce((sum, b) => sum + (b.ActiveDevices ?? 0), 0)
+  const totals = hq?.totals
 
   return (
     <>
@@ -62,6 +68,46 @@ export function Overview() {
       {t.Status !== 'suspended' && deviceCount === 0 && (
         <OnboardingBanner tenantId={t.ID} />
       )}
+
+      {/* Today's KPIs — company-wide sums the API derives from the same
+          branch snapshots the Branches cards render, so the numbers agree. */}
+      <section className="mb-6">
+        <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+          <h2 className="font-display text-base font-bold">اليوم</h2>
+          {totals ? (
+            <Freshness
+              source={totals.synced_branches > 0 ? 'synced' : 'offline'}
+              asOf={totals.as_of}
+            />
+          ) : hqLoading ? (
+            <Skeleton className="h-6 w-40 rounded-full" />
+          ) : null}
+        </div>
+        <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+          <KpiCard
+            label="مبيعات اليوم"
+            value={totals ? money.format(totals.sales_total) : undefined}
+          />
+          <KpiCard
+            label="الفواتير"
+            value={totals ? toArabicDigits(totals.sales_count) : undefined}
+          />
+          <KpiCard
+            label="المرتجعات"
+            value={totals ? money.format(totals.refunds_total) : undefined}
+          />
+          <KpiCard
+            label="الورديات المفتوحة"
+            value={totals ? toArabicDigits(totals.open_shift_count) : undefined}
+          />
+        </div>
+        {totals && totals.offline_branches > 0 && (
+          <p className="mt-2 text-xs text-muted-foreground">
+            تشمل الأرقام آخر بيانات معروفة لعدد{' '}
+            {toArabicDigits(totals.offline_branches)} من الفروع غير المتزامنة.
+          </p>
+        )}
+      </section>
 
       <div className="grid gap-4 sm:grid-cols-2">
         <StatCard
@@ -101,6 +147,23 @@ export function Overview() {
         />
       </div>
     </>
+  )
+}
+
+// A number-first KPI tile; undefined value = still loading (skeleton).
+// Never blanks: TanStack keeps the last totals while refreshing.
+function KpiCard({ label, value }: { label: string; value?: string }) {
+  return (
+    <Card className="p-4">
+      <div className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
+        {label}
+      </div>
+      {value !== undefined ? (
+        <div className="mt-1 truncate font-display text-2xl font-bold">{value}</div>
+      ) : (
+        <Skeleton className="mt-2 h-7 w-20" />
+      )}
+    </Card>
   )
 }
 

@@ -55,7 +55,7 @@ Spec: `tasks/spec-console.md`. This plan details **Slice 0 (HQ read path + fresh
 **Design note (2026-07-14):** the outline guessed this slice needs a gateway aggregate endpoint — it doesn't. T9's `/hq/branch-snapshot` already returns per-branch today-sales/refunds/shifts, so company KPIs are a Go-side sum over the same single gateway call `/hq/branches` already makes (table-driven tested, no new gateway surface, no extra gateway load). The console Overview reuses the existing `hq-branches` query key, so the shared cache and T14's SSE invalidation make the KPIs flip live with zero new wiring.
 
 - [x] T15: API — `totals` block on `GET /v1/tenants/{id}/hq/branches` (company KPIs summed from branch snapshots + offline-branch honesty count)
-- [ ] T16: Console — Overview rework: KPI tiles (sales/bills/refunds/open shifts today) with freshness + offline caveat
+- [x] T16: Console — Overview rework: KPI tiles (sales/bills/refunds/open shifts today) with freshness + offline caveat
 - [ ] T17: Console — branch health strip (per-branch dot → branch detail)
 - [ ] T18: Console — alerts stub (stale-sync alerts with deep links) + quick actions row
 

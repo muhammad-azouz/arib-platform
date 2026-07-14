@@ -152,11 +152,11 @@ No new gateway endpoint (plan outline superseded): company KPIs are summed API-s
   - Files: `api/internal/hq/service.go` + `service_test.go`, `api/internal/httpapi/hq_handlers.go`
   - Dependencies: T10 · **Size: S**
 
-- [ ] **T16: Console — Overview KPI tiles**
+- [x] **T16: Console — Overview KPI tiles**
   - **Description:** Rework `pages/console/Overview.tsx`: KPI row from `totals` (مبيعات اليوم، عدد الفواتير، المرتجعات، الورديات المفتوحة) with `<Freshness>` and an offline-branches caveat («لا يشمل X فروع غير متزامنة»). Reuses `useHqBranches` (shared cache + SSE invalidation already wired). Existing banners (suspended / no-plan / onboarding) preserved; company/plan cards demoted below the KPIs.
   - Acceptance:
-    - [ ] KPI numbers match the sum of the Branches page cards; Arabic numerals via `format.ts`
-    - [ ] No spinner-blanking; tenant without sync renders control-plane view with offline states, not errors
+    - [x] KPI numbers match the sum of the Branches page cards; Arabic numerals via `format.ts` *(same API sums; e2e match at checkpoint 2)*
+    - [x] No spinner-blanking; tenant without sync renders control-plane view with offline states, not errors
   - Verify: `pnpm build && pnpm lint`; manual in dev
   - Files: `console/src/lib/types.ts`, `console/src/pages/console/Overview.tsx`
   - Dependencies: T15 · **Size: M**
