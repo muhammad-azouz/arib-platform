@@ -10,10 +10,11 @@ import {
   toArabicDigits,
 } from '@/lib/format'
 import { cn } from '@/lib/utils'
-import type { Branch, BranchHealth, BranchView } from '@/lib/types'
+import type { Branch, BranchView } from '@/lib/types'
 import { PageHeader } from '@/components/PageHeader'
 import { LoadingState, EmptyState } from '@/components/States'
 import { Freshness } from '@/components/Freshness'
+import { HealthDot } from '@/components/HealthDot'
 import { AddBranchDialog } from '@/components/AddBranchDialog'
 import { RenameBranchDialog } from '@/components/RenameBranchDialog'
 import {
@@ -34,20 +35,6 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu'
-
-// The health dot: the one-glance answer to "which branch needs attention?".
-const HEALTH_DOT: Record<BranchHealth, string> = {
-  ok: 'bg-success',
-  lagging: 'bg-warning',
-  stale: 'bg-danger',
-  never: 'bg-muted-foreground/40',
-}
-const HEALTH_LABEL: Record<BranchHealth, string> = {
-  ok: 'متزامن',
-  lagging: 'متأخر في المزامنة',
-  stale: 'منقطع عن المزامنة',
-  never: 'لم يتصل بعد',
-}
 
 const money = new Intl.NumberFormat('ar', { maximumFractionDigits: 2 })
 
@@ -117,13 +104,7 @@ export function Branches() {
               >
                 {/* identity row: health dot, name, status, actions */}
                 <div className="flex items-center gap-2.5">
-                  <span
-                    title={view ? HEALTH_LABEL[view.health] : undefined}
-                    className={cn(
-                      'size-2.5 shrink-0 rounded-full',
-                      view ? HEALTH_DOT[view.health] : 'bg-muted-foreground/40',
-                    )}
-                  />
+                  <HealthDot health={view?.health} />
                   <h3 className="min-w-0 truncate font-display font-bold">
                     <Link
                       to={`/tenants/${tenantId}/branches/${b.ID}`}
