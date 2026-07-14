@@ -12,6 +12,7 @@ import (
 
 	"github.com/aribpos/license-api/internal/model"
 	mongostore "github.com/aribpos/license-api/internal/store/mongo"
+	"github.com/golang-jwt/jwt/v5"
 )
 
 // testService connects to the Mongo given by TEST_MONGO_URI (skips otherwise),
@@ -370,4 +371,41 @@ func TestRecordSyncCompleted(t *testing.T) {
 			t.Fatalf("expected ErrNotFound, got %v", err)
 		}
 	})
+}
+
+// TestIssueHQToken verifies the server-side HQ token mint: RS256 under the
+// sync key, scope "hq", the tenant's db_name, and a short expiry. Minting
+// needs no store, so the service is constructed directly.
+func TestIssueHQToken(t *testing.T) {
+	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatalf("generate key: %v", err)
+	}
+	s := New(nil, key, time.Hour, nil)
+
+	if _, err := s.IssueHQToken(""); err == nil {
+		t.Fatalf("expected error for empty db name")
+	}
+
+	tok, err := s.IssueHQToken("arib_test")
+	if err != nil {
+		t.Fatalf("issue hq token: %v", err)
+	}
+
+	claims := &HQClaims{}
+	if _, err := jwt.ParseWithClaims(tok, claims, func(tk *jwt.Token) (any, error) {
+		return &key.PublicKey, nil
+	}); err != nil {
+		t.Fatalf("parse hq token: %v", err)
+	}
+	if claims.Scope != "hq" {
+		t.Fatalf("scope = %q, want hq", claims.Scope)
+	}
+	if claims.DBName != "arib_test" {
+		t.Fatalf("db_name = %q, want arib_test", claims.DBName)
+	}
+	ttl := time.Until(claims.ExpiresAt.Time)
+	if ttl <= 0 || ttl > 6*time.Minute {
+		t.Fatalf("expiry %v not a short TTL", ttl)
+	}
 }

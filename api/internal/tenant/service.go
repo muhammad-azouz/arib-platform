@@ -481,6 +481,34 @@ func (s *Service) IssueOpsToken() (string, error) {
 	return jwt.NewWithClaims(jwt.SigningMethodRS256, claims).SignedString(s.syncKey)
 }
 
+// HQClaims is the JWT this server presents to the gateway's /hq read
+// endpoints when serving console requests. Signed with the same RS256 key as
+// sync tokens, but with different required claims (scope "hq" + db_name), so
+// it is never accepted where a sync or ops token is expected — and vice versa.
+// Minted per outbound call, server-side only: it must never reach the browser.
+type HQClaims struct {
+	Scope  string `json:"scope"`
+	DBName string `json:"db_name"`
+	jwt.RegisteredClaims
+}
+
+// IssueHQToken mints a short-lived HQ token scoped to one tenant central DB.
+func (s *Service) IssueHQToken(dbName string) (string, error) {
+	if dbName == "" {
+		return "", errors.New("db name required")
+	}
+	now := time.Now().UTC()
+	claims := &HQClaims{
+		Scope:  "hq",
+		DBName: dbName,
+		RegisteredClaims: jwt.RegisteredClaims{
+			IssuedAt:  jwt.NewNumericDate(now),
+			ExpiresAt: jwt.NewNumericDate(now.Add(5 * time.Minute)),
+		},
+	}
+	return jwt.NewWithClaims(jwt.SigningMethodRS256, claims).SignedString(s.syncKey)
+}
+
 // VerifySyncToken parses and verifies a sync token this server minted
 // (IssueSyncToken, RS256). The gateway forwards the client's own sync token to
 // the internal registry endpoint as proof it is serving that tenant; we trust
