@@ -143,11 +143,11 @@ Plan: `tasks/plan.md` · Spec: `tasks/spec-console.md`
 
 No new gateway endpoint (plan outline superseded): company KPIs are summed API-side from the branch snapshots `/hq/branches` already fetches in one gateway call.
 
-- [ ] **T15: API — `totals` block on `/hq/branches`**
+- [x] **T15: API — `totals` block on `/hq/branches`**
   - **Description:** Extend `hq.Service.Branches` to also return company-wide totals summed over the branch views' snapshot data: `{sales_total, sales_count, refunds_total, open_shift_count, synced_branches, offline_branches, as_of}`. Sums include every branch whose snapshot `Data` is set (stale data stays visible per T10's philosophy — honesty comes from `offline_branches` + `as_of` = oldest contributing `last_sync_at`). Handler wraps as `{branches, totals}`.
   - Acceptance:
-    - [ ] Mixed healthy/stale/never branches: sums correct, `offline_branches` counts stale+never, `as_of` is the oldest contributing sync
-    - [ ] Gateway down / not subscribed: totals present with zeros and all branches counted offline (page still renders)
+    - [x] Mixed healthy/stale/never branches: sums correct, `offline_branches` counts stale+never, `as_of` is the oldest contributing sync
+    - [x] Gateway down / not subscribed: totals present with zeros and all branches counted offline (page still renders)
   - Verify: `make test` — table-driven beside the service
   - Files: `api/internal/hq/service.go` + `service_test.go`, `api/internal/httpapi/hq_handlers.go`
   - Dependencies: T10 · **Size: S**

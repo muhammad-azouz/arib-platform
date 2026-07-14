@@ -166,10 +166,32 @@ func healthTier(lastSync *time.Time, now time.Time) string {
 	}
 }
 
-// Branches returns the tenant's branches merged with the gateway snapshot.
-// Unlike BranchActivity it never fails on subscription or gateway problems:
-// those only downgrade the snapshot envelope to offline.
-func (s *Service) Branches(ctx context.Context, accountID, tenantID string) ([]BranchView, error) {
+// Totals is the company-wide day-so-far, summed over the branch snapshots
+// (slice 2's KPI tiles — no extra gateway call, no aggregate endpoint). Stale
+// data stays visible on the cards, so it is summed too; honesty comes from
+// the offline count and AsOf, the oldest sync among contributing branches.
+type Totals struct {
+	SalesTotal      float64    `json:"sales_total"`
+	SalesCount      int        `json:"sales_count"`
+	RefundsTotal    float64    `json:"refunds_total"`
+	OpenShiftCount  int        `json:"open_shift_count"`
+	SyncedBranches  int        `json:"synced_branches"`
+	OfflineBranches int        `json:"offline_branches"`
+	AsOf            *time.Time `json:"as_of,omitempty"`
+}
+
+// BranchesResult is the full /hq/branches payload: per-branch views plus the
+// company totals the Overview's KPI tiles render.
+type BranchesResult struct {
+	Branches []BranchView `json:"branches"`
+	Totals   Totals       `json:"totals"`
+}
+
+// Branches returns the tenant's branches merged with the gateway snapshot,
+// plus company-wide totals. Unlike BranchActivity it never fails on
+// subscription or gateway problems: those only downgrade the snapshot
+// envelopes to offline and zero the totals.
+func (s *Service) Branches(ctx context.Context, accountID, tenantID string) (*BranchesResult, error) {
 	t, err := s.store.TenantByID(ctx, tenantID)
 	if err != nil {
 		return nil, err
@@ -201,7 +223,7 @@ func (s *Service) Branches(ctx context.Context, accountID, tenantID string) ([]B
 	}
 
 	now := time.Now().UTC()
-	out := make([]BranchView, 0, len(branches))
+	res := &BranchesResult{Branches: make([]BranchView, 0, len(branches))}
 	for i := range branches {
 		b := &branches[i]
 		health := healthTier(b.LastSyncAt, now)
@@ -223,12 +245,23 @@ func (s *Service) Branches(ctx context.Context, accountID, tenantID string) ([]B
 		// envelope says "synced" only while the branch's cadence is healthy.
 		if gatewayOK && (health == "ok" || health == "lagging") {
 			v.Snapshot.Source = "synced"
+			res.Totals.SyncedBranches++
 		} else {
 			v.Snapshot.Source = "offline"
+			res.Totals.OfflineBranches++
 		}
-		out = append(out, v)
+		if d := v.Snapshot.Data; d != nil {
+			res.Totals.SalesTotal += d.TodaySalesTotal
+			res.Totals.SalesCount += d.TodaySalesCount
+			res.Totals.RefundsTotal += d.TodayRefundsTotal
+			res.Totals.OpenShiftCount += d.OpenShiftCount
+			if b.LastSyncAt != nil && (res.Totals.AsOf == nil || b.LastSyncAt.Before(*res.Totals.AsOf)) {
+				res.Totals.AsOf = b.LastSyncAt
+			}
+		}
+		res.Branches = append(res.Branches, v)
 	}
-	return out, nil
+	return res, nil
 }
 
 // CheckOwnership verifies the tenant belongs to the account (the SSE endpoint

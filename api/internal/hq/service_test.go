@@ -140,6 +140,63 @@ func TestHealthTier(t *testing.T) {
 	}
 }
 
+func TestBranches_TotalsSumSnapshotsHonestly(t *testing.T) {
+	freshSync := time.Now().UTC().Add(-3 * time.Minute)
+	staleSync := time.Now().UTC().Add(-2 * time.Hour)
+	gw := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"branches":[` +
+			`{"branch_id":"11111111-1111-1111-1111-111111111111","today_sales_total":150.5,"today_sales_count":2,"today_refunds_total":20,"open_shift_count":1},` +
+			`{"branch_id":"22222222-2222-2222-2222-222222222222","today_sales_total":100,"today_sales_count":1,"today_refunds_total":0,"open_shift_count":0}]}`))
+	}))
+	defer gw.Close()
+
+	st := testStore(gw.URL)
+	st.branches = []model.Branch{
+		{ID: "11111111-1111-1111-1111-111111111111", TenantID: "tnt_1", Name: "وسط البلد", Status: model.BranchActive, LastSyncAt: &freshSync},
+		{ID: "22222222-2222-2222-2222-222222222222", TenantID: "tnt_1", Name: "المعادي", Status: model.BranchActive, LastSyncAt: &staleSync},
+		{ID: "33333333-3333-3333-3333-333333333333", TenantID: "tnt_1", Name: "مدينة نصر", Status: model.BranchActive},
+	}
+	s := New(st, &fakeTokens{}, nil)
+
+	got, err := s.Branches(context.Background(), "acc_owner", "tnt_1")
+	if err != nil {
+		t.Fatalf("branches: %v", err)
+	}
+	if len(got.Branches) != 3 {
+		t.Fatalf("got %d branches, want 3", len(got.Branches))
+	}
+	tot := got.Totals
+	// Stale data stays visible on cards, so it must be summed too — honesty
+	// comes from the offline count and the oldest contributing as_of.
+	if tot.SalesTotal != 250.5 || tot.SalesCount != 3 || tot.RefundsTotal != 20 || tot.OpenShiftCount != 1 {
+		t.Fatalf("totals sums wrong: %+v", tot)
+	}
+	if tot.SyncedBranches != 1 || tot.OfflineBranches != 2 {
+		t.Fatalf("totals branch counts wrong: %+v", tot)
+	}
+	if tot.AsOf == nil || !tot.AsOf.Equal(staleSync) {
+		t.Fatalf("totals as_of = %v, want oldest contributing sync %v", tot.AsOf, staleSync)
+	}
+
+	t.Run("gateway down zeros the totals, all branches offline", func(t *testing.T) {
+		st2 := testStore("http://127.0.0.1:1")
+		st2.branches = st.branches
+		s2 := New(st2, &fakeTokens{}, &http.Client{Timeout: 300 * time.Millisecond})
+		got, err := s2.Branches(context.Background(), "acc_owner", "tnt_1")
+		if err != nil {
+			t.Fatalf("branches with dead gateway: %v", err)
+		}
+		tot := got.Totals
+		if tot.SalesTotal != 0 || tot.SalesCount != 0 || tot.SyncedBranches != 0 || tot.OfflineBranches != 3 {
+			t.Fatalf("dead-gateway totals wrong: %+v", tot)
+		}
+		if tot.AsOf != nil {
+			t.Fatalf("dead-gateway as_of = %v, want nil (no contributing data)", tot.AsOf)
+		}
+	})
+}
+
 func TestBranches_MergesSnapshotAndDegradesOffline(t *testing.T) {
 	syncedAt := time.Now().UTC().Add(-3 * time.Minute)
 	gw := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -161,10 +218,11 @@ func TestBranches_MergesSnapshotAndDegradesOffline(t *testing.T) {
 	}
 	s := New(st, &fakeTokens{}, nil)
 
-	got, err := s.Branches(context.Background(), "acc_owner", "tnt_1")
+	res, err := s.Branches(context.Background(), "acc_owner", "tnt_1")
 	if err != nil {
 		t.Fatalf("branches: %v", err)
 	}
+	got := res.Branches
 	if len(got) != 2 {
 		t.Fatalf("got %d branches, want 2", len(got))
 	}
@@ -182,10 +240,11 @@ func TestBranches_MergesSnapshotAndDegradesOffline(t *testing.T) {
 		st2 := testStore("http://127.0.0.1:1")
 		st2.branches = st.branches
 		s2 := New(st2, &fakeTokens{}, &http.Client{Timeout: 300 * time.Millisecond})
-		got, err := s2.Branches(context.Background(), "acc_owner", "tnt_1")
+		res, err := s2.Branches(context.Background(), "acc_owner", "tnt_1")
 		if err != nil {
 			t.Fatalf("branches with dead gateway: %v", err)
 		}
+		got := res.Branches
 		if len(got) != 2 || got[0].Snapshot.Data != nil || got[0].Snapshot.Source != "offline" {
 			t.Fatalf("expected offline degrade, got %+v", got[0])
 		}
@@ -199,10 +258,11 @@ func TestBranches_MergesSnapshotAndDegradesOffline(t *testing.T) {
 		st3.tenant.DBName = ""
 		st3.branches = st.branches
 		s3 := New(st3, &fakeTokens{}, nil)
-		got, err := s3.Branches(context.Background(), "acc_owner", "tnt_1")
+		res, err := s3.Branches(context.Background(), "acc_owner", "tnt_1")
 		if err != nil {
 			t.Fatalf("branches without subscription: %v", err)
 		}
+		got := res.Branches
 		if len(got) != 2 || got[0].Snapshot.Source != "offline" {
 			t.Fatalf("expected offline snapshots, got %+v", got[0])
 		}
