@@ -169,11 +169,11 @@ No new gateway endpoint (plan outline superseded): company KPIs are summed API-s
   - Files: `console/src/pages/console/Overview.tsx` (+ small component if it earns extraction)
   - Dependencies: T16 · **Size: S**
 
-- [ ] **T18: Console — alerts stub + quick actions**
+- [x] **T18: Console — alerts stub + quick actions**
   - **Description:** Alerts panel derived from data already on hand: stale/never-sync branches → «لم يزامن منذ …» deep-linking to that branch's detail (spec rule: an alert with no destination doesn't ship). Empty state «لا توجد تنبيهات». Shaped so slice 5's derived alerts (low stock, conflicts) slot into the same list. Quick actions row: إضافة فرع (→ الفروع), تنزيل التطبيق (→ التنزيل).
   - Acceptance:
-    - [ ] Stale branch produces an alert whose link opens the branch detail; healthy tenant shows the empty state
-    - [ ] Quick actions navigate correctly
+    - [x] Stale branch produces an alert whose link opens the branch detail; healthy tenant shows the empty state *(stale → branch detail; never-connected → download page; live render at checkpoint 2)*
+    - [x] Quick actions navigate correctly
   - Verify: `pnpm build && pnpm lint`; manual
   - Files: `console/src/pages/console/Overview.tsx`
   - Dependencies: T16 · **Size: S**
