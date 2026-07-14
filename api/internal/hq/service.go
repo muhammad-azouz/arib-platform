@@ -33,6 +33,7 @@ const offlineAfter = 30 * time.Minute
 type Store interface {
 	TenantByID(ctx context.Context, id string) (*model.Tenant, error)
 	ShardByID(ctx context.Context, id string) (*model.Shard, error)
+	BranchesByTenant(ctx context.Context, tenantID string) ([]model.Branch, error)
 }
 
 // TokenIssuer mints the HQ token the gateway's /hq endpoints require.
@@ -107,6 +108,125 @@ func (s *Service) BranchActivity(ctx context.Context, accountID, tenantID string
 			source = "offline"
 		}
 		out = append(out, BranchActivityEnvelope{Data: b, Source: source, AsOf: &asOf})
+	}
+	return out, nil
+}
+
+// OpenShift is an open cashier shift as reported by the gateway.
+type OpenShift struct {
+	Num      int       `json:"num"`
+	OpenedBy string    `json:"opened_by"`
+	OpenedAt time.Time `json:"opened_at"`
+}
+
+// BranchSnapshot is one branch's day-so-far from the gateway.
+type BranchSnapshot struct {
+	BranchID          string     `json:"branch_id"`
+	TodaySalesTotal   float64    `json:"today_sales_total"`
+	TodaySalesCount   int        `json:"today_sales_count"`
+	TodayRefundsTotal float64    `json:"today_refunds_total"`
+	OpenShift         *OpenShift `json:"open_shift"`
+	OpenShiftCount    int        `json:"open_shift_count"`
+}
+
+// BranchView is everything the Branches page needs for one branch: the
+// control-plane identity, the sync-health tier, and the freshness-enveloped
+// snapshot. The snapshot degrades to {data: null, source: "offline"} when the
+// tenant has no sync subscription or the gateway is unreachable — the page
+// still renders from control-plane data.
+type BranchView struct {
+	ID         string     `json:"id"`
+	Name       string     `json:"name"`
+	Status     string     `json:"status"`
+	Health     string     `json:"health"` // ok | lagging | stale | never
+	LastSyncAt *time.Time `json:"last_sync_at,omitempty"`
+	Snapshot   struct {
+		Data   *BranchSnapshot `json:"data"`
+		Source string          `json:"source"`
+		AsOf   *time.Time      `json:"as_of,omitempty"`
+	} `json:"snapshot"`
+}
+
+// healthTier buckets a branch's last completed sync round into the console's
+// health dots: ok 🟢 <10 min, lagging 🟡 10–30 min, stale 🔴 older, never = no
+// round recorded yet. Derived from the control plane's last_sync_at copy so it
+// works even when the gateway is unreachable.
+func healthTier(lastSync *time.Time, now time.Time) string {
+	if lastSync == nil {
+		return "never"
+	}
+	age := now.Sub(*lastSync)
+	switch {
+	case age < 10*time.Minute:
+		return "ok"
+	case age < 30*time.Minute:
+		return "lagging"
+	default:
+		return "stale"
+	}
+}
+
+// Branches returns the tenant's branches merged with the gateway snapshot.
+// Unlike BranchActivity it never fails on subscription or gateway problems:
+// those only downgrade the snapshot envelope to offline.
+func (s *Service) Branches(ctx context.Context, accountID, tenantID string) ([]BranchView, error) {
+	t, err := s.store.TenantByID(ctx, tenantID)
+	if err != nil {
+		return nil, err
+	}
+	if t.AccountID != accountID {
+		return nil, ErrForbidden
+	}
+	branches, err := s.store.BranchesByTenant(ctx, tenantID)
+	if err != nil {
+		return nil, err
+	}
+
+	// Best-effort snapshot: a tenant without sync or a dead gateway means the
+	// branch cards render control-plane data with offline envelopes.
+	snapshots := map[string]*BranchSnapshot{}
+	gatewayOK := false
+	if t.DBName != "" && t.ShardID != "" {
+		if shard, err := s.store.ShardByID(ctx, t.ShardID); err == nil {
+			var resp struct {
+				Branches []BranchSnapshot `json:"branches"`
+			}
+			if err := s.getJSON(ctx, shard.GatewayURL+"/hq/branch-snapshot", t.DBName, &resp); err == nil {
+				gatewayOK = true
+				for i := range resp.Branches {
+					snapshots[resp.Branches[i].BranchID] = &resp.Branches[i]
+				}
+			}
+		}
+	}
+
+	now := time.Now().UTC()
+	out := make([]BranchView, 0, len(branches))
+	for i := range branches {
+		b := &branches[i]
+		health := healthTier(b.LastSyncAt, now)
+		v := BranchView{
+			ID:         b.ID,
+			Name:       b.Name,
+			Status:     string(b.Status),
+			Health:     health,
+			LastSyncAt: b.LastSyncAt,
+		}
+		v.Snapshot.Data = snapshots[b.ID]
+		v.Snapshot.AsOf = b.LastSyncAt
+		if v.Snapshot.Data == nil && gatewayOK && b.LastSyncAt != nil {
+			// The gateway answered but had no rows for this branch — no bills
+			// or shifts today. A synced zero, not a gap.
+			v.Snapshot.Data = &BranchSnapshot{BranchID: b.ID}
+		}
+		// Stale data stays visible (Data set) but is labeled honestly: the
+		// envelope says "synced" only while the branch's cadence is healthy.
+		if gatewayOK && (health == "ok" || health == "lagging") {
+			v.Snapshot.Source = "synced"
+		} else {
+			v.Snapshot.Source = "offline"
+		}
+		out = append(out, v)
 	}
 	return out, nil
 }

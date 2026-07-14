@@ -139,6 +139,7 @@ func (s *Server) Router() http.Handler {
 					// HQ reads: business data from the tenant's central DB,
 					// proxied via the sync gateway (freshness-enveloped).
 					r.Get("/hq/branch-activity", s.handleHqBranchActivity)
+					r.Get("/hq/branches", s.handleHqBranches)
 				})
 			})
 		})

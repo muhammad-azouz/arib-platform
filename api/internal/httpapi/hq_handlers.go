@@ -21,6 +21,16 @@ func (s *Server) handleHqBranchActivity(w http.ResponseWriter, r *http.Request) 
 	writeJSON(w, http.StatusOK, map[string]any{"branches": envelopes})
 }
 
+func (s *Server) handleHqBranches(w http.ResponseWriter, r *http.Request) {
+	c := claimsFrom(r.Context())
+	views, err := s.hq.Branches(r.Context(), c.Subject, chi.URLParam(r, "id"))
+	if err != nil {
+		s.writeHqError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"branches": views})
+}
+
 func (s *Server) writeHqError(w http.ResponseWriter, err error) {
 	switch {
 	case errors.Is(err, hq.ErrForbidden):
