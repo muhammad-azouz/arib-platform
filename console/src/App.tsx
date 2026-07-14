@@ -11,6 +11,9 @@ import { SetupWizard } from '@/pages/setup/SetupWizard'
 import { Overview } from '@/pages/console/Overview'
 import { Company } from '@/pages/console/Company'
 import { Branches } from '@/pages/console/Branches'
+import { Catalog } from '@/pages/console/Catalog'
+import { Inventory } from '@/pages/console/Inventory'
+import { Reports } from '@/pages/console/Reports'
 import { Download } from '@/pages/console/Download'
 import { Settings } from '@/pages/console/Settings'
 import { AccountIcon, BillingIcon, HelpIcon } from '@/components/icon'
@@ -50,6 +53,9 @@ export default function App() {
             <Route index element={<Overview />} />
             <Route path="company" element={<Company />} />
             <Route path="branches" element={<Branches />} />
+            <Route path="catalog" element={<Catalog />} />
+            <Route path="inventory" element={<Inventory />} />
+            <Route path="reports" element={<Reports />} />
             <Route path="download" element={<Download />} />
             <Route path="settings" element={<Settings />} />
           </Route>

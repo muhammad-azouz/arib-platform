@@ -7,6 +7,9 @@ import {
   DashboardIcon,
   CompanyIcon,
   BranchIcon,
+  CatalogIcon,
+  InventoryIcon,
+  ReportsIcon,
   DownloadIcon,
   SettingsIcon,
   TenantIcon,
@@ -27,8 +30,11 @@ export function AppShell() {
 
   const nav: NavItem[] = [
     { to: base, label: 'نظرة عامة', icon: DashboardIcon, end: true },
-    { to: `${base}/company`, label: 'النشاط التجاري', icon: CompanyIcon },
     { to: `${base}/branches`, label: 'الفروع', icon: BranchIcon },
+    { to: `${base}/catalog`, label: 'الكتالوج', icon: CatalogIcon },
+    { to: `${base}/inventory`, label: 'المخزون', icon: InventoryIcon },
+    { to: `${base}/reports`, label: 'التقارير', icon: ReportsIcon },
+    { to: `${base}/company`, label: 'النشاط التجاري', icon: CompanyIcon },
     { to: `${base}/download`, label: 'تنزيل التطبيق', icon: DownloadIcon },
     { to: `${base}/settings`, label: 'الإعدادات', icon: SettingsIcon },
   ]

@@ -44,6 +44,9 @@ import {
   Bill,
   Wallet,
   Download,
+  TagPrice,
+  BoxMinimalistic,
+  ChartSquare,
 } from '@solar-icons/react'
 
 /** Shared type for any icon component in this module (Solar forward-ref svg). */
@@ -60,6 +63,9 @@ export const AccountIcon = UserCircle
 export const LogoutIcon = Logout2
 export const SettingsIcon = Settings
 export const DashboardIcon = Widget
+export const CatalogIcon = TagPrice
+export const InventoryIcon = BoxMinimalistic
+export const ReportsIcon = ChartSquare
 
 // Actions
 export const AddIcon = AddCircle
