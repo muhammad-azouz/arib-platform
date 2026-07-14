@@ -27,6 +27,7 @@ type Server struct {
 	tenant  *tenant.Service
 	rollout *rollout.Service
 	hq      *hq.Service
+	events  *hq.EventBus // in-memory: single API instance (see hq.EventBus)
 	log     *slog.Logger
 
 	corsOrigins []string
@@ -50,6 +51,7 @@ func New(authSvc *auth.Service, deviceSvc *device.Service, adminSvc *admin.Servi
 		tenant:        tenantSvc,
 		rollout:       rolloutSvc,
 		hq:            hqSvc,
+		events:        hq.NewEventBus(),
 		log:           log,
 		corsOrigins:   corsOrigins,
 		otpLimiter:    newKeyedLimiter(rateEvery(time.Minute), 3),
@@ -80,6 +82,10 @@ func (s *Server) Router() http.Handler {
 		r.Get("/updates/*", s.handleUpdates)
 		r.Head("/updates/*", s.handleUpdates)
 	})
+
+	// SSE event stream. Outside the API timeout group like /updates/*: the
+	// stream lives for the console tab's lifetime (heartbeats keep it open).
+	r.Get("/v1/tenants/{id}/events", s.handleTenantEvents)
 
 	// Everything below (the API proper) keeps the 30s timeout; chi forbids
 	// r.Use after routes are registered, so it's applied per-registration.

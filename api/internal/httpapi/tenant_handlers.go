@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/aribpos/license-api/internal/hq"
 	"github.com/aribpos/license-api/internal/model"
 	mongostore "github.com/aribpos/license-api/internal/store/mongo"
 	"github.com/aribpos/license-api/internal/tenant"
@@ -93,6 +94,7 @@ func (s *Server) handleInternalSyncCompleted(w http.ResponseWriter, r *http.Requ
 		s.writeTenantError(w, err)
 		return
 	}
+	s.events.Publish(claims.TenantID, hq.Event{Type: "branch-synced", BranchID: claims.BranchID, At: at})
 	writeJSON(w, http.StatusOK, map[string]any{"status": "recorded", "last_sync_at": at})
 }
 

@@ -231,6 +231,19 @@ func (s *Service) Branches(ctx context.Context, accountID, tenantID string) ([]B
 	return out, nil
 }
 
+// CheckOwnership verifies the tenant belongs to the account (the SSE endpoint
+// authorises once at subscribe time, so it needs the bare check).
+func (s *Service) CheckOwnership(ctx context.Context, accountID, tenantID string) error {
+	t, err := s.store.TenantByID(ctx, tenantID)
+	if err != nil {
+		return err
+	}
+	if t.AccountID != accountID {
+		return ErrForbidden
+	}
+	return nil
+}
+
 // getJSON performs one HQ-token-authed gateway GET and decodes the body.
 func (s *Service) getJSON(ctx context.Context, url, dbName string, into any) error {
 	tok, err := s.tokens.IssueHQToken(dbName)
