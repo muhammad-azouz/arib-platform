@@ -73,6 +73,29 @@ func (s *Server) handleInternalTenantRegistry(w http.ResponseWriter, r *http.Req
 	writeJSON(w, http.StatusOK, registryResponse(company, branches))
 }
 
+// handleInternalSyncCompleted is the gateway's fire-and-forget callback after
+// each successful sync round: it stamps the branch's last_sync_at on the
+// control plane. Authorised like the registry endpoint — by the client's
+// forwarded sync token, whose claims name the tenant and branch.
+func (s *Server) handleInternalSyncCompleted(w http.ResponseWriter, r *http.Request) {
+	auth := r.Header.Get("Authorization")
+	if !strings.HasPrefix(auth, "Bearer ") {
+		writeErr(w, http.StatusUnauthorized, "missing bearer token")
+		return
+	}
+	claims, err := s.tenant.VerifySyncToken(strings.TrimPrefix(auth, "Bearer "))
+	if err != nil {
+		writeErr(w, http.StatusUnauthorized, "invalid sync token")
+		return
+	}
+	at, err := s.tenant.RecordSyncCompleted(r.Context(), claims.TenantID, claims.BranchID)
+	if err != nil {
+		s.writeTenantError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"status": "recorded", "last_sync_at": at})
+}
+
 // registryResponse shapes the gateway-facing registry payload (snake_case).
 func registryResponse(c *model.Company, branches []model.Branch) map[string]any {
 	resp := map[string]any{}

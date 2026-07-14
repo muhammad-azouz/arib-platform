@@ -246,6 +246,12 @@ type Branch struct {
 	CreatedAt time.Time    `bson:"created_at"`
 	UpdatedAt time.Time    `bson:"updated_at"`
 
+	// LastSyncAt is the control plane's copy of the branch's last completed
+	// sync round, stamped by the gateway's sync-completed callback. The tenant
+	// central DB's SyncActivity table is the source of truth; this copy lets
+	// branch-health reads skip a gateway round-trip. Nil = never synced.
+	LastSyncAt *time.Time `bson:"last_sync_at,omitempty"`
+
 	// ActiveDevices is the live count of seats currently in use. It is computed
 	// in GetBundle and never persisted (bson:"-"); it serializes as JSON
 	// "ActiveDevices", matching the no-json-tags PascalCase convention the

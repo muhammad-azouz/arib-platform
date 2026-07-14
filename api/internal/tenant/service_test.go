@@ -334,3 +334,40 @@ func TestDeleteTenant_GatewayFailureAbortsDeletion(t *testing.T) {
 		t.Fatalf("company should still exist after aborted deletion: %v", err)
 	}
 }
+
+// TestRecordSyncCompleted covers the gateway's sync-completed callback: the
+// branch's last_sync_at is stamped, a claims/branch tenant mismatch is
+// forbidden, and an unknown branch is not found.
+func TestRecordSyncCompleted(t *testing.T) {
+	s, ctx := testService(t)
+	tenantID, _, branchID := setupTenant(t, s, ctx)
+
+	before := time.Now().UTC().Add(-time.Second)
+	at, err := s.RecordSyncCompleted(ctx, tenantID, branchID)
+	if err != nil {
+		t.Fatalf("record sync completed: %v", err)
+	}
+	if at.Before(before) {
+		t.Fatalf("recorded time %v is before the call", at)
+	}
+
+	b, err := s.store.BranchByID(ctx, branchID)
+	if err != nil {
+		t.Fatalf("branch by id: %v", err)
+	}
+	if b.LastSyncAt == nil || b.LastSyncAt.Before(before) {
+		t.Fatalf("branch last_sync_at not stamped: %v", b.LastSyncAt)
+	}
+
+	t.Run("tenant mismatch is forbidden", func(t *testing.T) {
+		if _, err := s.RecordSyncCompleted(ctx, "tnt_other", branchID); !errors.Is(err, ErrForbidden) {
+			t.Fatalf("expected ErrForbidden, got %v", err)
+		}
+	})
+
+	t.Run("unknown branch is not found", func(t *testing.T) {
+		if _, err := s.RecordSyncCompleted(ctx, tenantID, "00000000-0000-0000-0000-000000000000"); !errors.Is(err, mongostore.ErrNotFound) {
+			t.Fatalf("expected ErrNotFound, got %v", err)
+		}
+	})
+}

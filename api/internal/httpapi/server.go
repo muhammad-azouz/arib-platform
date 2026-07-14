@@ -110,6 +110,7 @@ func (s *Server) Router() http.Handler {
 		//     company+branches so the gateway can seed central FK anchors
 		//     (E5/D18). ---
 		r.Get("/internal/tenant-registry", s.handleInternalTenantRegistry)
+		r.Post("/internal/sync-completed", s.handleInternalSyncCompleted)
 
 		// --- Authenticated client ---
 		r.Group(func(r chi.Router) {

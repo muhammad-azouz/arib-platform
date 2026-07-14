@@ -57,6 +57,15 @@ func (s *Store) SetBranchSeats(ctx context.Context, id string, seats int, at tim
 	})
 }
 
+// SetBranchLastSync stamps the branch's last completed sync round (gateway
+// sync-completed callback). Deliberately leaves updated_at alone — this is
+// telemetry, not a registry edit.
+func (s *Store) SetBranchLastSync(ctx context.Context, id string, at time.Time) error {
+	return s.updateBranch(ctx, id, bson.D{
+		{Key: "last_sync_at", Value: at},
+	})
+}
+
 // DeleteBranchesByTenant removes every branch owned by the tenant, returning
 // the count deleted.
 func (s *Store) DeleteBranchesByTenant(ctx context.Context, tenantID string) (int64, error) {

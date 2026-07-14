@@ -501,6 +501,26 @@ func (s *Service) VerifySyncToken(tokenStr string) (*SyncClaims, error) {
 	return claims, nil
 }
 
+// RecordSyncCompleted stamps a branch's last completed sync round, called by
+// the gateway's fire-and-forget callback after each successful /sync round.
+// Authorised by a valid sync token (the caller passes its verified claims'
+// tenant/branch), so the branch must belong to that tenant. Returns the
+// recorded time. (The SSE bus for live console updates hooks in here later.)
+func (s *Service) RecordSyncCompleted(ctx context.Context, tenantID, branchID string) (time.Time, error) {
+	b, err := s.store.BranchByID(ctx, branchID)
+	if err != nil {
+		return time.Time{}, err
+	}
+	if b.TenantID != tenantID {
+		return time.Time{}, ErrForbidden
+	}
+	now := time.Now().UTC()
+	if err := s.store.SetBranchLastSync(ctx, branchID, now); err != nil {
+		return time.Time{}, err
+	}
+	return now, nil
+}
+
 // TenantRegistry returns a tenant's company (may be nil) and branches so the
 // gateway can materialise them as FK anchors in the central DB (E5/D18).
 // Authorised by a valid sync token, not account ownership.
