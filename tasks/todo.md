@@ -76,8 +76,8 @@ Plan: `tasks/plan.md` · Spec: `tasks/spec-console.md`
 
 ### Checkpoint 0
 - [x] All three repo gates green (api `go test ./...` with Mongo, gateway `dotnet build`, console `pnpm build && pnpm lint` — 2026-07-14)
-- [ ] E2E: desktop sync → SyncActivity → callback → Mongo → console shows real per-branch freshness *(needs a real desktop sync round — human step)*
-- [ ] **Human review before Phase 1**
+- [x] E2E: desktop sync → SyncActivity → callback → Mongo → console shows real per-branch freshness *(human-verified with a real desktop sync round, 2026-07-14)*
+- [x] **Human review before Phase 1** *(approved 2026-07-14)*
 
 ## Phase 1 — branches dashboard
 
@@ -101,7 +101,7 @@ Plan: `tasks/plan.md` · Spec: `tasks/spec-console.md`
 - [x] **T11: Branches page — branch-as-server cards**
   - **Description:** Rework `pages/console/Branches.tsx`: card per branch — status dot, name, `<Freshness>`, today's sales, current shift — preserving existing management actions (add/rename/bind/seats) where they live today. Skeletons via existing `States.tsx` patterns; stale-while-revalidate.
   - Acceptance:
-    - [x] Card shows all five data points; existing branch management flows still work *(manual click-through pending — checkpoint)*
+    - [x] Card shows all five data points; existing branch management flows still work *(human-verified at checkpoint 1)*
     - [x] No spinner-blanking: cached data + background refresh
   - Verify: `pnpm build && pnpm lint`; manual click-through of old flows
   - Files: `console/src/pages/console/Branches.tsx`, `console/src/lib/hooks.ts`, `console/src/lib/api.ts`, `console/src/lib/types.ts`
@@ -118,7 +118,7 @@ Plan: `tasks/plan.md` · Spec: `tasks/spec-console.md`
 - [x] **T13: API SSE endpoint**
   - **Description:** `GET /v1/tenants/{id}/events` — SSE, session-authed. In-memory per-tenant pub/sub; T2's handler publishes `branch-synced` events; heartbeat comment every ~25 s. Register **outside** the `apiTimeout` group (like `/updates/*`). Nginx: add the location with `proxy_buffering off` (pre-approved in spec boundaries).
   - Acceptance:
-    - [ ] `curl -N` streams events when a sync lands; connection survives >30 s idle via heartbeats *(needs the running stack — checkpoint e2e)*
+    - [x] `curl -N` streams events when a sync lands; connection survives >30 s idle via heartbeats *(human-verified at checkpoint 1)*
     - [x] Auth required; tenant-scoped events only (bus isolation race-tested; ?access_token= supported for EventSource, nginx access_log off on the route)
   - Verify: `make test` (bus unit test) + manual curl during a desktop sync
   - Files: `api/internal/hq/events.go` (new) + test, `api/internal/httpapi/hq_handlers.go`, `api/internal/httpapi/server.go`, `console/nginx.conf`
@@ -127,14 +127,14 @@ Plan: `tasks/plan.md` · Spec: `tasks/spec-console.md`
 - [x] **T14: Console live updates**
   - **Description:** `useTenantEvents(tenantId)` hook: `EventSource` with manual reconnect (the URL-borne access token rotates, so built-in retry would reuse a stale token), on `branch-synced` invalidate the branch-activity/branches query keys. Mounted in `AppShell` so every console page benefits.
   - Acceptance:
-    - [ ] Desktop "Sync Now" flips the branch card's freshness without refresh *(checkpoint e2e)*
+    - [x] Desktop "Sync Now" flips the branch card's freshness without refresh *(human-verified at checkpoint 1)*
     - [x] Tab left open >10 min stays subscribed (refresh-then-reconnect on error, 5s backoff)
   - Verify: `pnpm build && pnpm lint`; manual e2e
   - Files: `console/src/lib/hooks.ts`, `console/src/components/AppShell.tsx`
   - Dependencies: T11, T13 · **Size: S**
 
 ### Checkpoint 1
-- [ ] All gates green
-- [ ] Manual e2e: desktop "Sync Now" → card freshness + health dot flip live, no refresh
-- [ ] Stale branch (>30 min) renders 🔴 with last-data timestamp
-- [ ] **Human review before Phase 2 (Overview)**
+- [x] All gates green
+- [x] Manual e2e: desktop "Sync Now" → card freshness + health dot flip live, no refresh *(human-verified 2026-07-14)*
+- [x] Stale branch (>30 min) renders 🔴 with last-data timestamp *(human-verified 2026-07-14)*
+- [x] **Human review before Phase 2 (Overview)** *(approved 2026-07-14)*

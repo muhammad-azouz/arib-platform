@@ -31,9 +31,9 @@ Spec: `tasks/spec-console.md`. This plan details **Slice 0 (HQ read path + fresh
 - [x] T8: Console nav shell — final IA with placeholders
 
 ### Checkpoint 0 (foundation proven end-to-end)
-- [ ] `make test` (api) green, `dotnet build` (gateway) clean, `pnpm build && pnpm lint` (console) clean
-- [ ] Real desktop sync round → `SyncActivity` row updates → Branch doc `last_sync_at` updates → console dev build renders per-branch freshness through the full chain
-- [ ] Human review before Phase 1
+- [x] `make test` (api) green, `dotnet build` (gateway) clean, `pnpm build && pnpm lint` (console) clean
+- [x] Real desktop sync round → `SyncActivity` row updates → Branch doc `last_sync_at` updates → console dev build renders per-branch freshness through the full chain *(human-verified 2026-07-14)*
+- [x] Human review before Phase 1 *(approved 2026-07-14)*
 
 ### Phase 1 — branches dashboard (slice 1)
 
@@ -45,10 +45,10 @@ Spec: `tasks/spec-console.md`. This plan details **Slice 0 (HQ read path + fresh
 - [x] T14: Console live updates — `EventSource` hook invalidating query keys
 
 ### Checkpoint 1 (slice 1 shipped)
-- [ ] All gates green
-- [ ] Manual e2e: trigger a desktop "Sync Now" → the branch card's freshness pill and health dot flip in the console **without a page refresh**
-- [ ] Branch with no sync in >30 min renders 🔴 with "last data from …"
-- [ ] Human review before Phase 2
+- [x] All gates green
+- [x] Manual e2e: trigger a desktop "Sync Now" → the branch card's freshness pill and health dot flip in the console **without a page refresh** *(human-verified 2026-07-14)*
+- [x] Branch with no sync in >30 min renders 🔴 with "last data from …" *(human-verified 2026-07-14)*
+- [x] Human review before Phase 2 *(approved 2026-07-14)*
 
 ### Later phases (outline only — broken down when reached)
 
