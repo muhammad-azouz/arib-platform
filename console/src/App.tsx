@@ -11,6 +11,7 @@ import { SetupWizard } from '@/pages/setup/SetupWizard'
 import { Overview } from '@/pages/console/Overview'
 import { Company } from '@/pages/console/Company'
 import { Branches } from '@/pages/console/Branches'
+import { BranchDetail } from '@/pages/console/BranchDetail'
 import { Catalog } from '@/pages/console/Catalog'
 import { Inventory } from '@/pages/console/Inventory'
 import { Reports } from '@/pages/console/Reports'
@@ -53,6 +54,7 @@ export default function App() {
             <Route index element={<Overview />} />
             <Route path="company" element={<Company />} />
             <Route path="branches" element={<Branches />} />
+            <Route path="branches/:branchId" element={<BranchDetail />} />
             <Route path="catalog" element={<Catalog />} />
             <Route path="inventory" element={<Inventory />} />
             <Route path="reports" element={<Reports />} />

@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { useParams } from 'react-router-dom'
+import { Link, useParams } from 'react-router-dom'
 import { toast } from 'sonner'
 import { errorMessage } from '@/lib/auth'
 import { useBundle, useHqBranches, useUpdateBranch } from '@/lib/hooks'
@@ -124,7 +124,14 @@ export function Branches() {
                       view ? HEALTH_DOT[view.health] : 'bg-muted-foreground/40',
                     )}
                   />
-                  <h3 className="min-w-0 truncate font-display font-bold">{b.Name}</h3>
+                  <h3 className="min-w-0 truncate font-display font-bold">
+                    <Link
+                      to={`/tenants/${tenantId}/branches/${b.ID}`}
+                      className="transition-colors hover:text-primary"
+                    >
+                      {b.Name}
+                    </Link>
+                  </h3>
                   <Badge tone={branchStatusTone(b.Status)} className="shrink-0">
                     {branchStatusLabel(b.Status)}
                   </Badge>
