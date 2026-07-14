@@ -10,6 +10,7 @@ import (
 	"github.com/aribpos/license-api/internal/admin"
 	"github.com/aribpos/license-api/internal/auth"
 	"github.com/aribpos/license-api/internal/device"
+	"github.com/aribpos/license-api/internal/hq"
 	"github.com/aribpos/license-api/internal/rollout"
 	"github.com/aribpos/license-api/internal/tenant"
 	"github.com/aribpos/license-api/pkg/licensetoken"
@@ -25,6 +26,7 @@ type Server struct {
 	admin   *admin.Service
 	tenant  *tenant.Service
 	rollout *rollout.Service
+	hq      *hq.Service
 	log     *slog.Logger
 
 	corsOrigins []string
@@ -40,13 +42,14 @@ type Server struct {
 // root of the Velopack update feed served at /updates/*; empty disables it.
 // updatesAuth turns on the feed entitlement gate, verifying license tokens
 // with tokenVerifier (the same RSA keypair that signs them).
-func New(authSvc *auth.Service, deviceSvc *device.Service, adminSvc *admin.Service, tenantSvc *tenant.Service, rolloutSvc *rollout.Service, corsOrigins []string, log *slog.Logger, updatesDir string, updatesAuth bool, tokenVerifier *licensetoken.Signer) *Server {
+func New(authSvc *auth.Service, deviceSvc *device.Service, adminSvc *admin.Service, tenantSvc *tenant.Service, rolloutSvc *rollout.Service, hqSvc *hq.Service, corsOrigins []string, log *slog.Logger, updatesDir string, updatesAuth bool, tokenVerifier *licensetoken.Signer) *Server {
 	return &Server{
 		auth:          authSvc,
 		device:        deviceSvc,
 		admin:         adminSvc,
 		tenant:        tenantSvc,
 		rollout:       rolloutSvc,
+		hq:            hqSvc,
 		log:           log,
 		corsOrigins:   corsOrigins,
 		otpLimiter:    newKeyedLimiter(rateEvery(time.Minute), 3),
@@ -132,6 +135,10 @@ func (s *Server) Router() http.Handler {
 					r.Post("/branches/{branchId}/bind", s.handleBranchBind)
 					r.Post("/devices/{deviceId}/release", s.handleBranchDeviceRelease)
 					r.Post("/sync-token", s.handleSyncToken)
+
+					// HQ reads: business data from the tenant's central DB,
+					// proxied via the sync gateway (freshness-enveloped).
+					r.Get("/hq/branch-activity", s.handleHqBranchActivity)
 				})
 			})
 		})

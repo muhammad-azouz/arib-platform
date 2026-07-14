@@ -15,6 +15,7 @@ import (
 	"github.com/aribpos/license-api/internal/auth"
 	"github.com/aribpos/license-api/internal/config"
 	"github.com/aribpos/license-api/internal/device"
+	"github.com/aribpos/license-api/internal/hq"
 	"github.com/aribpos/license-api/internal/httpapi"
 	"github.com/aribpos/license-api/internal/license"
 	"github.com/aribpos/license-api/internal/mail"
@@ -98,6 +99,7 @@ func main() {
 
 	tenantSvc := tenant.New(store, syncKey, cfg.SyncTokenTTL, nil)
 	rolloutSvc := rollout.New(store, tenantSvc, nil)
+	hqSvc := hq.New(store, tenantSvc, nil)
 
 	mailer := mail.New(mail.Config{
 		Host: cfg.SMTPHost, Port: cfg.SMTPPort,
@@ -115,7 +117,7 @@ func main() {
 		OTPTTL: cfg.OTPTTL, OTPMaxAttempts: cfg.OTPMaxAttempts,
 	})
 
-	srv := httpapi.New(authSvc, deviceSvc, adminSvc, tenantSvc, rolloutSvc, cfg.DashboardOrigins, log, cfg.UpdatesDir, cfg.UpdatesAuth, signer)
+	srv := httpapi.New(authSvc, deviceSvc, adminSvc, tenantSvc, rolloutSvc, hqSvc, cfg.DashboardOrigins, log, cfg.UpdatesDir, cfg.UpdatesAuth, signer)
 
 	httpServer := &http.Server{
 		Addr:              cfg.HTTPAddr,

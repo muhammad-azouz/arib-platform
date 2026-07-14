@@ -18,7 +18,7 @@ import (
 func newUpdatesTestServer(t *testing.T, updatesDir string, auth bool, verifier *licensetoken.Signer) http.Handler {
 	t.Helper()
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
-	return New(nil, nil, nil, nil, nil, nil, log, updatesDir, auth, verifier).Router()
+	return New(nil, nil, nil, nil, nil, nil, nil, log, updatesDir, auth, verifier).Router()
 }
 
 func loadFeedSigner(t *testing.T) *licensetoken.Signer {
