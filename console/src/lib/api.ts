@@ -1,5 +1,6 @@
 import type {
   Branch,
+  BranchActivityResponse,
   BranchDevice,
   Bundle,
   Company,
@@ -229,4 +230,8 @@ export const api = {
   // sync token for connecting a desktop install
   syncToken: (tenantId: string, deviceId: string) =>
     request<SyncToken>(`/v1/tenants/${tenantId}/sync-token`, post({ device_id: deviceId })),
+
+  // HQ reads (freshness-enveloped, via the sync gateway)
+  branchActivity: (tenantId: string) =>
+    request<BranchActivityResponse>(`/v1/tenants/${tenantId}/hq/branch-activity`),
 }

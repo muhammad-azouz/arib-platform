@@ -85,6 +85,31 @@ export interface SyncToken {
   gateway_url: string
 }
 
+// --- HQ reads (freshness envelope; hq/service.go + hq_handlers.go) ---
+
+// How fresh branch-derived data is: "synced" while the branch's sync cadence
+// is healthy, "offline" once its last completed round goes stale (>30 min),
+// "live" reserved for the future SignalR tier.
+export type FreshnessSource = 'synced' | 'offline' | 'live'
+
+// Every branch-derived payload arrives wrapped in this envelope.
+export interface Envelope<T> {
+  data: T
+  source: FreshnessSource
+  as_of?: string | null
+}
+
+// One branch's last completed sync round.
+export interface BranchSync {
+  branch_id: string
+  last_sync_at: string
+}
+
+// GET /v1/tenants/{id}/hq/branch-activity
+export interface BranchActivityResponse {
+  branches: Envelope<BranchSync>[]
+}
+
 // auth session (sessionResponse map in auth_handlers.go)
 export interface Session {
   access_token: string

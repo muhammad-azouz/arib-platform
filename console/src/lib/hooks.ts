@@ -21,6 +21,21 @@ export function useBundle(tenantId: string | undefined) {
   })
 }
 
+/**
+ * Per-branch sync freshness (HQ read chain: API → gateway → central DB).
+ * Refetches on a short interval so "synced X ago" stays honest between the
+ * branch's ~5-minute sync rounds; the SSE hook invalidates it the moment a
+ * round lands (slice 1).
+ */
+export function useBranchActivity(tenantId: string | undefined) {
+  return useQuery({
+    queryKey: qk.branchActivity(tenantId ?? ''),
+    queryFn: () => api.branchActivity(tenantId as string),
+    enabled: !!tenantId,
+    refetchInterval: 60_000,
+  })
+}
+
 /** Create a tenant and prime the list cache so the resolver sees it instantly. */
 export function useCreateTenant() {
   const qc = useQueryClient()
