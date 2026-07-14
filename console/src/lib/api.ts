@@ -238,4 +238,10 @@ export const api = {
 
   hqBranches: (tenantId: string) =>
     request<HqBranchesResponse>(`/v1/tenants/${tenantId}/hq/branches`),
+
+  // SSE stream URL. EventSource cannot set an Authorization header, so the
+  // current access token rides the query string (the server keeps this route
+  // out of access logs). Call again after a refresh — the token rotates.
+  eventsUrl: (tenantId: string) =>
+    `${BASE}/v1/tenants/${tenantId}/events?access_token=${encodeURIComponent(accessToken ?? '')}`,
 }

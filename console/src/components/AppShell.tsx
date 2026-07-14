@@ -1,5 +1,6 @@
 import { NavLink, Outlet, useLocation, useParams } from 'react-router-dom'
 import { cn } from '@/lib/utils'
+import { useTenantEvents } from '@/lib/hooks'
 import { Brand } from '@/components/Brand'
 import { Breadcrumbs } from '@/components/Breadcrumbs'
 import { AccountMenu } from '@/components/AccountMenu'
@@ -27,6 +28,9 @@ export function AppShell() {
   const { tenantId } = useParams<'tenantId'>()
   const { pathname } = useLocation()
   const base = `/tenants/${tenantId}`
+
+  // Live branch events for every console page under this shell.
+  useTenantEvents(tenantId)
 
   const nav: NavItem[] = [
     { to: base, label: 'نظرة عامة', icon: DashboardIcon, end: true },

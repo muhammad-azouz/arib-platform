@@ -1,5 +1,6 @@
+import { useEffect } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { api } from './api'
+import { api, session } from './api'
 import { qk } from './query'
 import type { Bundle, BranchStatus, Tenant } from './types'
 
@@ -48,6 +49,46 @@ export function useHqBranches(tenantId: string | undefined) {
     enabled: !!tenantId,
     refetchInterval: 60_000,
   })
+}
+
+/**
+ * Live console updates: subscribes to the tenant's SSE stream and, on
+ * branch-synced, invalidates the branch-derived query keys so every mounted
+ * page refetches — a desktop "Sync Now" flips the cards with no page refresh.
+ * Mounted once in AppShell. Reconnection is manual (not EventSource's
+ * built-in) because the access token in the URL rotates: on any error we
+ * close, refresh the session, and reconnect with the fresh token.
+ */
+export function useTenantEvents(tenantId: string | undefined) {
+  const qc = useQueryClient()
+  useEffect(() => {
+    if (!tenantId) return
+    let es: EventSource | null = null
+    let retry: number | undefined
+    let stopped = false
+
+    const connect = async (refreshFirst: boolean) => {
+      if (refreshFirst) await session.refresh()
+      if (stopped) return
+      es = new EventSource(api.eventsUrl(tenantId))
+      es.addEventListener('branch-synced', () => {
+        void qc.invalidateQueries({ queryKey: qk.branchActivity(tenantId) })
+        void qc.invalidateQueries({ queryKey: qk.hqBranches(tenantId) })
+      })
+      es.onerror = () => {
+        es?.close()
+        window.clearTimeout(retry)
+        retry = window.setTimeout(() => void connect(true), 5_000)
+      }
+    }
+    void connect(false)
+
+    return () => {
+      stopped = true
+      window.clearTimeout(retry)
+      es?.close()
+    }
+  }, [tenantId, qc])
 }
 
 /** Create a tenant and prime the list cache so the resolver sees it instantly. */
