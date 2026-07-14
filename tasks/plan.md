@@ -65,8 +65,32 @@ Spec: `tasks/spec-console.md`. This plan details **Slice 0 (HQ read path + fresh
 - [x] Stale branch (>30 min) appears as an alert whose link opens that branch's detail page *(human-verified 2026-07-14)*
 - [x] Human review before Phase 3 *(approved 2026-07-14)*
 
+### Phase 3 — Catalog (slice 3)
+
+**Design notes (2026-07-14):**
+- **Open question 1 resolved (user decision):** v1 keeps **ServerWins + ConflictLog alerts** — no branch-edit gating, no schema bump. HQ writes always win at each branch's next sync; losing branch edits land in ConflictLog and surface as alerts in slice 5.
+- **Central writes propagate for free:** DMS provisions its own tracking triggers on the central DB (`CentralProvisioner.cs` header), so gateway-side EF writes to Tier-A tables are tracked like any other change and reach every branch on its next round. T23 proves this e2e before any write UX ships.
+- **Propagation state needs no new storage:** a write response carries `written_at` (gateway clock, UTC). The console already holds per-branch `last_sync_at` live via SSE — a branch has the write once `last_sync_at ≥ written_at`. Chips flip live with zero new wiring.
+- **Prices live on `UnitOfMeasure`** (`Sale`/`Buy`/`Price1..9`), barcodes hang off UoMs — "change price" = UoM row updates, not Product.
+- **HQ product-create must seed inventory rows:** the desktop's product browser queries `WarehousesProductInventories` (`WarehousesAndProductsViewModel.FetchProduct`), so a product without per-branch WPI rows is invisible at branches. HQ create therefore writes Tier-A rows (Product + UoMs + Barcodes) **plus** one zero-qty WPI row per branch warehouse (Tier-B rows carry each branch's BranchId and sync down to their owners). No opening balance from HQ in v1.
+
+- [ ] T19: Gateway catalog reads — `GET /hq/groups`, `GET /hq/products` (paged + search + group filter), `GET /hq/products/{id}` (UoM price tiers, barcodes, per-branch availability)
+- [ ] T20: API catalog passthrough `GET /v1/tenants/{id}/hq/catalog/*` with freshness envelope + per-branch health on availability rows
+- [ ] T21: Console Catalog page — groups tree + products table (search, pagination)
+- [ ] T22: Console product detail — units/prices/barcodes + per-branch availability with freshness
+- [ ] T23: Gateway first HQ write — `PUT /hq/products/{id}/prices` (UoM price updates), propagation proven e2e
+- [ ] T24: API write passthrough `PUT /v1/tenants/{id}/hq/catalog/products/{pid}/prices`
+- [ ] T25: Console price editing + per-branch propagation chips (flip live via SSE)
+- [ ] T26: HQ product create — gateway `POST /hq/products` (+ WPI seeding), API passthrough, console form
+
+### Checkpoint 3 (slice 3 shipped)
+- [ ] All gates green
+- [ ] Manual e2e: catalog list/detail numbers match the desktop's own products screen for a real synced tenant
+- [ ] Manual e2e: HQ price change → desktop shows the new price after its next sync round; propagation chip flips «وصل» without refresh
+- [ ] Manual e2e: HQ-created product appears in the desktop products screen after sync and is sellable
+- [ ] Human review before Phase 4 (Inventory)
+
 ### Later phases (outline only — broken down when reached)
-- **Phase 3 — Catalog (slice 3):** master-table reads; first HQ **write** endpoint (product create / price change) + propagation-state UX. **Gated on open question 1** (branch-edit gating decision).
 - **Phase 4 — Inventory (slice 4):** three views over WarehousesProductInventories + movements; "needs attention" query.
 - **Phase 5 — Notifications + Ctrl+K (slice 5):** alert derivation (stale sync, low stock, ConflictLog), deep links, command palette.
 - **Phase 6 — Reports (slice 6):** question-organized report pages. **Gated on open question 2** (aggregate cost).
@@ -84,4 +108,4 @@ Spec: `tasks/spec-console.md`. This plan details **Slice 0 (HQ read path + fresh
 
 ## Open questions
 
-Carried in the spec (§ Open questions): master-edit gating (blocks Phase 3), report aggregate strategy (blocks Phase 6), Customers scope. None block Phases 0–1.
+Carried in the spec (§ Open questions): ~~master-edit gating (blocks Phase 3)~~ **resolved 2026-07-14: ServerWins + conflict alerts for v1**; report aggregate strategy (blocks Phase 6); Customers scope.
