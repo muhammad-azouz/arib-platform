@@ -50,9 +50,22 @@ Spec: `tasks/spec-console.md`. This plan details **Slice 0 (HQ read path + fresh
 - [x] Branch with no sync in >30 min renders 🔴 with "last data from …" *(human-verified 2026-07-14)*
 - [x] Human review before Phase 2 *(approved 2026-07-14)*
 
-### Later phases (outline only — broken down when reached)
+### Phase 2 — Overview (slice 2)
 
-- **Phase 2 — Overview (slice 2):** KPI tiles from Bills aggregates, branch-health strip (reuses T10), alerts stub, quick actions. Needs: gateway aggregate endpoint.
+**Design note (2026-07-14):** the outline guessed this slice needs a gateway aggregate endpoint — it doesn't. T9's `/hq/branch-snapshot` already returns per-branch today-sales/refunds/shifts, so company KPIs are a Go-side sum over the same single gateway call `/hq/branches` already makes (table-driven tested, no new gateway surface, no extra gateway load). The console Overview reuses the existing `hq-branches` query key, so the shared cache and T14's SSE invalidation make the KPIs flip live with zero new wiring.
+
+- [ ] T15: API — `totals` block on `GET /v1/tenants/{id}/hq/branches` (company KPIs summed from branch snapshots + offline-branch honesty count)
+- [ ] T16: Console — Overview rework: KPI tiles (sales/bills/refunds/open shifts today) with freshness + offline caveat
+- [ ] T17: Console — branch health strip (per-branch dot → branch detail)
+- [ ] T18: Console — alerts stub (stale-sync alerts with deep links) + quick actions row
+
+### Checkpoint 2 (slice 2 shipped)
+- [ ] All gates green
+- [ ] Manual e2e: Overview KPI totals match the sum of the Branches cards; desktop "Sync Now" flips the Overview numbers/freshness live without refresh
+- [ ] Stale branch (>30 min) appears as an alert whose link opens that branch's detail page
+- [ ] Human review before Phase 3
+
+### Later phases (outline only — broken down when reached)
 - **Phase 3 — Catalog (slice 3):** master-table reads; first HQ **write** endpoint (product create / price change) + propagation-state UX. **Gated on open question 1** (branch-edit gating decision).
 - **Phase 4 — Inventory (slice 4):** three views over WarehousesProductInventories + movements; "needs attention" query.
 - **Phase 5 — Notifications + Ctrl+K (slice 5):** alert derivation (stale sync, low stock, ConflictLog), deep links, command palette.

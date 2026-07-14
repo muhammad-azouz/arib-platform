@@ -1,4 +1,4 @@
-# Todo: HQ Console — slices 0–1
+# Todo: HQ Console — slices 0–2
 
 Plan: `tasks/plan.md` · Spec: `tasks/spec-console.md`
 
@@ -138,3 +138,48 @@ Plan: `tasks/plan.md` · Spec: `tasks/spec-console.md`
 - [x] Manual e2e: desktop "Sync Now" → card freshness + health dot flip live, no refresh *(human-verified 2026-07-14)*
 - [x] Stale branch (>30 min) renders 🔴 with last-data timestamp *(human-verified 2026-07-14)*
 - [x] **Human review before Phase 2 (Overview)** *(approved 2026-07-14)*
+
+## Phase 2 — Overview
+
+No new gateway endpoint (plan outline superseded): company KPIs are summed API-side from the branch snapshots `/hq/branches` already fetches in one gateway call.
+
+- [ ] **T15: API — `totals` block on `/hq/branches`**
+  - **Description:** Extend `hq.Service.Branches` to also return company-wide totals summed over the branch views' snapshot data: `{sales_total, sales_count, refunds_total, open_shift_count, synced_branches, offline_branches, as_of}`. Sums include every branch whose snapshot `Data` is set (stale data stays visible per T10's philosophy — honesty comes from `offline_branches` + `as_of` = oldest contributing `last_sync_at`). Handler wraps as `{branches, totals}`.
+  - Acceptance:
+    - [ ] Mixed healthy/stale/never branches: sums correct, `offline_branches` counts stale+never, `as_of` is the oldest contributing sync
+    - [ ] Gateway down / not subscribed: totals present with zeros and all branches counted offline (page still renders)
+  - Verify: `make test` — table-driven beside the service
+  - Files: `api/internal/hq/service.go` + `service_test.go`, `api/internal/httpapi/hq_handlers.go`
+  - Dependencies: T10 · **Size: S**
+
+- [ ] **T16: Console — Overview KPI tiles**
+  - **Description:** Rework `pages/console/Overview.tsx`: KPI row from `totals` (مبيعات اليوم، عدد الفواتير، المرتجعات، الورديات المفتوحة) with `<Freshness>` and an offline-branches caveat («لا يشمل X فروع غير متزامنة»). Reuses `useHqBranches` (shared cache + SSE invalidation already wired). Existing banners (suspended / no-plan / onboarding) preserved; company/plan cards demoted below the KPIs.
+  - Acceptance:
+    - [ ] KPI numbers match the sum of the Branches page cards; Arabic numerals via `format.ts`
+    - [ ] No spinner-blanking; tenant without sync renders control-plane view with offline states, not errors
+  - Verify: `pnpm build && pnpm lint`; manual in dev
+  - Files: `console/src/lib/types.ts`, `console/src/pages/console/Overview.tsx`
+  - Dependencies: T15 · **Size: M**
+
+- [ ] **T17: Console — branch health strip**
+  - **Description:** Compact strip on Overview: one dot+name chip per branch (health color from `BranchView.health`), click → `branches/:branchId`. Same query, no new fetch.
+  - Acceptance:
+    - [ ] Every branch renders a chip with the correct tier color; click navigates to its detail page
+  - Verify: `pnpm build && pnpm lint`; manual
+  - Files: `console/src/pages/console/Overview.tsx` (+ small component if it earns extraction)
+  - Dependencies: T16 · **Size: S**
+
+- [ ] **T18: Console — alerts stub + quick actions**
+  - **Description:** Alerts panel derived from data already on hand: stale/never-sync branches → «لم يزامن منذ …» deep-linking to that branch's detail (spec rule: an alert with no destination doesn't ship). Empty state «لا توجد تنبيهات». Shaped so slice 5's derived alerts (low stock, conflicts) slot into the same list. Quick actions row: إضافة فرع (→ الفروع), تنزيل التطبيق (→ التنزيل).
+  - Acceptance:
+    - [ ] Stale branch produces an alert whose link opens the branch detail; healthy tenant shows the empty state
+    - [ ] Quick actions navigate correctly
+  - Verify: `pnpm build && pnpm lint`; manual
+  - Files: `console/src/pages/console/Overview.tsx`
+  - Dependencies: T16 · **Size: S**
+
+### Checkpoint 2
+- [ ] All gates green
+- [ ] Manual e2e: Overview KPI totals match the Branches cards; desktop "Sync Now" flips Overview numbers/freshness live, no refresh
+- [ ] Stale branch (>30 min) appears as an alert; its link opens the branch detail
+- [ ] **Human review before Phase 3 (Catalog)**
