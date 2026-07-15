@@ -356,6 +356,107 @@ func (s *Server) handleHqProductMovements(w http.ResponseWriter, r *http.Request
 	writeJSON(w, http.StatusOK, env)
 }
 
+// --- Reports (slice 6): question-organized period aggregates. from/to are
+// validated here as plain YYYY-MM-DD dates (dateParamRE — the gateway
+// interprets them in its local day-scope and owns defaulting/clamping);
+// anything else is rejected before a gateway round-trip. ---
+
+// validReportPeriod rejects malformed from/to params, writing the 400 itself.
+// Returns false when the request has already been answered.
+func validReportPeriod(w http.ResponseWriter, r *http.Request) bool {
+	for _, k := range []string{"from", "to"} {
+		if v := r.URL.Query().Get(k); v != "" && !dateParamRE.MatchString(v) {
+			writeErr(w, http.StatusBadRequest, k+" must be YYYY-MM-DD")
+			return false
+		}
+	}
+	return true
+}
+
+func (s *Server) handleHqReportSales(w http.ResponseWriter, r *http.Request) {
+	c := claimsFrom(r.Context())
+	if !validReportPeriod(w, r) {
+		return
+	}
+	params := url.Values{}
+	for _, k := range []string{"from", "to", "branch_id"} {
+		if v := r.URL.Query().Get(k); v != "" {
+			params.Set(k, v)
+		}
+	}
+	env, err := s.hq.ReportSales(r.Context(), c.Subject, chi.URLParam(r, "id"), params)
+	if err != nil {
+		s.writeHqError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, env)
+}
+
+func (s *Server) handleHqReportProducts(w http.ResponseWriter, r *http.Request) {
+	c := claimsFrom(r.Context())
+	if !validReportPeriod(w, r) {
+		return
+	}
+	if sort := r.URL.Query().Get("sort"); sort != "" {
+		switch sort {
+		case "revenue", "qty", "profit":
+		default:
+			writeErr(w, http.StatusBadRequest, "invalid sort")
+			return
+		}
+	}
+	params := url.Values{}
+	for _, k := range []string{"from", "to", "branch_id", "group_id", "sort", "page", "page_size"} {
+		if v := r.URL.Query().Get(k); v != "" {
+			params.Set(k, v)
+		}
+	}
+	env, err := s.hq.ReportProducts(r.Context(), c.Subject, chi.URLParam(r, "id"), params)
+	if err != nil {
+		s.writeHqError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, env)
+}
+
+func (s *Server) handleHqReportBranches(w http.ResponseWriter, r *http.Request) {
+	c := claimsFrom(r.Context())
+	if !validReportPeriod(w, r) {
+		return
+	}
+	params := url.Values{}
+	for _, k := range []string{"from", "to"} {
+		if v := r.URL.Query().Get(k); v != "" {
+			params.Set(k, v)
+		}
+	}
+	env, err := s.hq.ReportBranches(r.Context(), c.Subject, chi.URLParam(r, "id"), params)
+	if err != nil {
+		s.writeHqError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, env)
+}
+
+func (s *Server) handleHqReportStaff(w http.ResponseWriter, r *http.Request) {
+	c := claimsFrom(r.Context())
+	if !validReportPeriod(w, r) {
+		return
+	}
+	params := url.Values{}
+	for _, k := range []string{"from", "to", "branch_id"} {
+		if v := r.URL.Query().Get(k); v != "" {
+			params.Set(k, v)
+		}
+	}
+	env, err := s.hq.ReportStaff(r.Context(), c.Subject, chi.URLParam(r, "id"), params)
+	if err != nil {
+		s.writeHqError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, env)
+}
+
 // handleTenantEvents streams tenant-scoped events over SSE. Registered
 // outside the API's 30s timeout group (like /updates/*) — the stream lives
 // for the tab's lifetime, kept open through proxies by a heartbeat comment.

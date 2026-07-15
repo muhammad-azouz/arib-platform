@@ -440,7 +440,7 @@ Design notes (2026-07-15): only ConflictLog needs new backend surface — stale/
 
 Design notes (2026-07-15): **open question 2 resolved by the plan's standing assumption** (user proceeded past the checkpoint-5 gate): v1 reports are direct, date-bounded SQL aggregates on the tenant DB via the gateway — no rollups/replicas; every query is a period-scoped GroupBy over Bills/SaleEntries, fine at current fleet size, revisit before the fleet grows. Semantics mirror the desktop byte-for-byte: day scope on `CreatedAt` in gateway-local time (same TZ assumption as `BranchSnapshotAsync`; the desktop's own bills screens filter `CreatedAt.Date`), half-open `[from, to+1d)`; sales/refunds = `Sale`/`ReSale` TPH rows, `!IsDeleted`, Σ `Total` (T9's proven semantics); tender split mirrors `ShiftReportService` exactly (`Money`=نقدًا, `BankMoney`, `WalletMoney`, `Remain`=آجل, summed over Sale bills); profit mirrors `ProfitFromWarehouseViewModel` (Σ `Total` − Σ `ItemCost` over SaleEntries — `ItemCost` is the line's total COGS, batch-exact when batch-tracked; service kinds carry ItemCost=0 and stay included, their revenue is real). Product-report rows anchor through the bill (`!Bill.IsDeleted`, `Bill.CreatedAt` period) so the products view's revenue sums can never drift from the sales view's totals — a deliberate divergence from the desktop's profit screen, which filters on entry `CreatedAt` and skips the deleted-bill guard. Day series ships as local-date **strings** (`YYYY-MM-DD`), sidestepping the zone-less-timestamp bug class from checkpoints 2/4. Staff = GroupBy `Bills.UserId` joined to the Tier-A `Users` table. The Inventory question needs zero new backend — it renders `useInventoryByBranch`/attention data with links into the Inventory views. No chart dependency: the daily chart is inline SVG bars. Default period: آخر ٧ أيام; all report state (view/period/filters) is URL-borne for shareable deep links, same pattern as Inventory.
 
-- [ ] **T42: Gateway — sales report endpoint**
+- [x] **T42: Gateway — sales report endpoint** *(sync-gateway `ccdc8b6`, 2026-07-15)*
   - **Description:** `GET /hq/reports/sales?from=&to=&branch_id=`: one aggregate row (`sales_total`, `sales_count`, `refunds_total`, `refunds_count`), tender split over Sale bills (`cash`, `bank`, `wallet`, `credit` = Money/BankMoney/WalletMoney/Remain), and per-day series `[{day:"YYYY-MM-DD", sales_total, sales_count, refunds_total}]` via GroupBy `CreatedAt.Date` (translates on both engines). Defaults last 7 days when from/to absent; `branch_id` scopes every aggregate. Same `TryHqAuth` + empty-shapes-on-`IsDatabaseMissing` pattern as every /hq/* endpoint.
   - Acceptance:
     - [ ] Totals/tender match the desktop's own numbers for a real synced tenant + period (folds into checkpoint 6 e2e)
@@ -449,7 +449,7 @@ Design notes (2026-07-15): **open question 2 resolved by the plan's standing ass
   - Files: `sync-gateway/HqApi.cs`, `sync-gateway/Program.cs`
   - Dependencies: none · **Size: M**
 
-- [ ] **T43: Gateway — products / branches / staff report endpoints**
+- [x] **T43: Gateway — products / branches / staff report endpoints** *(sync-gateway `ccdc8b6`, 2026-07-15)*
   - **Description:** `GET /hq/reports/products?from=&to=&branch_id=&group_id=&sort=&page=&page_size=` — GroupBy `SaleEntries.ProductId` anchored through the bill (`!Bill.IsDeleted`, `Bill.CreatedAt` in period, optional `Bill.BranchId`); row: product id/code/name/group_name/unit (master-unit name, same convention as inventory), `qty_sold` = Σ TotalQty, `revenue` = Σ Total, `profit` = Σ(Total−ItemCost); `sort ∈ revenue|qty|profit` (default revenue) with deterministic ThenBy ProductId; paged + clamped 1..200. `GET /hq/reports/branches?from=&to=` — GroupBy BranchId over Sale + ReSale (totals/counts) plus profit from SaleEntries. `GET /hq/reports/staff?from=&to=&branch_id=` — GroupBy UserId joined to Users (name), sales/refund totals and counts. All share T42's period parsing.
   - Acceptance:
     - [ ] Products revenue summed over all rows == sales report's `sales_total` for the same period/branch (self-consistency, checkable via curl)
@@ -458,11 +458,11 @@ Design notes (2026-07-15): **open question 2 resolved by the plan's standing ass
   - Files: `sync-gateway/HqApi.cs`, `sync-gateway/Program.cs`
   - Dependencies: T42 (shares period helper) · **Size: M**
 
-- [ ] **T44: API — reports passthrough + decoration + tests**
+- [x] **T44: API — reports passthrough + decoration + tests** *(2026-07-15)*
   - **Description:** Four `hq.Service` methods mirroring the catalog chain (resolveGateway → getJSON → `{data, source:"synced", as_of}` envelope): `ReportSales` (pure passthrough), `ReportProducts` (passthrough), `ReportBranches` (registry merge — every registry branch renders zeroed if absent from the gateway payload, decorated with branch_name/health/last_sync_at, same shape philosophy as `InventoryByBranch`), `ReportStaff` (passthrough). Handlers validate `from`/`to` via the existing `dateParamRE`, whitelist `sort`, and pass only known params. Routes `GET /v1/tenants/{id}/hq/reports/sales|products|branches|staff`.
   - Acceptance:
-    - [ ] Table-driven tests: envelope shape, params forwarded, branches registry merge (gateway missing a branch → zeroed row present), error map unchanged (402/403/503)
-    - [ ] Invalid `from`/`to`/`sort` → 400 with no gateway round-trip
+    - [x] Table-driven tests: envelope shape, params forwarded, branches registry merge (gateway missing a branch → zeroed row present), error map unchanged *(`TestReportSales_*` ×3, `TestReportProducts_PassesParamsAndEmptyItemsNeverNil`, `TestReportBranches_MergesRegistryAndZeroFills` — registry-unknown gateway rows dropped, never branch zero-filled —, `TestReportStaff_PassthroughAndEmptyNeverNil`; error map shared with every other report via `resolveGateway`/`writeHqError`, unchanged)*
+    - [x] Invalid `from`/`to`/`sort` → 400 with no gateway round-trip *(`validReportPeriod` + sort whitelist run before any service call)*
   - Verify: `go build ./... && go vet ./... && go test ./...`
   - Files: `api/internal/hq/service.go` + `service_test.go`, `api/internal/httpapi/hq_handlers.go`, `api/internal/httpapi/server.go`
   - Dependencies: T42, T43 (contract; may start on fakes) · **Size: M**

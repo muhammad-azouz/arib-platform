@@ -155,9 +155,9 @@ Bugs found and fixed during this checkpoint's e2e pass (2026-07-15): desktop `Up
 
 **Design notes (2026-07-15):** open question 2 resolved by this plan's standing assumption (user proceeded past the checkpoint-5 gate): v1 = direct, date-bounded SQL aggregates on tenant DBs via the gateway; revisit pre-aggregation only if fleet growth makes it hurt. Semantics mirror the desktop: day scope on `CreatedAt` gateway-local (T9's assumption), `Sale`/`ReSale` `!IsDeleted` Σ`Total`; tender split = `ShiftReportService`'s (Money/BankMoney/WalletMoney/Remain); profit = `ProfitFromWarehouseViewModel`'s Σ(Total−ItemCost) over SaleEntries, anchored through `!Bill.IsDeleted` so products revenue can't drift from sales totals. Day series as local-date strings (no zone-less-timestamp round-trip). Staff = GroupBy `UserId` join Tier-A Users. Inventory question reuses slice-4 data — no new backend. No chart dependency (inline SVG bars). Full task detail in `todo.md`.
 
-- [ ] T42: Gateway — `GET /hq/reports/sales` (totals + tender split + per-day series)
-- [ ] T43: Gateway — `GET /hq/reports/products|branches|staff` (period GroupBys; paged products with revenue/qty/profit sorts)
-- [ ] T44: API — four passthroughs + registry decoration on branches + table-driven tests
+- [x] T42: Gateway — `GET /hq/reports/sales` (totals + tender split + per-day series) *(sync-gateway `ccdc8b6`)*
+- [x] T43: Gateway — `GET /hq/reports/products|branches|staff` (period GroupBys; paged products with revenue/qty/profit sorts) *(sync-gateway `ccdc8b6`)*
+- [x] T44: API — four passthroughs + registry decoration on branches + table-driven tests *(2026-07-15)*
 - [ ] T45: Console — lib plumbing + `PeriodPicker` + Reports shell (`?view=` toggle, default sales)
 - [ ] T46: Console — Sales + Branches views (KPI tiles, tender split, SVG daily bars, comparison table)
 - [ ] T47: Console — Products + Staff + Inventory views

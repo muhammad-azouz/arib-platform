@@ -800,3 +800,178 @@ func TestAckConflicts_Ownership(t *testing.T) {
 		t.Fatalf("expected ErrForbidden, got %v", err)
 	}
 }
+
+func TestReportSales_PassesParamsAndWrapsEnvelope(t *testing.T) {
+	var gotPath, gotQuery string
+	gw := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath, gotQuery = r.URL.Path, r.URL.RawQuery
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"from":"2026-07-09","to":"2026-07-15",` +
+			`"sales_total":1500,"sales_count":12,"refunds_total":100,"refunds_count":1,` +
+			`"tender":{"cash":900,"bank":400,"wallet":100,"credit":100},` +
+			`"days":[{"day":"2026-07-09","sales_total":1500,"sales_count":12,"refunds_total":100}]}`))
+	}))
+	defer gw.Close()
+
+	s := New(testStore(gw.URL), &fakeTokens{}, nil)
+	params := url.Values{}
+	params.Set("from", "2026-07-09")
+	params.Set("to", "2026-07-15")
+	params.Set("branch_id", "b-1")
+	env, err := s.ReportSales(context.Background(), "acc_owner", "tnt_1", params)
+	if err != nil {
+		t.Fatalf("report sales: %v", err)
+	}
+	if gotPath != "/hq/reports/sales" {
+		t.Fatalf("gateway saw path %q", gotPath)
+	}
+	q, _ := url.ParseQuery(gotQuery)
+	if q.Get("from") != "2026-07-09" || q.Get("to") != "2026-07-15" || q.Get("branch_id") != "b-1" {
+		t.Fatalf("gateway saw query %q", gotQuery)
+	}
+	if env.Source != "synced" || env.AsOf.IsZero() {
+		t.Fatalf("envelope: source=%q as_of=%v", env.Source, env.AsOf)
+	}
+	if env.Data.SalesTotal != 1500 || env.Data.Tender.Bank != 400 || len(env.Data.Days) != 1 {
+		t.Fatalf("data round-trip: %+v", env.Data)
+	}
+}
+
+func TestReportSales_EmptyDaysNeverNil(t *testing.T) {
+	gw := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"from":"2026-07-15","to":"2026-07-15","sales_total":0,"sales_count":0,` +
+			`"refunds_total":0,"refunds_count":0,"tender":{"cash":0,"bank":0,"wallet":0,"credit":0},"days":null}`))
+	}))
+	defer gw.Close()
+
+	s := New(testStore(gw.URL), &fakeTokens{}, nil)
+	env, err := s.ReportSales(context.Background(), "acc_owner", "tnt_1", url.Values{})
+	if err != nil {
+		t.Fatalf("report sales: %v", err)
+	}
+	if env.Data.Days == nil || len(env.Data.Days) != 0 {
+		t.Fatalf("days should be an empty slice, got %#v", env.Data.Days)
+	}
+}
+
+func TestReportProducts_PassesParamsAndEmptyItemsNeverNil(t *testing.T) {
+	var gotQuery string
+	gw := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/hq/reports/products" {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		gotQuery = r.URL.RawQuery
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"total":0,"page":2,"page_size":25,"items":null}`))
+	}))
+	defer gw.Close()
+
+	s := New(testStore(gw.URL), &fakeTokens{}, nil)
+	params := url.Values{}
+	params.Set("sort", "profit")
+	params.Set("page", "2")
+	params.Set("page_size", "25")
+	params.Set("group_id", "g-1")
+	env, err := s.ReportProducts(context.Background(), "acc_owner", "tnt_1", params)
+	if err != nil {
+		t.Fatalf("report products: %v", err)
+	}
+	q, _ := url.ParseQuery(gotQuery)
+	if q.Get("sort") != "profit" || q.Get("page") != "2" || q.Get("page_size") != "25" || q.Get("group_id") != "g-1" {
+		t.Fatalf("gateway saw query %q", gotQuery)
+	}
+	if env.Data.Items == nil || len(env.Data.Items) != 0 {
+		t.Fatalf("items should be an empty slice, got %#v", env.Data.Items)
+	}
+	if env.Data.Page != 2 || env.Data.PageSize != 25 {
+		t.Fatalf("paging round-trip: %+v", env.Data)
+	}
+}
+
+func TestReportBranches_MergesRegistryAndZeroFills(t *testing.T) {
+	recent := time.Now().UTC().Add(-2 * time.Minute)
+	gw := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/hq/reports/branches" {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		// Reports rows for br_1 and an id the registry doesn't know (dropped).
+		_, _ = w.Write([]byte(`{"branches":[` +
+			`{"branch_id":"br_1","sales_total":900,"sales_count":9,"refunds_total":50,"refunds_count":1,"profit":300},` +
+			`{"branch_id":"br_ghost","sales_total":1,"sales_count":1,"refunds_total":0,"refunds_count":0,"profit":1}]}`))
+	}))
+	defer gw.Close()
+
+	st := testStore(gw.URL)
+	st.branches = []model.Branch{
+		{ID: "br_1", TenantID: "tnt_1", Name: "الفرع الأول", LastSyncAt: &recent},
+		{ID: "br_2", TenantID: "tnt_1", Name: "الفرع الثاني"}, // never synced, no report rows
+	}
+	s := New(st, &fakeTokens{}, nil)
+
+	env, err := s.ReportBranches(context.Background(), "acc_owner", "tnt_1", url.Values{})
+	if err != nil {
+		t.Fatalf("report branches: %v", err)
+	}
+	if len(env.Data.Branches) != 2 {
+		t.Fatalf("got %d branches, want 2 (registry-driven)", len(env.Data.Branches))
+	}
+	b1, b2 := env.Data.Branches[0], env.Data.Branches[1]
+	if b1.BranchID != "br_1" || b1.BranchName != "الفرع الأول" || b1.Health != "ok" {
+		t.Fatalf("br_1 decoration: %+v", b1)
+	}
+	if b1.SalesTotal != 900 || b1.Profit != 300 || b1.RefundsCount != 1 {
+		t.Fatalf("br_1 numbers: %+v", b1)
+	}
+	if b2.BranchID != "br_2" || b2.Health != "never" {
+		t.Fatalf("br_2 decoration: %+v", b2)
+	}
+	if b2.SalesTotal != 0 || b2.SalesCount != 0 || b2.Profit != 0 {
+		t.Fatalf("br_2 should be zero-filled: %+v", b2)
+	}
+}
+
+func TestReportStaff_PassthroughAndEmptyNeverNil(t *testing.T) {
+	gw := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/hq/reports/staff" {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"staff":[{"user_id":"u-1","user_name":"أحمد","sales_total":700,"sales_count":7,"refunds_total":0,"refunds_count":0}]}`))
+	}))
+	defer gw.Close()
+
+	s := New(testStore(gw.URL), &fakeTokens{}, nil)
+	env, err := s.ReportStaff(context.Background(), "acc_owner", "tnt_1", url.Values{})
+	if err != nil {
+		t.Fatalf("report staff: %v", err)
+	}
+	if len(env.Data.Staff) != 1 || env.Data.Staff[0].UserName != "أحمد" || env.Data.Staff[0].SalesTotal != 700 {
+		t.Fatalf("staff round-trip: %+v", env.Data.Staff)
+	}
+
+	empty := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"staff":null}`))
+	}))
+	defer empty.Close()
+	s2 := New(testStore(empty.URL), &fakeTokens{}, nil)
+	env2, err := s2.ReportStaff(context.Background(), "acc_owner", "tnt_1", url.Values{})
+	if err != nil {
+		t.Fatalf("report staff (empty): %v", err)
+	}
+	if env2.Data.Staff == nil || len(env2.Data.Staff) != 0 {
+		t.Fatalf("staff should be an empty slice, got %#v", env2.Data.Staff)
+	}
+}
+
+func TestReportSales_Ownership(t *testing.T) {
+	s := New(testStore("http://127.0.0.1:1"), &fakeTokens{}, nil)
+	if _, err := s.ReportSales(context.Background(), "acc_intruder", "tnt_1", url.Values{}); !errors.Is(err, ErrForbidden) {
+		t.Fatalf("expected ErrForbidden, got %v", err)
+	}
+}

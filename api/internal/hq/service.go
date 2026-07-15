@@ -1249,3 +1249,248 @@ func (s *Service) ProductMovements(ctx context.Context, accountID, tenantID, pro
 	data := MovementsPage{OpeningQty: raw.OpeningQty, Total: raw.Total, Page: raw.Page, PageSize: raw.PageSize, Items: items}
 	return &MovementsEnvelope{Data: data, Source: "synced", AsOf: time.Now().UTC()}, nil
 }
+
+// --- Reports (slice 6): question-organized, date-bounded aggregates read
+// straight off the tenant DB via the gateway (open question 2's v1 answer —
+// direct SQL, no rollups). Like the catalog reads, every payload is computed
+// live at request time, so the envelope always reads "synced" with as_of =
+// now; the branches report is the one view that merges the registry (every
+// branch renders, zeroed when the gateway reports no rows for it — the same
+// philosophy as InventoryByBranch). ---
+
+// TenderSplit is how the period's sales were paid: cash in drawer, bank/card,
+// e-wallet, and credit = the on-account remainder.
+type TenderSplit struct {
+	Cash   float64 `json:"cash"`
+	Bank   float64 `json:"bank"`
+	Wallet float64 `json:"wallet"`
+	Credit float64 `json:"credit"`
+}
+
+// SalesDay is one local calendar day of the sales series. Day is a plain
+// YYYY-MM-DD string in the tenant's day-scope, not an instant.
+type SalesDay struct {
+	Day          string  `json:"day"`
+	SalesTotal   float64 `json:"sales_total"`
+	SalesCount   int     `json:"sales_count"`
+	RefundsTotal float64 `json:"refunds_total"`
+}
+
+// SalesReport is the period's totals, tender split and gap-filled day series.
+// From/To echo the gateway's resolved period (it owns defaulting/clamping).
+type SalesReport struct {
+	From         string      `json:"from"`
+	To           string      `json:"to"`
+	SalesTotal   float64     `json:"sales_total"`
+	SalesCount   int         `json:"sales_count"`
+	RefundsTotal float64     `json:"refunds_total"`
+	RefundsCount int         `json:"refunds_count"`
+	Tender       TenderSplit `json:"tender"`
+	Days         []SalesDay  `json:"days"`
+}
+
+// SalesReportEnvelope wraps the sales report in the freshness envelope.
+type SalesReportEnvelope struct {
+	Data   SalesReport `json:"data"`
+	Source string      `json:"source"`
+	AsOf   time.Time   `json:"as_of"`
+}
+
+// ReportSales returns the period sales report. params carries
+// from/to/branch_id straight through to the gateway, which owns period
+// defaulting and clamping.
+func (s *Service) ReportSales(ctx context.Context, accountID, tenantID string, params url.Values) (*SalesReportEnvelope, error) {
+	t, shard, err := s.resolveGateway(ctx, accountID, tenantID)
+	if err != nil {
+		return nil, err
+	}
+	u := shard.GatewayURL + "/hq/reports/sales"
+	if enc := params.Encode(); enc != "" {
+		u += "?" + enc
+	}
+	var resp SalesReport
+	if err := s.getJSON(ctx, u, t.DBName, &resp); err != nil {
+		return nil, err
+	}
+	if resp.Days == nil {
+		resp.Days = []SalesDay{}
+	}
+	return &SalesReportEnvelope{Data: resp, Source: "synced", AsOf: time.Now().UTC()}, nil
+}
+
+// ProductReportRow is one product's period performance: quantity sold (base
+// units, labeled with the master-unit name), revenue and profit
+// (revenue − COGS, the desktop's own profit formula).
+type ProductReportRow struct {
+	ID        string  `json:"id"`
+	Code      int     `json:"code"`
+	Name      string  `json:"name"`
+	GroupName *string `json:"group_name,omitempty"`
+	Unit      *string `json:"unit,omitempty"`
+	QtySold   float64 `json:"qty_sold"`
+	Revenue   float64 `json:"revenue"`
+	Profit    float64 `json:"profit"`
+}
+
+// ProductsReportPage is the paged products report payload.
+type ProductsReportPage struct {
+	Total    int                `json:"total"`
+	Page     int                `json:"page"`
+	PageSize int                `json:"page_size"`
+	Items    []ProductReportRow `json:"items"`
+}
+
+// ProductsReportEnvelope wraps a page of the products report in the freshness
+// envelope.
+type ProductsReportEnvelope struct {
+	Data   ProductsReportPage `json:"data"`
+	Source string             `json:"source"`
+	AsOf   time.Time          `json:"as_of"`
+}
+
+// ReportProducts returns one page of the period products report. params
+// carries from/to/branch_id/group_id/sort/page/page_size straight through to
+// the gateway.
+func (s *Service) ReportProducts(ctx context.Context, accountID, tenantID string, params url.Values) (*ProductsReportEnvelope, error) {
+	t, shard, err := s.resolveGateway(ctx, accountID, tenantID)
+	if err != nil {
+		return nil, err
+	}
+	u := shard.GatewayURL + "/hq/reports/products"
+	if enc := params.Encode(); enc != "" {
+		u += "?" + enc
+	}
+	var resp ProductsReportPage
+	if err := s.getJSON(ctx, u, t.DBName, &resp); err != nil {
+		return nil, err
+	}
+	if resp.Items == nil {
+		resp.Items = []ProductReportRow{}
+	}
+	return &ProductsReportEnvelope{Data: resp, Source: "synced", AsOf: time.Now().UTC()}, nil
+}
+
+// BranchReportRow is one branch's period performance, decorated with the
+// registry identity and sync health the same way every branch view is.
+type BranchReportRow struct {
+	BranchID     string     `json:"branch_id"`
+	BranchName   string     `json:"branch_name"`
+	Health       string     `json:"health"`
+	LastSyncAt   *time.Time `json:"last_sync_at,omitempty"`
+	SalesTotal   float64    `json:"sales_total"`
+	SalesCount   int        `json:"sales_count"`
+	RefundsTotal float64    `json:"refunds_total"`
+	RefundsCount int        `json:"refunds_count"`
+	Profit       float64    `json:"profit"`
+}
+
+// BranchesReportData is the full branches-comparison payload.
+type BranchesReportData struct {
+	Branches []BranchReportRow `json:"branches"`
+}
+
+// BranchesReportEnvelope wraps the branches report in the freshness envelope.
+type BranchesReportEnvelope struct {
+	Data   BranchesReportData `json:"data"`
+	Source string             `json:"source"`
+	AsOf   time.Time          `json:"as_of"`
+}
+
+// ReportBranches returns the period branches comparison: every registry
+// branch (zeroed when the gateway reports no rows for it in the period),
+// decorated with name/health/last_sync_at. params carries from/to straight
+// through to the gateway.
+func (s *Service) ReportBranches(ctx context.Context, accountID, tenantID string, params url.Values) (*BranchesReportEnvelope, error) {
+	t, shard, err := s.resolveGateway(ctx, accountID, tenantID)
+	if err != nil {
+		return nil, err
+	}
+	branches, err := s.store.BranchesByTenant(ctx, tenantID)
+	if err != nil {
+		return nil, err
+	}
+
+	u := shard.GatewayURL + "/hq/reports/branches"
+	if enc := params.Encode(); enc != "" {
+		u += "?" + enc
+	}
+	var resp struct {
+		Branches []struct {
+			BranchID     string  `json:"branch_id"`
+			SalesTotal   float64 `json:"sales_total"`
+			SalesCount   int     `json:"sales_count"`
+			RefundsTotal float64 `json:"refunds_total"`
+			RefundsCount int     `json:"refunds_count"`
+			Profit       float64 `json:"profit"`
+		} `json:"branches"`
+	}
+	if err := s.getJSON(ctx, u, t.DBName, &resp); err != nil {
+		return nil, err
+	}
+	byID := make(map[string]int, len(resp.Branches))
+	for i, b := range resp.Branches {
+		byID[b.BranchID] = i
+	}
+
+	now := time.Now().UTC()
+	data := BranchesReportData{Branches: make([]BranchReportRow, 0, len(branches))}
+	for i := range branches {
+		b := &branches[i]
+		row := BranchReportRow{
+			BranchID: b.ID, BranchName: b.Name,
+			Health: healthTier(b.LastSyncAt, now), LastSyncAt: b.LastSyncAt,
+		}
+		if idx, ok := byID[b.ID]; ok {
+			g := resp.Branches[idx]
+			row.SalesTotal, row.SalesCount = g.SalesTotal, g.SalesCount
+			row.RefundsTotal, row.RefundsCount = g.RefundsTotal, g.RefundsCount
+			row.Profit = g.Profit
+		}
+		data.Branches = append(data.Branches, row)
+	}
+	return &BranchesReportEnvelope{Data: data, Source: "synced", AsOf: now}, nil
+}
+
+// StaffReportRow is one user's period performance. UserName comes from the
+// tenant DB's Tier-A Users table (replicated in full), not the registry.
+type StaffReportRow struct {
+	UserID       string  `json:"user_id"`
+	UserName     string  `json:"user_name"`
+	SalesTotal   float64 `json:"sales_total"`
+	SalesCount   int     `json:"sales_count"`
+	RefundsTotal float64 `json:"refunds_total"`
+	RefundsCount int     `json:"refunds_count"`
+}
+
+// StaffReportData is the full staff report payload.
+type StaffReportData struct {
+	Staff []StaffReportRow `json:"staff"`
+}
+
+// StaffReportEnvelope wraps the staff report in the freshness envelope.
+type StaffReportEnvelope struct {
+	Data   StaffReportData `json:"data"`
+	Source string          `json:"source"`
+	AsOf   time.Time       `json:"as_of"`
+}
+
+// ReportStaff returns the period per-cashier report. params carries
+// from/to/branch_id straight through to the gateway.
+func (s *Service) ReportStaff(ctx context.Context, accountID, tenantID string, params url.Values) (*StaffReportEnvelope, error) {
+	t, shard, err := s.resolveGateway(ctx, accountID, tenantID)
+	if err != nil {
+		return nil, err
+	}
+	u := shard.GatewayURL + "/hq/reports/staff"
+	if enc := params.Encode(); enc != "" {
+		u += "?" + enc
+	}
+	var resp StaffReportData
+	if err := s.getJSON(ctx, u, t.DBName, &resp); err != nil {
+		return nil, err
+	}
+	if resp.Staff == nil {
+		resp.Staff = []StaffReportRow{}
+	}
+	return &StaffReportEnvelope{Data: resp, Source: "synced", AsOf: time.Now().UTC()}, nil
+}
