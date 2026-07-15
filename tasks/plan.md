@@ -137,7 +137,7 @@ Bugs found and fixed during this checkpoint's e2e pass (2026-07-15):
 - [x] T37: Console — lib plumbing (conflict types/api/hooks, `hq-conflicts` SSE invalidation) + shared `lib/alerts.ts` derivation adopted by Overview *(platform, 2026-07-15)*
 - [x] T38: Console — notifications bell in the AppShell header (badge + dropdown, every row deep-links) *(platform, 2026-07-15)*
 - [x] T39: Console — conflicts review page (kept-vs-overridden diff, per-row + bulk ack, product deep-links) *(platform, 2026-07-15)*
-- [ ] T40: Console — top-bar branch-status indicator
+- [x] T40: Console — top-bar branch-status indicator *(platform, 2026-07-15)*
 - [ ] T41: Console — Ctrl+K command palette
 
 ### Checkpoint 5 (slice 5 shipped)

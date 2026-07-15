@@ -5,6 +5,7 @@ import { Brand } from '@/components/Brand'
 import { Breadcrumbs } from '@/components/Breadcrumbs'
 import { AccountMenu } from '@/components/AccountMenu'
 import { NotificationsBell } from '@/components/NotificationsBell'
+import { BranchStatusIndicator } from '@/components/BranchStatusIndicator'
 import {
   DashboardIcon,
   CompanyIcon,
@@ -131,6 +132,7 @@ export function AppShell() {
           </div>
 
           <div className="flex items-center gap-1">
+            <BranchStatusIndicator />
             <NotificationsBell />
             <AccountMenu />
           </div>

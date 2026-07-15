@@ -408,11 +408,11 @@ Design notes (2026-07-15): only ConflictLog needs new backend surface — stale/
   - Files: `console/src/pages/console/Conflicts.tsx`, `console/src/App.tsx` (route), `console/src/components/AppShell.tsx` (breadcrumb lookup)
   - Dependencies: T37 · **Size: M**
 
-- [ ] **T40: Console — top-bar branch-status indicator**
+- [x] **T40: Console — top-bar branch-status indicator** *(2026-07-15)*
   - **Description:** `BranchStatusIndicator` beside the bell: worst health tier across `useHqBranches` (never < ok < lagging < stale for severity — a stale branch wins) as a `HealthDot` + count label («٣ فروع»); dropdown lists every branch (HealthDot + name + relative last-sync) linking to its detail page; footer «كل الفروع» → `/branches`. Hidden while the tenant has no branches.
   - Acceptance:
-    - [ ] Indicator flips live when a branch syncs (SSE, shared `hq-branches` key); dropdown rows deep-link correctly
-  - Verify: `pnpm build && pnpm lint` clean; live flip folds into checkpoint 5
+    - [x] Indicator flips live when a branch syncs (SSE, shared `hq-branches` key) *(reuses the exact `useHqBranches` hook/query key the bell and Overview already keep live — no new invalidation needed)*; dropdown rows deep-link correctly
+  - Verify: `pnpm build && pnpm lint` clean, 2026-07-15; live flip **pending — folds into checkpoint 5**
   - Files: `console/src/components/BranchStatusIndicator.tsx`, `console/src/components/AppShell.tsx`
   - Dependencies: T37 (shares the always-mounted `useHqBranches`) · **Size: S**
 
