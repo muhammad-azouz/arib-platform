@@ -192,6 +192,40 @@ func healthTier(lastSync *time.Time, now time.Time) string {
 	}
 }
 
+// syncFreshness derives the envelope's source/as_of for a read of the
+// tenant's central DB: the data is only as fresh as the newest completed sync
+// round among the tenant's branches — never request time, which would claim
+// zero lag forever. Past offlineAfter the source degrades to "offline"; a
+// tenant no branch of which has ever synced gets "offline" with no as_of
+// (the console renders that as "never synced").
+func syncFreshness(branches []model.Branch, now time.Time) (source string, asOf *time.Time) {
+	var newest *time.Time
+	for i := range branches {
+		if ls := branches[i].LastSyncAt; ls != nil && (newest == nil || ls.After(*newest)) {
+			newest = ls
+		}
+	}
+	switch {
+	case newest == nil:
+		return "offline", nil
+	case now.Sub(*newest) > offlineAfter:
+		return "offline", newest
+	default:
+		return "synced", newest
+	}
+}
+
+// tenantFreshness is syncFreshness for call sites that don't already hold the
+// branch registry. A registry lookup failure must not fail a read that has
+// already succeeded, so it degrades to "synced" with no timestamp.
+func (s *Service) tenantFreshness(ctx context.Context, tenantID string) (string, *time.Time) {
+	branches, err := s.store.BranchesByTenant(ctx, tenantID)
+	if err != nil {
+		return "synced", nil
+	}
+	return syncFreshness(branches, time.Now().UTC())
+}
+
 // Totals is the company-wide day-so-far, summed over the branch snapshots
 // (slice 2's KPI tiles — no extra gateway call, no aggregate endpoint). Stale
 // data stays visible on the cards, so it is summed too; honesty comes from
@@ -363,14 +397,13 @@ func (s *Service) putJSON(ctx context.Context, url, dbName string, body, into an
 	}
 }
 
-// --- Catalog (slice 3): the master product tables, proxied read-only. Unlike
-// the branch envelopes above (which grade by sync cadence), catalog data is
-// read live off the central DB on every call, so the envelope always reads
-// "synced" — the freshness pill is honestly reporting "just read", not
-// grading staleness. Availability rows are the exception: each one is
-// decorated with its owning branch's health/last_sync_at (from the registry
-// this service already loads), so the console needs no second call to know
-// whether a branch's stock number can be trusted. ---
+// --- Catalog (slice 3): the master product tables, proxied read-only. The
+// data is read off the central DB on every call, but the central DB is itself
+// only as fresh as the last completed sync round, so every envelope carries
+// syncFreshness (newest branch sync), not request time. Availability rows are
+// additionally decorated with their owning branch's health/last_sync_at (from
+// the registry this service already loads), so the console needs no second
+// call to know whether a branch's stock number can be trusted. ---
 
 // CatalogGroup is one product group; the console builds the parent/child tree
 // client-side from ParentID.
@@ -387,7 +420,7 @@ type CatalogGroup struct {
 type CatalogGroupsEnvelope struct {
 	Data   []CatalogGroup `json:"data"`
 	Source string         `json:"source"`
-	AsOf   time.Time      `json:"as_of"`
+	AsOf   *time.Time     `json:"as_of,omitempty"`
 }
 
 // CatalogGroups returns every product group for an owned, sync-subscribed
@@ -403,7 +436,8 @@ func (s *Service) CatalogGroups(ctx context.Context, accountID, tenantID string)
 	if err := s.getJSON(ctx, shard.GatewayURL+"/hq/groups", t.DBName, &resp); err != nil {
 		return nil, err
 	}
-	return &CatalogGroupsEnvelope{Data: resp.Groups, Source: "synced", AsOf: time.Now().UTC()}, nil
+	source, asOf := s.tenantFreshness(ctx, tenantID)
+	return &CatalogGroupsEnvelope{Data: resp.Groups, Source: source, AsOf: asOf}, nil
 }
 
 // CatalogProduct is one row of the paged product list.
@@ -434,7 +468,7 @@ type CatalogProductsPage struct {
 type CatalogProductsEnvelope struct {
 	Data   CatalogProductsPage `json:"data"`
 	Source string              `json:"source"`
-	AsOf   time.Time           `json:"as_of"`
+	AsOf   *time.Time          `json:"as_of,omitempty"`
 }
 
 // CatalogProducts returns one page of the master product list. params carries
@@ -453,7 +487,8 @@ func (s *Service) CatalogProducts(ctx context.Context, accountID, tenantID strin
 	if err := s.getJSON(ctx, u, t.DBName, &resp); err != nil {
 		return nil, err
 	}
-	return &CatalogProductsEnvelope{Data: resp, Source: "synced", AsOf: time.Now().UTC()}, nil
+	source, asOf := s.tenantFreshness(ctx, tenantID)
+	return &CatalogProductsEnvelope{Data: resp, Source: source, AsOf: asOf}, nil
 }
 
 // ProductUnit is one unit of measure with its full price ladder and barcodes.
@@ -503,7 +538,7 @@ type ProductDetail struct {
 type ProductDetailEnvelope struct {
 	Data   *ProductDetail `json:"data"`
 	Source string         `json:"source"`
-	AsOf   time.Time      `json:"as_of"`
+	AsOf   *time.Time     `json:"as_of,omitempty"`
 }
 
 // CatalogProductDetail fetches one product's full detail, decorating each
@@ -572,7 +607,8 @@ func (s *Service) CatalogProductDetail(ctx context.Context, accountID, tenantID,
 		ReOrder: raw.ReOrder, IsExpire: raw.IsExpire, CreatedAt: raw.CreatedAt,
 		Units: raw.Units, Availability: availability,
 	}
-	return &ProductDetailEnvelope{Data: detail, Source: "synced", AsOf: now}, nil
+	source, asOf := syncFreshness(branches, now)
+	return &ProductDetailEnvelope{Data: detail, Source: source, AsOf: asOf}, nil
 }
 
 // --- Catalog write (slice 3): the first HQ write. Prices live on the UoM
@@ -761,7 +797,7 @@ type InventoryBranchesData struct {
 type InventoryByBranchEnvelope struct {
 	Data   InventoryBranchesData `json:"data"`
 	Source string                `json:"source"`
-	AsOf   time.Time             `json:"as_of"`
+	AsOf   *time.Time            `json:"as_of,omitempty"`
 }
 
 // InventoryByBranch returns the "by branch" inventory view: every registry
@@ -817,7 +853,8 @@ func (s *Service) InventoryByBranch(ctx context.Context, accountID, tenantID str
 		data.Totals.LowCount += v.LowCount
 		data.Branches = append(data.Branches, v)
 	}
-	return &InventoryByBranchEnvelope{Data: data, Source: "synced", AsOf: now}, nil
+	source, asOf := syncFreshness(branches, now)
+	return &InventoryByBranchEnvelope{Data: data, Source: source, AsOf: asOf}, nil
 }
 
 // InventoryProduct is one row of the "by product" inventory view. Qty/value
@@ -852,7 +889,7 @@ type InventoryProductsPage struct {
 type InventoryProductsEnvelope struct {
 	Data   InventoryProductsPage `json:"data"`
 	Source string                `json:"source"`
-	AsOf   time.Time             `json:"as_of"`
+	AsOf   *time.Time            `json:"as_of,omitempty"`
 }
 
 // InventoryProducts returns one page of the "by product" inventory view.
@@ -871,7 +908,8 @@ func (s *Service) InventoryProducts(ctx context.Context, accountID, tenantID str
 	if err := s.getJSON(ctx, u, t.DBName, &resp); err != nil {
 		return nil, err
 	}
-	return &InventoryProductsEnvelope{Data: resp, Source: "synced", AsOf: time.Now().UTC()}, nil
+	source, asOf := s.tenantFreshness(ctx, tenantID)
+	return &InventoryProductsEnvelope{Data: resp, Source: source, AsOf: asOf}, nil
 }
 
 // AttentionCounts is the unpaged per-severity totals for the needs-attention
@@ -926,7 +964,7 @@ type AttentionData struct {
 type AttentionEnvelope struct {
 	Data   AttentionData `json:"data"`
 	Source string        `json:"source"`
-	AsOf   time.Time     `json:"as_of"`
+	AsOf   *time.Time    `json:"as_of,omitempty"`
 }
 
 // InventoryAttention returns the needs-attention view: WPI rows failing the
@@ -1010,7 +1048,8 @@ func (s *Service) InventoryAttention(ctx context.Context, accountID, tenantID st
 		StaleBranches: stale, Counts: raw.Counts, Total: raw.Total,
 		Page: raw.Page, PageSize: raw.PageSize, Items: items,
 	}
-	return &AttentionEnvelope{Data: data, Source: "synced", AsOf: now}, nil
+	source, asOf := syncFreshness(branches, now)
+	return &AttentionEnvelope{Data: data, Source: source, AsOf: asOf}, nil
 }
 
 // --- Conflicts (slice 5): the gateway's ConflictLog, proxied for review.
@@ -1052,7 +1091,7 @@ type ConflictsData struct {
 type ConflictsEnvelope struct {
 	Data   ConflictsData `json:"data"`
 	Source string        `json:"source"`
-	AsOf   time.Time     `json:"as_of"`
+	AsOf   *time.Time    `json:"as_of,omitempty"`
 }
 
 // Conflicts returns one page of the tenant's sync-conflict log, each row
@@ -1089,7 +1128,8 @@ func (s *Service) Conflicts(ctx context.Context, accountID, tenantID string, par
 	if raw.Items == nil {
 		raw.Items = []ConflictItem{}
 	}
-	return &ConflictsEnvelope{Data: raw, Source: "synced", AsOf: time.Now().UTC()}, nil
+	source, asOf := syncFreshness(branches, time.Now().UTC())
+	return &ConflictsEnvelope{Data: raw, Source: source, AsOf: asOf}, nil
 }
 
 // AckConflictsResult is the gateway's receipt: how many rows actually flipped
@@ -1179,7 +1219,7 @@ type MovementsPage struct {
 type MovementsEnvelope struct {
 	Data   MovementsPage `json:"data"`
 	Source string        `json:"source"`
-	AsOf   time.Time     `json:"as_of"`
+	AsOf   *time.Time    `json:"as_of,omitempty"`
 }
 
 // ProductMovements returns one page of a product's movement history. params
@@ -1247,14 +1287,15 @@ func (s *Service) ProductMovements(ctx context.Context, accountID, tenantID, pro
 	}
 
 	data := MovementsPage{OpeningQty: raw.OpeningQty, Total: raw.Total, Page: raw.Page, PageSize: raw.PageSize, Items: items}
-	return &MovementsEnvelope{Data: data, Source: "synced", AsOf: time.Now().UTC()}, nil
+	source, asOf := syncFreshness(branches, time.Now().UTC())
+	return &MovementsEnvelope{Data: data, Source: source, AsOf: asOf}, nil
 }
 
 // --- Reports (slice 6): question-organized, date-bounded aggregates read
 // straight off the tenant DB via the gateway (open question 2's v1 answer —
-// direct SQL, no rollups). Like the catalog reads, every payload is computed
-// live at request time, so the envelope always reads "synced" with as_of =
-// now; the branches report is the one view that merges the registry (every
+// direct SQL, no rollups). Like the catalog reads, every envelope carries
+// syncFreshness — the report numbers can be no fresher than the newest branch
+// sync. The branches report is the one view that merges the registry (every
 // branch renders, zeroed when the gateway reports no rows for it — the same
 // philosophy as InventoryByBranch). ---
 
@@ -1293,7 +1334,7 @@ type SalesReport struct {
 type SalesReportEnvelope struct {
 	Data   SalesReport `json:"data"`
 	Source string      `json:"source"`
-	AsOf   time.Time   `json:"as_of"`
+	AsOf   *time.Time  `json:"as_of,omitempty"`
 }
 
 // ReportSales returns the period sales report. params carries
@@ -1315,7 +1356,8 @@ func (s *Service) ReportSales(ctx context.Context, accountID, tenantID string, p
 	if resp.Days == nil {
 		resp.Days = []SalesDay{}
 	}
-	return &SalesReportEnvelope{Data: resp, Source: "synced", AsOf: time.Now().UTC()}, nil
+	source, asOf := s.tenantFreshness(ctx, tenantID)
+	return &SalesReportEnvelope{Data: resp, Source: source, AsOf: asOf}, nil
 }
 
 // ProductReportRow is one product's period performance: quantity sold (base
@@ -1345,7 +1387,7 @@ type ProductsReportPage struct {
 type ProductsReportEnvelope struct {
 	Data   ProductsReportPage `json:"data"`
 	Source string             `json:"source"`
-	AsOf   time.Time          `json:"as_of"`
+	AsOf   *time.Time         `json:"as_of,omitempty"`
 }
 
 // ReportProducts returns one page of the period products report. params
@@ -1367,7 +1409,8 @@ func (s *Service) ReportProducts(ctx context.Context, accountID, tenantID string
 	if resp.Items == nil {
 		resp.Items = []ProductReportRow{}
 	}
-	return &ProductsReportEnvelope{Data: resp, Source: "synced", AsOf: time.Now().UTC()}, nil
+	source, asOf := s.tenantFreshness(ctx, tenantID)
+	return &ProductsReportEnvelope{Data: resp, Source: source, AsOf: asOf}, nil
 }
 
 // BranchReportRow is one branch's period performance, decorated with the
@@ -1393,7 +1436,7 @@ type BranchesReportData struct {
 type BranchesReportEnvelope struct {
 	Data   BranchesReportData `json:"data"`
 	Source string             `json:"source"`
-	AsOf   time.Time          `json:"as_of"`
+	AsOf   *time.Time         `json:"as_of,omitempty"`
 }
 
 // ReportBranches returns the period branches comparison: every registry
@@ -1448,7 +1491,8 @@ func (s *Service) ReportBranches(ctx context.Context, accountID, tenantID string
 		}
 		data.Branches = append(data.Branches, row)
 	}
-	return &BranchesReportEnvelope{Data: data, Source: "synced", AsOf: now}, nil
+	source, asOf := syncFreshness(branches, now)
+	return &BranchesReportEnvelope{Data: data, Source: source, AsOf: asOf}, nil
 }
 
 // StaffReportRow is one user's period performance. UserName comes from the
@@ -1471,7 +1515,7 @@ type StaffReportData struct {
 type StaffReportEnvelope struct {
 	Data   StaffReportData `json:"data"`
 	Source string          `json:"source"`
-	AsOf   time.Time       `json:"as_of"`
+	AsOf   *time.Time      `json:"as_of,omitempty"`
 }
 
 // ReportStaff returns the period per-cashier report. params carries
@@ -1492,5 +1536,6 @@ func (s *Service) ReportStaff(ctx context.Context, accountID, tenantID string, p
 	if resp.Staff == nil {
 		resp.Staff = []StaffReportRow{}
 	}
-	return &StaffReportEnvelope{Data: resp, Source: "synced", AsOf: time.Now().UTC()}, nil
+	source, asOf := s.tenantFreshness(ctx, tenantID)
+	return &StaffReportEnvelope{Data: resp, Source: source, AsOf: asOf}, nil
 }

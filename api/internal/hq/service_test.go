@@ -119,6 +119,32 @@ func TestBranchActivity_GatewayUnreachable(t *testing.T) {
 	}
 }
 
+// syncFreshness must report the newest branch sync, never request time — a
+// tenant whose last sync was hours ago must not read "synced 0 seconds ago".
+func TestSyncFreshness(t *testing.T) {
+	now := time.Now().UTC()
+	fresh := now.Add(-3 * time.Minute)
+	older := now.Add(-20 * time.Minute)
+	stale := now.Add(-2 * time.Hour)
+
+	branch := func(id string, ls *time.Time) model.Branch {
+		return model.Branch{ID: id, TenantID: "tnt_1", Status: model.BranchActive, LastSyncAt: ls}
+	}
+
+	if src, asOf := syncFreshness([]model.Branch{branch("b1", &older), branch("b2", &fresh)}, now); src != "synced" || asOf == nil || !asOf.Equal(fresh) {
+		t.Fatalf("fresh tenant: source=%q as_of=%v, want synced/%v (newest branch)", src, asOf, fresh)
+	}
+	if src, asOf := syncFreshness([]model.Branch{branch("b1", &stale)}, now); src != "offline" || asOf == nil || !asOf.Equal(stale) {
+		t.Fatalf("stale tenant: source=%q as_of=%v, want offline/%v", src, asOf, stale)
+	}
+	if src, asOf := syncFreshness([]model.Branch{branch("b1", nil)}, now); src != "offline" || asOf != nil {
+		t.Fatalf("never-synced tenant: source=%q as_of=%v, want offline/nil", src, asOf)
+	}
+	if src, asOf := syncFreshness(nil, now); src != "offline" || asOf != nil {
+		t.Fatalf("no branches: source=%q as_of=%v, want offline/nil", src, asOf)
+	}
+}
+
 func TestHealthTier(t *testing.T) {
 	now := time.Now().UTC()
 	ago := func(d time.Duration) *time.Time { v := now.Add(-d); return &v }
@@ -282,13 +308,19 @@ func TestCatalogGroups(t *testing.T) {
 	}))
 	defer gw.Close()
 
-	s := New(testStore(gw.URL), &fakeTokens{}, nil)
+	fresh := time.Now().UTC().Add(-3 * time.Minute)
+	st := testStore(gw.URL)
+	st.branches = []model.Branch{{ID: "b1", TenantID: "tnt_1", Name: "وسط البلد", Status: model.BranchActive, LastSyncAt: &fresh}}
+	s := New(st, &fakeTokens{}, nil)
 	env, err := s.CatalogGroups(context.Background(), "acc_owner", "tnt_1")
 	if err != nil {
 		t.Fatalf("catalog groups: %v", err)
 	}
 	if env.Source != "synced" || len(env.Data) != 1 || env.Data[0].Name != "مشروبات" || env.Data[0].ProductCount != 5 {
 		t.Fatalf("catalog groups envelope wrong: %+v", env)
+	}
+	if env.AsOf == nil || !env.AsOf.Equal(fresh) {
+		t.Fatalf("as_of = %v, want the branch's last sync %v (never request time)", env.AsOf, fresh)
 	}
 
 	if _, err := s.CatalogGroups(context.Background(), "acc_intruder", "tnt_1"); !errors.Is(err, ErrForbidden) {
@@ -306,7 +338,10 @@ func TestCatalogProducts_PassesQueryParams(t *testing.T) {
 	}))
 	defer gw.Close()
 
-	s := New(testStore(gw.URL), &fakeTokens{}, nil)
+	fresh := time.Now().UTC().Add(-3 * time.Minute)
+	st := testStore(gw.URL)
+	st.branches = []model.Branch{{ID: "b1", TenantID: "tnt_1", Name: "وسط البلد", Status: model.BranchActive, LastSyncAt: &fresh}}
+	s := New(st, &fakeTokens{}, nil)
 	params := url.Values{"search": {"كولا"}, "page": {"2"}, "page_size": {"10"}}
 	env, err := s.CatalogProducts(context.Background(), "acc_owner", "tnt_1", params)
 	if err != nil {
@@ -317,6 +352,9 @@ func TestCatalogProducts_PassesQueryParams(t *testing.T) {
 	}
 	if env.Source != "synced" || env.Data.Total != 1 || len(env.Data.Items) != 1 || env.Data.Items[0].TotalQty != 42 {
 		t.Fatalf("catalog products envelope wrong: %+v", env)
+	}
+	if env.AsOf == nil || !env.AsOf.Equal(fresh) {
+		t.Fatalf("as_of = %v, want the branch's last sync %v", env.AsOf, fresh)
 	}
 }
 
@@ -580,7 +618,10 @@ func TestInventoryProducts_PassesQueryParams(t *testing.T) {
 	}))
 	defer gw.Close()
 
-	s := New(testStore(gw.URL), &fakeTokens{}, nil)
+	fresh := time.Now().UTC().Add(-3 * time.Minute)
+	st := testStore(gw.URL)
+	st.branches = []model.Branch{{ID: "b1", TenantID: "tnt_1", Name: "وسط البلد", Status: model.BranchActive, LastSyncAt: &fresh}}
+	s := New(st, &fakeTokens{}, nil)
 	params := url.Values{"status": {"negative"}, "branch_id": {"b1"}}
 	env, err := s.InventoryProducts(context.Background(), "acc_owner", "tnt_1", params)
 	if err != nil {
@@ -591,6 +632,9 @@ func TestInventoryProducts_PassesQueryParams(t *testing.T) {
 	}
 	if env.Source != "synced" || len(env.Data.Items) != 1 || env.Data.Items[0].Status != "negative" {
 		t.Fatalf("inventory products envelope wrong: %+v", env)
+	}
+	if env.AsOf == nil || !env.AsOf.Equal(fresh) {
+		t.Fatalf("as_of = %v, want the branch's last sync %v", env.AsOf, fresh)
 	}
 }
 
@@ -722,8 +766,9 @@ func TestConflicts_PassesParamsAndDecoratesBranchNames(t *testing.T) {
 	}))
 	defer gw.Close()
 
+	fresh := time.Now().UTC().Add(-3 * time.Minute)
 	st := testStore(gw.URL)
-	st.branches = []model.Branch{{ID: "b1", TenantID: "tnt_1", Name: "وسط البلد", Status: model.BranchActive}}
+	st.branches = []model.Branch{{ID: "b1", TenantID: "tnt_1", Name: "وسط البلد", Status: model.BranchActive, LastSyncAt: &fresh}}
 	s := New(st, &fakeTokens{}, nil)
 
 	params := url.Values{"all": {"1"}, "page": {"1"}}
@@ -734,7 +779,7 @@ func TestConflicts_PassesParamsAndDecoratesBranchNames(t *testing.T) {
 	if gotQuery.Get("all") != "1" {
 		t.Fatalf("gateway did not see passed-through params: %v", gotQuery)
 	}
-	if env.Source != "synced" || env.AsOf.IsZero() {
+	if env.Source != "synced" || env.AsOf == nil || !env.AsOf.Equal(fresh) {
 		t.Fatalf("envelope not freshness-shaped: %+v", env)
 	}
 	d := env.Data
@@ -813,7 +858,10 @@ func TestReportSales_PassesParamsAndWrapsEnvelope(t *testing.T) {
 	}))
 	defer gw.Close()
 
-	s := New(testStore(gw.URL), &fakeTokens{}, nil)
+	fresh := time.Now().UTC().Add(-3 * time.Minute)
+	st := testStore(gw.URL)
+	st.branches = []model.Branch{{ID: "b1", TenantID: "tnt_1", Name: "وسط البلد", Status: model.BranchActive, LastSyncAt: &fresh}}
+	s := New(st, &fakeTokens{}, nil)
 	params := url.Values{}
 	params.Set("from", "2026-07-09")
 	params.Set("to", "2026-07-15")
@@ -829,8 +877,8 @@ func TestReportSales_PassesParamsAndWrapsEnvelope(t *testing.T) {
 	if q.Get("from") != "2026-07-09" || q.Get("to") != "2026-07-15" || q.Get("branch_id") != "b-1" {
 		t.Fatalf("gateway saw query %q", gotQuery)
 	}
-	if env.Source != "synced" || env.AsOf.IsZero() {
-		t.Fatalf("envelope: source=%q as_of=%v", env.Source, env.AsOf)
+	if env.Source != "synced" || env.AsOf == nil || !env.AsOf.Equal(fresh) {
+		t.Fatalf("envelope: source=%q as_of=%v, want as_of = last sync %v", env.Source, env.AsOf, fresh)
 	}
 	if env.Data.SalesTotal != 1500 || env.Data.Tender.Bank != 400 || len(env.Data.Days) != 1 {
 		t.Fatalf("data round-trip: %+v", env.Data)

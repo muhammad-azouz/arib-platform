@@ -163,13 +163,15 @@ export interface HqBranchesResponse {
 
 // --- HQ catalog reads (slice 3; hq/service.go's catalog methods) ---
 //
-// Catalog data is read live off the tenant's central DB on every call (no
-// per-branch sync grading), so this envelope's `source` is always "synced" —
-// the freshness pill is honestly reporting "just read", not staleness.
+// Catalog data is read off the tenant's central DB, which is itself only as
+// fresh as the newest completed branch sync — so `as_of` is that sync time
+// (absent for a never-synced tenant) and `source` flips to "offline" once it
+// ages past 30 minutes. The freshness pill reports sync recency, never "just
+// read".
 export interface CatalogEnvelope<T> {
   data: T
-  source: 'synced'
-  as_of: string
+  source: FreshnessSource
+  as_of?: string | null
 }
 
 // One product group; the console builds the parent/child tree client-side

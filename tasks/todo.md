@@ -497,6 +497,7 @@ Design notes (2026-07-15): **open question 2 resolved by the plan's standing ass
 
 ### Checkpoint 6
 - [x] All gates green (api `go build ./... && go vet ./... && go test ./...`, gateway `dotnet build AribSyncGateway.csproj`, console `pnpm build && pnpm lint` — all clean 2026-07-15)
+- [x] **Found during checkpoint testing:** the freshness pill read «تمت المزامنة منذ ٠ ثواني» forever — every catalog/inventory/conflicts/movements/reports envelope stamped `as_of` with API request time instead of sync time. Fixed 2026-07-15: `as_of` = newest branch `last_sync_at` from the registry (`syncFreshness`/`tenantFreshness` in `api/internal/hq/service.go`), `source` degrades to `offline` past 30 min, omitted entirely for a never-synced tenant; console `CatalogEnvelope.as_of` now optional. Covered by `TestSyncFreshness` + updated envelope assertions. **Re-verify on the live tenant: pill should show the real last-sync age and advance after a sync.**
 - [ ] Manual e2e: sales report totals + tender split match the desktop's own numbers for a real synced tenant and period (incl. a deleted bill staying excluded and a multi-branch day)
 - [ ] Manual e2e: products report revenue/profit spot-checked against the desktop's profit screen for the same period (note the deliberate deleted-bill/date-anchor divergence); top-seller ordering sane in all three sorts
 - [ ] Manual e2e: staff report rows match per-cashier desktop numbers; branches comparison matches the per-branch bills screens
