@@ -44,9 +44,16 @@ export function AppShell() {
     { to: `${base}/settings`, label: 'الإعدادات', icon: SettingsIcon },
   ]
 
-  const current = [...nav]
+  // Reachable only via deep-link (the notifications bell / Overview alerts) —
+  // deliberately absent from `nav` so it has no sidebar entry, but still
+  // needs a breadcrumb label.
+  const hiddenRoutes: Pick<NavItem, 'to' | 'label'>[] = [
+    { to: `${base}/conflicts`, label: 'التنبيهات والتعارضات' },
+  ]
+
+  const current = [...nav, ...hiddenRoutes]
     .sort((a, b) => b.to.length - a.to.length)
-    .find((n) => (n.end ? pathname === n.to : pathname.startsWith(n.to)))
+    .find((n) => pathname.startsWith(n.to))
 
   return (
     <div className="flex min-h-screen">

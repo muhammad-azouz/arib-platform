@@ -399,12 +399,12 @@ Design notes (2026-07-15): only ConflictLog needs new backend surface — stale/
   - Files: `console/src/components/NotificationsBell.tsx`, `console/src/components/AppShell.tsx`, `console/src/components/icon.tsx` (bell icon)
   - Dependencies: T37 · **Size: S**
 
-- [ ] **T39: Console — conflicts review page**
-  - **Description:** Route `/tenants/{id}/conflicts` (no sidebar entry — reached from bell/Overview alerts; AppShell current-section lookup + breadcrumb «التنبيهات والتعارضات»). Header + `Freshness` + unacked count; filter toggle «غير المُراجَعة فقط» (default) / «الكل» (`all=1`). List: one card per conflict — occurred_at (relative + absolute), branch name, table label (Arabic map for known tables: المنتجات/الوحدات/الباركود/… + raw fallback), kept-vs-overridden columns rendered from `local_row`/`remote_row` JSON showing only differing fields (label map for common columns; null remote → «حذف من الفرع»), «افتح المنتج» when product_id present, per-row «تمت المراجعة» + header «تحديد الكل كمُراجَع» (up_to_id = newest visible). Pagination; empty states (clean / all reviewed).
+- [x] **T39: Console — conflicts review page** *(2026-07-15)*
+  - **Description:** Route `/tenants/{id}/conflicts` (no sidebar entry — reached from bell/Overview alerts; AppShell's breadcrumb `current` lookup gained a `hiddenRoutes` list — deep-link-only entries with a label but no nav item — and now matches by prefix uniformly instead of special-casing `end`). Header + `Freshness` (from the envelope's `source`/`as_of`) + unacked count; filter toggle «غير المُراجَعة فقط» (default) / «الكل» (`all=1`, resets to page 1). List: one card per conflict — occurred_at (relative, absolute in the `title` tooltip), branch name, table label (`TABLE_LABELS` map: Products/UnitOfMeasures/Barcodes → raw fallback for anything else), kept-vs-overridden diff table from `local_row`/`remote_row` JSON showing only differing fields (`FIELD_LABELS` map for common AribONE.Data columns, raw key fallback; `Id`/`ProductId`/`UnitOfMeasureId` skipped as never-differing FK/PK; null remote → «حذف من الفرع» in place of a diff table), «افتح المنتج» when product_id present, per-row «تمت المراجعة» + header «تحديد الكل كمُراجَع» (up_to_id = page 1's first row id, since pages are Id DESC). Pagination; empty states (clean / all reviewed) via `EmptyState`.
   - Acceptance:
-    - [ ] Ack (single + bulk) removes rows from the default view and drops the bell badge without refresh (shared invalidation)
-    - [ ] Unknown tables/malformed row JSON degrade gracefully (raw table name, no diff table, page never crashes)
-  - Verify: `pnpm build && pnpm lint` clean; real-conflict pass folds into checkpoint 5
+    - [x] Ack (single + bulk) removes rows from the default view and drops the bell badge without refresh *(both go through `useAckConflicts`, which invalidates the shared `hq-conflicts` prefix that both the bell and this page read)*
+    - [x] Unknown tables/malformed row JSON degrade gracefully *(raw table/field-name fallback via the label maps; `diffFields` returns `null` on unparseable JSON and the card renders a plain "تعذّر عرض تفاصيل هذا التعارض" note instead of throwing)*
+  - Verify: `pnpm build && pnpm lint` clean, 2026-07-15; real-conflict pass **pending — folds into checkpoint 5**
   - Files: `console/src/pages/console/Conflicts.tsx`, `console/src/App.tsx` (route), `console/src/components/AppShell.tsx` (breadcrumb lookup)
   - Dependencies: T37 · **Size: M**
 

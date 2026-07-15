@@ -15,6 +15,7 @@ import { BranchDetail } from '@/pages/console/BranchDetail'
 import { Catalog } from '@/pages/console/Catalog'
 import { ProductDetail } from '@/pages/console/ProductDetail'
 import { Inventory } from '@/pages/console/Inventory'
+import { Conflicts } from '@/pages/console/Conflicts'
 import { Reports } from '@/pages/console/Reports'
 import { Download } from '@/pages/console/Download'
 import { Settings } from '@/pages/console/Settings'
@@ -59,6 +60,7 @@ export default function App() {
             <Route path="catalog" element={<Catalog />} />
             <Route path="catalog/:productId" element={<ProductDetail />} />
             <Route path="inventory" element={<Inventory />} />
+            <Route path="conflicts" element={<Conflicts />} />
             <Route path="reports" element={<Reports />} />
             <Route path="download" element={<Download />} />
             <Route path="settings" element={<Settings />} />
