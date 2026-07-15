@@ -132,8 +132,8 @@ Bugs found and fixed during this checkpoint's e2e pass (2026-07-15):
 - **Ctrl+K is built in-house** on the existing Radix Dialog (cmdk would be a new dependency — not needed). Sections: pages, branches (from the cached bundle), products (debounced `useCatalogProducts` search ≥2 chars — name/code/barcode, same gateway query as the Catalog page). Arabic RTL, ↑/↓/Enter/Esc.
 - **Top-bar branch-status indicator** (the spec's remaining "Global" item) = worst health tier over `useHqBranches` + per-branch dropdown; mounting the hook in AppShell means every console page now keeps that query warm — acceptable, it's the API-side sum over one gateway call, already on a 60s/SSE cadence.
 
-- [ ] T35: Gateway — ConflictLog `AcknowledgedAt` + `GET /hq/conflicts` (paged, unacked count, best-effort product link) + `POST /hq/conflicts/ack`
-- [ ] T36: API — conflicts passthrough + ack + branch-name decoration + tests
+- [x] T35: Gateway — ConflictLog `AcknowledgedAt` + `GET /hq/conflicts` (paged, unacked count, best-effort product link) + `POST /hq/conflicts/ack` *(sync-gateway `0dbd2c3`)*
+- [x] T36: API — conflicts passthrough + ack + branch-name decoration + tests
 - [ ] T37: Console — lib plumbing (conflict types/api/hooks, `hq-conflicts` SSE invalidation) + shared `lib/alerts.ts` derivation adopted by Overview
 - [ ] T38: Console — notifications bell in the AppShell header (badge + dropdown, every row deep-links)
 - [ ] T39: Console — conflicts review page (kept-vs-overridden diff, per-row + bulk ack, product deep-links)

@@ -702,3 +702,101 @@ func TestCreateProduct_TenantNotProvisioned(t *testing.T) {
 		t.Fatalf("expected ErrTenantNotProvisioned, got %v", err)
 	}
 }
+
+func TestConflicts_PassesParamsAndDecoratesBranchNames(t *testing.T) {
+	var gotQuery url.Values
+	gw := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotQuery = r.URL.Query()
+		if r.URL.Path != "/hq/conflicts" {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"unacked":2,"total":3,"page":1,"page_size":50,"items":[` +
+			`{"id":9,"occurred_at":"2026-07-15T09:00:00Z","branch_id":"b1","table_name":"UnitOfMeasures",` +
+			`"row_pk":"u1","conflict_type":"RemoteExistsLocalExists","resolution":"ServerWins",` +
+			`"local_row":"{\"Sale\":12}","remote_row":"{\"Sale\":10}",` +
+			`"product_id":"p1","product_name":"كولا"},` +
+			`{"id":8,"occurred_at":"2026-07-15T08:00:00Z","branch_id":"b-unknown","table_name":"Customers",` +
+			`"conflict_type":"RemoteExistsLocalExists","resolution":"ServerWins"}]}`))
+	}))
+	defer gw.Close()
+
+	st := testStore(gw.URL)
+	st.branches = []model.Branch{{ID: "b1", TenantID: "tnt_1", Name: "وسط البلد", Status: model.BranchActive}}
+	s := New(st, &fakeTokens{}, nil)
+
+	params := url.Values{"all": {"1"}, "page": {"1"}}
+	env, err := s.Conflicts(context.Background(), "acc_owner", "tnt_1", params)
+	if err != nil {
+		t.Fatalf("conflicts: %v", err)
+	}
+	if gotQuery.Get("all") != "1" {
+		t.Fatalf("gateway did not see passed-through params: %v", gotQuery)
+	}
+	if env.Source != "synced" || env.AsOf.IsZero() {
+		t.Fatalf("envelope not freshness-shaped: %+v", env)
+	}
+	d := env.Data
+	if d.Unacked != 2 || d.Total != 3 || len(d.Items) != 2 {
+		t.Fatalf("conflicts page wrong: %+v", d)
+	}
+	if d.Items[0].BranchName != "وسط البلد" || d.Items[0].ProductID == nil || *d.Items[0].ProductID != "p1" {
+		t.Fatalf("known-branch row not decorated: %+v", d.Items[0])
+	}
+	if d.Items[1].BranchName != "" || d.Items[1].ProductID != nil {
+		t.Fatalf("unknown-branch row should stay undecorated: %+v", d.Items[1])
+	}
+}
+
+func TestConflicts_EmptyItemsNeverNil(t *testing.T) {
+	gw := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"unacked":0,"total":0,"page":1,"page_size":50,"items":[]}`))
+	}))
+	defer gw.Close()
+
+	s := New(testStore(gw.URL), &fakeTokens{}, nil)
+	env, err := s.Conflicts(context.Background(), "acc_owner", "tnt_1", url.Values{})
+	if err != nil {
+		t.Fatalf("conflicts: %v", err)
+	}
+	if env.Data.Items == nil || len(env.Data.Items) != 0 {
+		t.Fatalf("items should be an empty slice, got %#v", env.Data.Items)
+	}
+}
+
+func TestAckConflicts_ForwardsBodyAndReturnsCount(t *testing.T) {
+	var gotBody map[string]any
+	gw := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/hq/conflicts/ack" || r.Method != http.MethodPost {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		_ = json.NewDecoder(r.Body).Decode(&gotBody)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"acked":3}`))
+	}))
+	defer gw.Close()
+
+	s := New(testStore(gw.URL), &fakeTokens{}, nil)
+	up := int64(9)
+	result, err := s.AckConflicts(context.Background(), "acc_owner", "tnt_1", []int64{4, 5}, &up)
+	if err != nil {
+		t.Fatalf("ack conflicts: %v", err)
+	}
+	if result.Acked != 3 {
+		t.Fatalf("acked = %d, want 3", result.Acked)
+	}
+	ids, _ := gotBody["ids"].([]any)
+	if len(ids) != 2 || gotBody["up_to_id"] != float64(9) {
+		t.Fatalf("gateway saw body %v", gotBody)
+	}
+}
+
+func TestAckConflicts_Ownership(t *testing.T) {
+	s := New(testStore("http://127.0.0.1:1"), &fakeTokens{}, nil)
+	if _, err := s.AckConflicts(context.Background(), "acc_intruder", "tnt_1", []int64{1}, nil); !errors.Is(err, ErrForbidden) {
+		t.Fatalf("expected ErrForbidden, got %v", err)
+	}
+}

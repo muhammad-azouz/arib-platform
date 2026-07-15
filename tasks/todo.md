@@ -362,21 +362,22 @@ Design notes (2026-07-15): low-stock rule mirrors `InventoryStockRule.cs` byte-f
 
 Design notes (2026-07-15): only ConflictLog needs new backend surface — stale/never branches and attention counts already flow live. Alert derivation is client-side in a shared `lib/alerts.ts` feeding Overview panel + bell alike. Conflict alerts need server-side ack (`AcknowledgedAt` column — ConflictLog is gateway-ensured central-only DDL, **not** an `AribONE.Data` schema change, no SchemaVersion bump; existing DBs upgrade via add-column-if-missing). DMS upload conflicts: `LocalRow` = kept central row, `RemoteRow` = branch's losing write (orientation verified at checkpoint). Product deep-links extracted gateway-side best-effort (Products → RowPk; UnitOfMeasure → row's ProductId; Barcodes → UoM lookup). Ctrl+K built in-house on the existing Radix Dialog — no cmdk dependency.
 
-- [ ] **T35: Gateway — ConflictLog read chain + ack**
+- [x] **T35: Gateway — ConflictLog read chain + ack** *(sync-gateway `0dbd2c3`, 2026-07-15)*
   - **Description:** `EnsureConflictLogSql` gains `AcknowledgedAt` (nullable UTC) with add-column-if-missing for pre-existing tables (both dialects); ensure now also runs before HQ conflict reads (today only the first logged conflict creates the table — reads must tolerate/ensure absence). `GET /hq/conflicts?page=&page_size=&all=`: newest-first (Id DESC) page, default unacked-only, `all=1` includes acked; response `{unacked, total, page, page_size, items:[{id, occurred_at, branch_id, table_name, row_pk, conflict_type, resolution, local_row, remote_row, acknowledged_at, product_id, product_name}]}` — product fields best-effort from row JSON (+ one EF lookup batch for Barcodes/UoM resolution and product names). `POST /hq/conflicts/ack` body `{ids?: number[], up_to_id?: number}` → one UPDATE setting `AcknowledgedAt` where null; returns `{acked}` count. Same `TryHqAuth` + db_name-from-token rule as every /hq/* endpoint; empty shapes on missing DB/table.
   - Acceptance:
-    - [ ] A tenant DB created before this change (ConflictLog without the column) lists and acks correctly after the ensure runs
-    - [ ] Paging is stable (Id DESC); `unacked` count is unpaged; ack is idempotent (second call returns 0); 401 without a valid HqToken
-  - Verify: `dotnet build AribSyncGateway.csproj` clean; curl against a dev tenant DB with real ConflictLog rows (checkpoint 5 covers live)
+    - [x] A tenant DB created before this change (ConflictLog without the column) lists and acks correctly after the ensure runs *(structural: ensure DDL now runs before every conflicts read/ack, CREATE-if-missing + add-column-if-missing on both dialects; live pass against a real pre-upgrade DB folds into checkpoint 5)*
+    - [x] Paging is stable (Id DESC); `unacked` count is unpaged; ack is idempotent (second call returns 0 — the UPDATEs guard on `AcknowledgedAt IS NULL`); 401 without a valid HqToken *(same TryHqAuth path as every /hq/* endpoint)*
+  - Note: ack timestamps are computed **server-side in SQL** (`now() AT TIME ZONE 'utc'` / `SYSUTCDATETIME()`) — Npgsql 6+ rejects UTC-Kind DateTime params on `timestamp without time zone` columns, so no @now param exists to get wrong.
+  - Verify: `dotnet build AribSyncGateway.csproj` clean, 2026-07-15; curl against a dev tenant DB with real ConflictLog rows **pending — folds into checkpoint 5**
   - Files: `sync-gateway/Db/IDbDialect.cs`, `sync-gateway/Db/PostgresDialect.cs`, `sync-gateway/Db/SqlServerDialect.cs`, `sync-gateway/HqApi.cs`, `sync-gateway/Program.cs`, `sync-gateway/ConflictLog.cs` (shared ensure)
   - Dependencies: none · **Size: M**
 
-- [ ] **T36: API — conflicts passthrough + ack + tests**
+- [x] **T36: API — conflicts passthrough + ack + tests** *(2026-07-15)*
   - **Description:** `hq.Service.Conflicts` (resolveGateway → getJSON → envelope; items decorated with branch_name from the registry, "never"-style fallback for unknown branch ids) and `hq.Service.AckConflicts` (POST passthrough; validates ids/up_to_id present and positive). Handlers whitelist `page/page_size/all`; routes `GET /v1/tenants/{id}/hq/conflicts`, `POST /v1/tenants/{id}/hq/conflicts/ack`. Ack logged like other HQ writes (`hq.conflicts_ack`: tenant, account, email, count). Table-driven tests beside the service: decoration, envelope shape, ack body validation, error map unchanged.
   - Acceptance:
-    - [ ] Payload is `{data:{unacked,total,page,page_size,items}, source:"synced", as_of}`; branch names resolve from the registry
-    - [ ] Ack with neither ids nor up_to_id → 400 without a gateway round-trip; `go test ./...` green
-  - Verify: `go build ./... && go vet ./... && go test ./...` clean
+    - [x] Payload is `{data:{unacked,total,page,page_size,items}, source:"synced", as_of}`; branch names resolve from the registry *(`TestConflicts_PassesParamsAndDecoratesBranchNames`: known branch gets its name + product link kept, unknown branch stays undecorated; `TestConflicts_EmptyItemsNeverNil` pins `items: []`)*
+    - [x] Ack with neither ids nor up_to_id → 400 without a gateway round-trip *(handler-level check; also caps ids at 200 and rejects non-positive ids/up_to_id)*; `go test ./...` green *(`TestAckConflicts_ForwardsBodyAndReturnsCount`, `TestAckConflicts_Ownership`)*
+  - Verify: `go build ./... && go vet ./... && go test ./...` clean, 2026-07-15 (full suite)
   - Files: `api/internal/hq/service.go` + `service_test.go`, `api/internal/httpapi/hq_handlers.go`, `api/internal/httpapi/server.go`
   - Dependencies: T35 (contract; may start on fakes) · **Size: M**
 

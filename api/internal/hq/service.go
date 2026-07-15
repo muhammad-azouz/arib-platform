@@ -1013,6 +1013,135 @@ func (s *Service) InventoryAttention(ctx context.Context, accountID, tenantID st
 	return &AttentionEnvelope{Data: data, Source: "synced", AsOf: now}, nil
 }
 
+// --- Conflicts (slice 5): the gateway's ConflictLog, proxied for review.
+// ServerWins (D12) already resolved these rows at sync time — the console
+// lists the losing branch writes as alerts, and acknowledging them (a write
+// that lives on the same central-only table) is what clears the alert. ---
+
+// ConflictItem is one logged sync conflict, decorated with its branch's name.
+// LocalRow is the central row that was kept; RemoteRow is the branch's losing
+// write (nil when the branch had deleted the row). ProductID/ProductName are
+// the gateway's best-effort link to the product the row belongs to.
+type ConflictItem struct {
+	ID             int64      `json:"id"`
+	OccurredAt     time.Time  `json:"occurred_at"`
+	BranchID       *string    `json:"branch_id,omitempty"`
+	BranchName     string     `json:"branch_name,omitempty"`
+	TableName      string     `json:"table_name"`
+	RowPk          *string    `json:"row_pk,omitempty"`
+	ConflictType   string     `json:"conflict_type"`
+	Resolution     string     `json:"resolution"`
+	LocalRow       *string    `json:"local_row,omitempty"`
+	RemoteRow      *string    `json:"remote_row,omitempty"`
+	AcknowledgedAt *time.Time `json:"acknowledged_at,omitempty"`
+	ProductID      *string    `json:"product_id,omitempty"`
+	ProductName    *string    `json:"product_name,omitempty"`
+}
+
+// ConflictsData is one newest-first page of the ConflictLog plus the unpaged
+// unacknowledged count (the alert badge's number).
+type ConflictsData struct {
+	Unacked  int            `json:"unacked"`
+	Total    int            `json:"total"`
+	Page     int            `json:"page"`
+	PageSize int            `json:"page_size"`
+	Items    []ConflictItem `json:"items"`
+}
+
+// ConflictsEnvelope wraps a conflicts page in the freshness envelope.
+type ConflictsEnvelope struct {
+	Data   ConflictsData `json:"data"`
+	Source string        `json:"source"`
+	AsOf   time.Time     `json:"as_of"`
+}
+
+// Conflicts returns one page of the tenant's sync-conflict log, each row
+// decorated with its branch's registry name. params carries page/page_size/all
+// straight through to the gateway, which owns defaulting and clamping.
+func (s *Service) Conflicts(ctx context.Context, accountID, tenantID string, params url.Values) (*ConflictsEnvelope, error) {
+	t, shard, err := s.resolveGateway(ctx, accountID, tenantID)
+	if err != nil {
+		return nil, err
+	}
+	branches, err := s.store.BranchesByTenant(ctx, tenantID)
+	if err != nil {
+		return nil, err
+	}
+	nameByID := make(map[string]string, len(branches))
+	for i := range branches {
+		nameByID[branches[i].ID] = branches[i].Name
+	}
+
+	u := shard.GatewayURL + "/hq/conflicts"
+	if enc := params.Encode(); enc != "" {
+		u += "?" + enc
+	}
+	var raw ConflictsData
+	if err := s.getJSON(ctx, u, t.DBName, &raw); err != nil {
+		return nil, err
+	}
+
+	for i := range raw.Items {
+		if id := raw.Items[i].BranchID; id != nil {
+			raw.Items[i].BranchName = nameByID[*id]
+		}
+	}
+	if raw.Items == nil {
+		raw.Items = []ConflictItem{}
+	}
+	return &ConflictsEnvelope{Data: raw, Source: "synced", AsOf: time.Now().UTC()}, nil
+}
+
+// AckConflictsResult is the gateway's receipt: how many rows actually flipped
+// (already-acknowledged rows don't count, so a repeat call reports 0).
+type AckConflictsResult struct {
+	Acked int `json:"acked"`
+}
+
+// AckConflicts acknowledges conflicts by explicit ids and/or everything up to
+// an id (inclusive). The handler guarantees at least one of the two is set.
+func (s *Service) AckConflicts(ctx context.Context, accountID, tenantID string, ids []int64, upToID *int64) (*AckConflictsResult, error) {
+	t, shard, err := s.resolveGateway(ctx, accountID, tenantID)
+	if err != nil {
+		return nil, err
+	}
+
+	tok, err := s.tokens.IssueHQToken(t.DBName)
+	if err != nil {
+		return nil, fmt.Errorf("mint hq token: %w", err)
+	}
+	body := map[string]any{}
+	if len(ids) > 0 {
+		body["ids"] = ids
+	}
+	if upToID != nil {
+		body["up_to_id"] = *upToID
+	}
+	buf, err := json.Marshal(body)
+	if err != nil {
+		return nil, err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, shard.GatewayURL+"/hq/conflicts/ack", bytes.NewReader(buf))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Authorization", "Bearer "+tok)
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := s.http.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %v", ErrGatewayUnreachable, err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("%w: gateway status %d", ErrGatewayUnreachable, resp.StatusCode)
+	}
+	var result AckConflictsResult
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return nil, err
+	}
+	return &result, nil
+}
+
 // MovementRow is one inventory movement, decorated with its branch's name (a
 // health grade would be redundant here — the ProductDetail page's per-branch
 // availability section already carries it for this same product).

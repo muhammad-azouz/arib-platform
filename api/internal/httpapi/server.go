@@ -155,6 +155,8 @@ func (s *Server) Router() http.Handler {
 					r.Get("/hq/inventory/branches", s.handleHqInventoryBranches)
 					r.Get("/hq/inventory/products", s.handleHqInventoryProducts)
 					r.Get("/hq/inventory/attention", s.handleHqInventoryAttention)
+					r.Get("/hq/conflicts", s.handleHqConflicts)
+					r.Post("/hq/conflicts/ack", s.handleHqConflictsAck)
 				})
 			})
 		})

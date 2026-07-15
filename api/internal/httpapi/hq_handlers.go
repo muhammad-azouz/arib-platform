@@ -264,6 +264,71 @@ func (s *Server) handleHqInventoryAttention(w http.ResponseWriter, r *http.Reque
 	writeJSON(w, http.StatusOK, env)
 }
 
+// --- Conflicts (slice 5): the ConflictLog review chain. ---
+
+func (s *Server) handleHqConflicts(w http.ResponseWriter, r *http.Request) {
+	c := claimsFrom(r.Context())
+	params := url.Values{}
+	for _, k := range []string{"page", "page_size", "all"} {
+		if v := r.URL.Query().Get(k); v != "" {
+			params.Set(k, v)
+		}
+	}
+	env, err := s.hq.Conflicts(r.Context(), c.Subject, chi.URLParam(r, "id"), params)
+	if err != nil {
+		s.writeHqError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, env)
+}
+
+// maxAckIDs bounds one ack's explicit-id list — a whole page is at most 200
+// rows (the gateway's page_size clamp), so this never constrains a real
+// client; bulk clears go through up_to_id.
+const maxAckIDs = 200
+
+func (s *Server) handleHqConflictsAck(w http.ResponseWriter, r *http.Request) {
+	c := claimsFrom(r.Context())
+	var req struct {
+		IDs    []int64 `json:"ids"`
+		UpToID *int64  `json:"up_to_id"`
+	}
+	if err := decode(r, &req); err != nil {
+		writeErr(w, http.StatusBadRequest, "invalid body")
+		return
+	}
+	if len(req.IDs) == 0 && req.UpToID == nil {
+		writeErr(w, http.StatusBadRequest, "ids or up_to_id is required")
+		return
+	}
+	if len(req.IDs) > maxAckIDs {
+		writeErr(w, http.StatusBadRequest, fmt.Sprintf("ids must have at most %d entries", maxAckIDs))
+		return
+	}
+	for _, id := range req.IDs {
+		if id <= 0 {
+			writeErr(w, http.StatusBadRequest, "ids must be positive")
+			return
+		}
+	}
+	if req.UpToID != nil && *req.UpToID <= 0 {
+		writeErr(w, http.StatusBadRequest, "up_to_id must be positive")
+		return
+	}
+
+	tenantID := chi.URLParam(r, "id")
+	result, err := s.hq.AckConflicts(r.Context(), c.Subject, tenantID, req.IDs, req.UpToID)
+	if err != nil {
+		s.writeHqError(w, err)
+		return
+	}
+	// Reviewing a conflict is an HQ action worth tracing, like other HQ writes.
+	s.log.Info("hq.conflicts_ack",
+		"tenant_id", tenantID, "account_id", c.Subject, "email", c.Email,
+		"acked", result.Acked)
+	writeJSON(w, http.StatusOK, result)
+}
+
 // dateParamRE validates from/to as a plain YYYY-MM-DD date — the gateway
 // interprets them in its own local time (same assumption as BranchSnapshot's
 // day scope), so anything with a time/zone component would be misleading.
