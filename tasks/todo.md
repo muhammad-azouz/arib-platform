@@ -435,3 +435,70 @@ Design notes (2026-07-15): only ConflictLog needs new backend surface — stale/
 - [x] **Human review before Phase 6 (Reports)** *(approved 2026-07-15)*
 
 **Bugs found and fixed during Checkpoint 5 e2e (2026-07-15):** desktop `UpsertAccountViewModel.SaveAccount` re-stamped `Account.CreatedAt = DateTime.Now` on every edit (the entity's property initializer firing on the reconstructed object), diverging from central and flooding `ConflictLog` with spurious `Accounts` conflicts — fixed by preserving the original `CreatedAt` on the edit path. Separately, ~1508 pre-existing `ConflictLog` rows turned out to be a harmless DMS artifact: a branch's first sync re-uploads all pre-existing local rows as "untracked" (`desktop/Services/Sync/SyncService.cs`'s E2 initial-upload step), including the ~252 deterministic seed `Accounts` rows already present on central — DMS reports the PK collision as `RemoteExistsLocalExists` even when every column is byte-identical. Fixed in `sync-gateway/ConflictLog.cs`: `LogAsync` now skips writing a row when `LocalRow`/`RemoteRow` are field-for-field equal, since there's nothing to review.
+
+## Phase 6 — Reports
+
+Design notes (2026-07-15): **open question 2 resolved by the plan's standing assumption** (user proceeded past the checkpoint-5 gate): v1 reports are direct, date-bounded SQL aggregates on the tenant DB via the gateway — no rollups/replicas; every query is a period-scoped GroupBy over Bills/SaleEntries, fine at current fleet size, revisit before the fleet grows. Semantics mirror the desktop byte-for-byte: day scope on `CreatedAt` in gateway-local time (same TZ assumption as `BranchSnapshotAsync`; the desktop's own bills screens filter `CreatedAt.Date`), half-open `[from, to+1d)`; sales/refunds = `Sale`/`ReSale` TPH rows, `!IsDeleted`, Σ `Total` (T9's proven semantics); tender split mirrors `ShiftReportService` exactly (`Money`=نقدًا, `BankMoney`, `WalletMoney`, `Remain`=آجل, summed over Sale bills); profit mirrors `ProfitFromWarehouseViewModel` (Σ `Total` − Σ `ItemCost` over SaleEntries — `ItemCost` is the line's total COGS, batch-exact when batch-tracked; service kinds carry ItemCost=0 and stay included, their revenue is real). Product-report rows anchor through the bill (`!Bill.IsDeleted`, `Bill.CreatedAt` period) so the products view's revenue sums can never drift from the sales view's totals — a deliberate divergence from the desktop's profit screen, which filters on entry `CreatedAt` and skips the deleted-bill guard. Day series ships as local-date **strings** (`YYYY-MM-DD`), sidestepping the zone-less-timestamp bug class from checkpoints 2/4. Staff = GroupBy `Bills.UserId` joined to the Tier-A `Users` table. The Inventory question needs zero new backend — it renders `useInventoryByBranch`/attention data with links into the Inventory views. No chart dependency: the daily chart is inline SVG bars. Default period: آخر ٧ أيام; all report state (view/period/filters) is URL-borne for shareable deep links, same pattern as Inventory.
+
+- [ ] **T42: Gateway — sales report endpoint**
+  - **Description:** `GET /hq/reports/sales?from=&to=&branch_id=`: one aggregate row (`sales_total`, `sales_count`, `refunds_total`, `refunds_count`), tender split over Sale bills (`cash`, `bank`, `wallet`, `credit` = Money/BankMoney/WalletMoney/Remain), and per-day series `[{day:"YYYY-MM-DD", sales_total, sales_count, refunds_total}]` via GroupBy `CreatedAt.Date` (translates on both engines). Defaults last 7 days when from/to absent; `branch_id` scopes every aggregate. Same `TryHqAuth` + empty-shapes-on-`IsDatabaseMissing` pattern as every /hq/* endpoint.
+  - Acceptance:
+    - [ ] Totals/tender match the desktop's own numbers for a real synced tenant + period (folds into checkpoint 6 e2e)
+    - [ ] Day boundaries are gateway-local; deleted bills excluded; empty DB → zeroed shape, not error
+  - Verify: `dotnet build AribSyncGateway.csproj`; curl against a dev tenant DB
+  - Files: `sync-gateway/HqApi.cs`, `sync-gateway/Program.cs`
+  - Dependencies: none · **Size: M**
+
+- [ ] **T43: Gateway — products / branches / staff report endpoints**
+  - **Description:** `GET /hq/reports/products?from=&to=&branch_id=&group_id=&sort=&page=&page_size=` — GroupBy `SaleEntries.ProductId` anchored through the bill (`!Bill.IsDeleted`, `Bill.CreatedAt` in period, optional `Bill.BranchId`); row: product id/code/name/group_name/unit (master-unit name, same convention as inventory), `qty_sold` = Σ TotalQty, `revenue` = Σ Total, `profit` = Σ(Total−ItemCost); `sort ∈ revenue|qty|profit` (default revenue) with deterministic ThenBy ProductId; paged + clamped 1..200. `GET /hq/reports/branches?from=&to=` — GroupBy BranchId over Sale + ReSale (totals/counts) plus profit from SaleEntries. `GET /hq/reports/staff?from=&to=&branch_id=` — GroupBy UserId joined to Users (name), sales/refund totals and counts. All share T42's period parsing.
+  - Acceptance:
+    - [ ] Products revenue summed over all rows == sales report's `sales_total` for the same period/branch (self-consistency, checkable via curl)
+    - [ ] `sort` values order correctly with stable paging; unknown product/group/user degrade to raw ids, never a 500
+  - Verify: `dotnet build AribSyncGateway.csproj`; curl each endpoint against a dev tenant DB
+  - Files: `sync-gateway/HqApi.cs`, `sync-gateway/Program.cs`
+  - Dependencies: T42 (shares period helper) · **Size: M**
+
+- [ ] **T44: API — reports passthrough + decoration + tests**
+  - **Description:** Four `hq.Service` methods mirroring the catalog chain (resolveGateway → getJSON → `{data, source:"synced", as_of}` envelope): `ReportSales` (pure passthrough), `ReportProducts` (passthrough), `ReportBranches` (registry merge — every registry branch renders zeroed if absent from the gateway payload, decorated with branch_name/health/last_sync_at, same shape philosophy as `InventoryByBranch`), `ReportStaff` (passthrough). Handlers validate `from`/`to` via the existing `dateParamRE`, whitelist `sort`, and pass only known params. Routes `GET /v1/tenants/{id}/hq/reports/sales|products|branches|staff`.
+  - Acceptance:
+    - [ ] Table-driven tests: envelope shape, params forwarded, branches registry merge (gateway missing a branch → zeroed row present), error map unchanged (402/403/503)
+    - [ ] Invalid `from`/`to`/`sort` → 400 with no gateway round-trip
+  - Verify: `go build ./... && go vet ./... && go test ./...`
+  - Files: `api/internal/hq/service.go` + `service_test.go`, `api/internal/httpapi/hq_handlers.go`, `api/internal/httpapi/server.go`
+  - Dependencies: T42, T43 (contract; may start on fakes) · **Size: M**
+
+- [ ] **T45: Console — lib plumbing + PeriodPicker + Reports shell**
+  - **Description:** Types (`SalesReport`, `ProductReportRow`, `BranchReportRow`, `StaffReportRow`, paged/envelope aliases), `api.ts` functions, `qk` keys under a shared `['hq-reports', tenantId, …]` prefix, four hooks (`enabled: !!tenantId`, `keepPreviousData` on the paged products one); `useTenantEvents` gains the `hq-reports` prefix so `branch-synced` flips reports live. New `components/PeriodPicker.tsx`: presets (اليوم / أمس / آخر ٧ أيام / آخر ٣٠ يومًا / هذا الشهر) + custom from/to date inputs, reading/writing `?from=&to=` URL params. `Reports.tsx` shell: `PageHeader` + five-question URL-state toggle (`?view=sales|products|branches|staff|inventory`, default `sales`), same pattern as Inventory's toggle.
+  - Acceptance:
+    - [ ] `pnpm build` type-checks the contract against T44's shapes; SSE invalidation wired
+    - [ ] Preset clicks and custom dates round-trip through the URL (deep-linkable); view toggle preserves period params
+  - Verify: `pnpm build && pnpm lint`
+  - Files: `console/src/lib/{types,api,query,hooks}.ts`, `console/src/components/PeriodPicker.tsx`, `console/src/pages/console/Reports.tsx`
+  - Dependencies: T44 (contract) · **Size: M**
+
+- [ ] **T46: Console — Sales + Branches report views**
+  - **Description:** Sales view: KPI tiles (المبيعات، عدد الفواتير، المرتجعات، الصافي، متوسط الفاتورة — net/avg derived client-side), tender split row (نقدًا / بنك / محفظة / آجل), daily inline-SVG bar chart + day table, optional branch `<select>`. Branches view: comparison table — HealthDot + name, sales, refunds, net, profit, bills, متوسط الفاتورة — rows → branch detail; totals row; `<Freshness>` from the envelope.
+  - Acceptance:
+    - [ ] Branch filter + period changes refetch correctly without spinner-blanking; Arabic digits/RTL throughout; 402 → EmptyState
+    - [ ] Branches view renders every registry branch (zeroed included) with correct health colors
+  - Verify: `pnpm build && pnpm lint`; visual pass folds into checkpoint 6
+  - Files: `console/src/pages/console/Reports.tsx` (+ subcomponents if they earn extraction)
+  - Dependencies: T45 · **Size: M**
+
+- [ ] **T47: Console — Products + Staff + Inventory report views**
+  - **Description:** Products view: sort chips (الأعلى قيمةً / كميةً / ربحًا), group + branch `<select>`s, paged table (code/name/group/qty+unit/revenue/profit) with rows → `/catalog/{productId}`; render-time page reset on filter change (Catalog's pattern). Staff view: table (الموظف، عدد الفواتير، المبيعات، المرتجعات، متوسط الفاتورة). Inventory view: tiles from `useInventoryByBranch` (قيمة المخزون، سالب/نفاد/تحت الحد counts) deep-linking into `/inventory?view=branches|attention` — zero new backend.
+  - Acceptance:
+    - [ ] Sort/filter changes reset paging deterministically; every row lands on the screen that answers the next question (product detail / inventory views)
+    - [ ] Staff view renders user names from the report payload (no extra call); empty period → clean empty state
+  - Verify: `pnpm build && pnpm lint`; visual pass folds into checkpoint 6
+  - Files: `console/src/pages/console/Reports.tsx`, `console/src/lib/hooks.ts` (if a lazy-enable arg is needed)
+  - Dependencies: T45 · **Size: M**
+
+### Checkpoint 6
+- [ ] All gates green (api `go build ./... && go vet ./... && go test ./...`, gateway `dotnet build AribSyncGateway.csproj`, console `pnpm build && pnpm lint`)
+- [ ] Manual e2e: sales report totals + tender split match the desktop's own numbers for a real synced tenant and period (incl. a deleted bill staying excluded and a multi-branch day)
+- [ ] Manual e2e: products report revenue/profit spot-checked against the desktop's profit screen for the same period (note the deliberate deleted-bill/date-anchor divergence); top-seller ordering sane in all three sorts
+- [ ] Manual e2e: staff report rows match per-cashier desktop numbers; branches comparison matches the per-branch bills screens
+- [ ] POS sale lands in today's sales report live via SSE, no refresh
+- [ ] RTL/Arabic-numerals audit across all five views (chart labels included)
+- [ ] **Human review before Phase 7 (Live tier / SignalR — separate spec)**

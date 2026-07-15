@@ -151,8 +151,25 @@ Bugs found and fixed during this checkpoint's e2e pass (2026-07-15):
 
 Bugs found and fixed during this checkpoint's e2e pass (2026-07-15): desktop `UpsertAccountViewModel.SaveAccount` re-stamped `Account.CreatedAt` to now on every edit, diverging from central and flooding `ConflictLog` with spurious `Accounts` conflicts — fixed by preserving the original `CreatedAt` on the edit path. Separately, ~1508 pre-existing `ConflictLog` rows were a harmless DMS artifact (a branch's first sync re-uploads all pre-existing local rows as "untracked," including the deterministic seed `Accounts` rows already on central, producing an identical-row `RemoteExistsLocalExists` "conflict") — fixed in `sync-gateway/ConflictLog.cs` by skipping the log write when `LocalRow`/`RemoteRow` are field-for-field equal.
 
+### Phase 6 — Reports (slice 6)
+
+**Design notes (2026-07-15):** open question 2 resolved by this plan's standing assumption (user proceeded past the checkpoint-5 gate): v1 = direct, date-bounded SQL aggregates on tenant DBs via the gateway; revisit pre-aggregation only if fleet growth makes it hurt. Semantics mirror the desktop: day scope on `CreatedAt` gateway-local (T9's assumption), `Sale`/`ReSale` `!IsDeleted` Σ`Total`; tender split = `ShiftReportService`'s (Money/BankMoney/WalletMoney/Remain); profit = `ProfitFromWarehouseViewModel`'s Σ(Total−ItemCost) over SaleEntries, anchored through `!Bill.IsDeleted` so products revenue can't drift from sales totals. Day series as local-date strings (no zone-less-timestamp round-trip). Staff = GroupBy `UserId` join Tier-A Users. Inventory question reuses slice-4 data — no new backend. No chart dependency (inline SVG bars). Full task detail in `todo.md`.
+
+- [ ] T42: Gateway — `GET /hq/reports/sales` (totals + tender split + per-day series)
+- [ ] T43: Gateway — `GET /hq/reports/products|branches|staff` (period GroupBys; paged products with revenue/qty/profit sorts)
+- [ ] T44: API — four passthroughs + registry decoration on branches + table-driven tests
+- [ ] T45: Console — lib plumbing + `PeriodPicker` + Reports shell (`?view=` toggle, default sales)
+- [ ] T46: Console — Sales + Branches views (KPI tiles, tender split, SVG daily bars, comparison table)
+- [ ] T47: Console — Products + Staff + Inventory views
+
+### Checkpoint 6 (slice 6 shipped)
+- [ ] All gates green
+- [ ] Manual e2e: sales totals/tender, products revenue/profit, staff and branch rows all match the desktop's own screens for a real synced tenant + period
+- [ ] POS sale lands in today's report live via SSE, no refresh
+- [ ] RTL/Arabic-numerals audit across all five views
+- [ ] Human review before Phase 7
+
 ### Later phases (outline only — broken down when reached)
-- **Phase 6 — Reports (slice 6):** question-organized report pages. **Gated on open question 2** (aggregate cost).
 - **Phase 7 — Live tier (SignalR):** separate spec, per the main spec's slice 7.
 
 ## Risks and mitigations
