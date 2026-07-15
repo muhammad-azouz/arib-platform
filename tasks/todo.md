@@ -357,3 +357,78 @@ Design notes (2026-07-15): low-stock rule mirrors `InventoryStockRule.cs` byte-f
 **Bugs found and fixed during Checkpoint 4 e2e (2026-07-15):**
 - SSE `/v1/tenants/{id}/events` 500ed on every single connection since the feature was first added — `requestLogger`'s `statusWriter` wrapper embeds `http.ResponseWriter` (an interface), which only promotes that interface's own methods, not `Flush()`. Fixed by adding an explicit `Flush()` delegation on `statusWriter` (`api/internal/httpapi/middleware.go`).
 - `/hq/inventory/attention` 500ed specifically once a row entered the low/out/negative bucket (i.e. exactly when reorder ≥ stock) — Postgres `timestamp without time zone` columns (`WarehousesProductInventories.LastInDate/LastOutDate`) round-trip through Npgsql as zone-less `DateTime`, which .NET serializes without a `Z`/offset; Go's strict-RFC3339 `time.Time` decoder then fails to parse it. Fixed with a global UTC-forcing `DateTime` JSON converter in the gateway (`sync-gateway/Program.cs`) so every endpoint returning a raw DB timestamp round-trips correctly, not just this one field. Also added error logging to `writeHqError`'s 500 fallback (`api/internal/httpapi/hq_handlers.go`) so future unhandled errors aren't silently swallowed.
+
+## Phase 5 — Notifications + Ctrl+K
+
+Design notes (2026-07-15): only ConflictLog needs new backend surface — stale/never branches and attention counts already flow live. Alert derivation is client-side in a shared `lib/alerts.ts` feeding Overview panel + bell alike. Conflict alerts need server-side ack (`AcknowledgedAt` column — ConflictLog is gateway-ensured central-only DDL, **not** an `AribONE.Data` schema change, no SchemaVersion bump; existing DBs upgrade via add-column-if-missing). DMS upload conflicts: `LocalRow` = kept central row, `RemoteRow` = branch's losing write (orientation verified at checkpoint). Product deep-links extracted gateway-side best-effort (Products → RowPk; UnitOfMeasure → row's ProductId; Barcodes → UoM lookup). Ctrl+K built in-house on the existing Radix Dialog — no cmdk dependency.
+
+- [ ] **T35: Gateway — ConflictLog read chain + ack**
+  - **Description:** `EnsureConflictLogSql` gains `AcknowledgedAt` (nullable UTC) with add-column-if-missing for pre-existing tables (both dialects); ensure now also runs before HQ conflict reads (today only the first logged conflict creates the table — reads must tolerate/ensure absence). `GET /hq/conflicts?page=&page_size=&all=`: newest-first (Id DESC) page, default unacked-only, `all=1` includes acked; response `{unacked, total, page, page_size, items:[{id, occurred_at, branch_id, table_name, row_pk, conflict_type, resolution, local_row, remote_row, acknowledged_at, product_id, product_name}]}` — product fields best-effort from row JSON (+ one EF lookup batch for Barcodes/UoM resolution and product names). `POST /hq/conflicts/ack` body `{ids?: number[], up_to_id?: number}` → one UPDATE setting `AcknowledgedAt` where null; returns `{acked}` count. Same `TryHqAuth` + db_name-from-token rule as every /hq/* endpoint; empty shapes on missing DB/table.
+  - Acceptance:
+    - [ ] A tenant DB created before this change (ConflictLog without the column) lists and acks correctly after the ensure runs
+    - [ ] Paging is stable (Id DESC); `unacked` count is unpaged; ack is idempotent (second call returns 0); 401 without a valid HqToken
+  - Verify: `dotnet build AribSyncGateway.csproj` clean; curl against a dev tenant DB with real ConflictLog rows (checkpoint 5 covers live)
+  - Files: `sync-gateway/Db/IDbDialect.cs`, `sync-gateway/Db/PostgresDialect.cs`, `sync-gateway/Db/SqlServerDialect.cs`, `sync-gateway/HqApi.cs`, `sync-gateway/Program.cs`, `sync-gateway/ConflictLog.cs` (shared ensure)
+  - Dependencies: none · **Size: M**
+
+- [ ] **T36: API — conflicts passthrough + ack + tests**
+  - **Description:** `hq.Service.Conflicts` (resolveGateway → getJSON → envelope; items decorated with branch_name from the registry, "never"-style fallback for unknown branch ids) and `hq.Service.AckConflicts` (POST passthrough; validates ids/up_to_id present and positive). Handlers whitelist `page/page_size/all`; routes `GET /v1/tenants/{id}/hq/conflicts`, `POST /v1/tenants/{id}/hq/conflicts/ack`. Ack logged like other HQ writes (`hq.conflicts_ack`: tenant, account, email, count). Table-driven tests beside the service: decoration, envelope shape, ack body validation, error map unchanged.
+  - Acceptance:
+    - [ ] Payload is `{data:{unacked,total,page,page_size,items}, source:"synced", as_of}`; branch names resolve from the registry
+    - [ ] Ack with neither ids nor up_to_id → 400 without a gateway round-trip; `go test ./...` green
+  - Verify: `go build ./... && go vet ./... && go test ./...` clean
+  - Files: `api/internal/hq/service.go` + `service_test.go`, `api/internal/httpapi/hq_handlers.go`, `api/internal/httpapi/server.go`
+  - Dependencies: T35 (contract; may start on fakes) · **Size: M**
+
+- [ ] **T37: Console — lib plumbing + shared alert derivation**
+  - **Description:** Types (`ConflictItem`, `ConflictsResponse`, ack input/result), `api.ts` functions, `qk.conflicts` under a `['hq-conflicts', tenantId, …]` prefix, hooks (`useConflicts(tenantId, {page, all})` with `keepPreviousData`; `useAckConflicts` invalidating the prefix). `useTenantEvents` gains the `hq-conflicts` prefix invalidation (conflicts only change on sync rounds). New `lib/alerts.ts`: `deriveAlerts(tenantId, {branches, attention, conflicts})` → ordered `Alert[]` (danger: unacked conflicts «تعارض مزامنة» → `/conflicts`, negative/out counts → `/inventory?view=attention`, stale branch → branch detail; info: low count → attention, never → download). Overview drops its private `deriveAlerts` and consumes the shared one (now passing attention counts + conflicts — two extra cheap queries on Overview), keeping panel behavior otherwise identical.
+  - Acceptance:
+    - [ ] Overview alert rows for stale/never render exactly as before (same text/links), now from the shared lib
+    - [ ] `pnpm build` type-checks the contract against T36's shapes; SSE `branch-synced` invalidates conflicts
+  - Verify: `pnpm build && pnpm lint` clean
+  - Files: `console/src/lib/{types,api,query,hooks}.ts`, `console/src/lib/alerts.ts`, `console/src/pages/console/Overview.tsx`
+  - Dependencies: T36 · **Size: M**
+
+- [ ] **T38: Console — notifications bell**
+  - **Description:** `NotificationsBell` in the AppShell header (both desktop and mobile rows): bell icon + count badge (Arabic digits, hidden at 0, «٩+» cap) over the same `deriveAlerts` output as Overview (bell mounts `useHqBranches` + attention-counts + conflicts queries — all cached/shared keys, SSE-live). Dropdown (existing dropdown-menu primitive): alert rows with tone icon + text, each deep-linking and closing the menu; footer «عرض كل التعارضات» → `/conflicts` when any conflict alert exists; success-toned empty state «لا توجد تنبيهات».
+  - Acceptance:
+    - [ ] Badge count == Overview alerts panel row count (same derivation, by construction); flips live via SSE without refresh
+    - [ ] Every row navigates to the screen that resolves it; RTL layout correct
+  - Verify: `pnpm build && pnpm lint` clean; manual click-through folds into checkpoint 5
+  - Files: `console/src/components/NotificationsBell.tsx`, `console/src/components/AppShell.tsx`, `console/src/components/icon.tsx` (bell icon)
+  - Dependencies: T37 · **Size: S**
+
+- [ ] **T39: Console — conflicts review page**
+  - **Description:** Route `/tenants/{id}/conflicts` (no sidebar entry — reached from bell/Overview alerts; AppShell current-section lookup + breadcrumb «التنبيهات والتعارضات»). Header + `Freshness` + unacked count; filter toggle «غير المُراجَعة فقط» (default) / «الكل» (`all=1`). List: one card per conflict — occurred_at (relative + absolute), branch name, table label (Arabic map for known tables: المنتجات/الوحدات/الباركود/… + raw fallback), kept-vs-overridden columns rendered from `local_row`/`remote_row` JSON showing only differing fields (label map for common columns; null remote → «حذف من الفرع»), «افتح المنتج» when product_id present, per-row «تمت المراجعة» + header «تحديد الكل كمُراجَع» (up_to_id = newest visible). Pagination; empty states (clean / all reviewed).
+  - Acceptance:
+    - [ ] Ack (single + bulk) removes rows from the default view and drops the bell badge without refresh (shared invalidation)
+    - [ ] Unknown tables/malformed row JSON degrade gracefully (raw table name, no diff table, page never crashes)
+  - Verify: `pnpm build && pnpm lint` clean; real-conflict pass folds into checkpoint 5
+  - Files: `console/src/pages/console/Conflicts.tsx`, `console/src/App.tsx` (route), `console/src/components/AppShell.tsx` (breadcrumb lookup)
+  - Dependencies: T37 · **Size: M**
+
+- [ ] **T40: Console — top-bar branch-status indicator**
+  - **Description:** `BranchStatusIndicator` beside the bell: worst health tier across `useHqBranches` (never < ok < lagging < stale for severity — a stale branch wins) as a `HealthDot` + count label («٣ فروع»); dropdown lists every branch (HealthDot + name + relative last-sync) linking to its detail page; footer «كل الفروع» → `/branches`. Hidden while the tenant has no branches.
+  - Acceptance:
+    - [ ] Indicator flips live when a branch syncs (SSE, shared `hq-branches` key); dropdown rows deep-link correctly
+  - Verify: `pnpm build && pnpm lint` clean; live flip folds into checkpoint 5
+  - Files: `console/src/components/BranchStatusIndicator.tsx`, `console/src/components/AppShell.tsx`
+  - Dependencies: T37 (shares the always-mounted `useHqBranches`) · **Size: S**
+
+- [ ] **T41: Console — Ctrl+K command palette**
+  - **Description:** In-house `CommandPalette` on the existing Radix Dialog (top-aligned, RTL): opened by Ctrl+K/Cmd+K (window keydown, ignoring inputs' own editing only when palette closed — the shortcut always wins) or a search button in the header. Input + grouped results with full keyboard nav (↑/↓ wraps, Enter navigates, Esc closes; listbox/option ARIA roles). Sections: **الصفحات** (static nav registry incl. التعارضات), **الفروع** (client-filtered from the cached bundle), **المنتجات** (debounced ≥2-char `useCatalogProducts` search — name/code/barcode via the existing gateway query — top 8, «بحث في الكتالوج…» row linking to `/catalog?search=`), **إجراءات** (تنزيل التطبيق، إضافة فرع، إضافة منتج — navigation shortcuts to the owning screens). Selecting navigates and closes; query resets on close.
+  - Acceptance:
+    - [ ] Keyboard-only round trip: Ctrl+K → type → ↑/↓ → Enter lands on the target; Esc restores focus
+    - [ ] No new dependency added; product search issues zero requests under 2 chars and is debounced
+  - Verify: `pnpm build && pnpm lint` clean; manual pass folds into checkpoint 5
+  - Files: `console/src/components/CommandPalette.tsx`, `console/src/components/AppShell.tsx`, `console/src/pages/console/Catalog.tsx` (honor `?search=` deep-link if not already)
+  - Dependencies: T37 (product search hook already exists — only ordering with the shell changes) · **Size: M**
+
+### Checkpoint 5
+- [ ] All gates green (api `go build ./... && go vet ./... && go test ./...`, gateway `dotnet build AribSyncGateway.csproj`, console `pnpm build && pnpm lint`)
+- [ ] Manual e2e: forced real conflict (HQ price change + branch edit before its sync) → ServerWins at the branch; conflict appears in bell + review page live via SSE; kept/overridden orientation correct; product deep-link works; ack clears everywhere
+- [ ] Manual e2e: low/out/negative and stale alerts in the bell deep-link to attention view / branch detail and clear when resolved
+- [ ] Manual e2e: Ctrl+K keyboard-only navigation (page, branch, product by name/code/barcode); RTL correct
+- [ ] Pre-existing ConflictLog rows survive the AcknowledgedAt DDL upgrade and list correctly
+- [ ] RTL/Arabic-numerals audit (badge, palette, review page)
+- [ ] **Human review before Phase 6 (Reports)**

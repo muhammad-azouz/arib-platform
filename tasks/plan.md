@@ -122,8 +122,34 @@ Bugs found and fixed during this checkpoint's e2e pass (2026-07-15):
 - SSE `/v1/tenants/{id}/events` had 500ed on every connection since the feature was first built — `requestLogger`'s `statusWriter` wraps `http.ResponseWriter` by embedding the interface, which promotes only that interface's own methods, not `Flush()`. Fixed with an explicit `Flush()` delegation (`api/internal/httpapi/middleware.go`).
 - `/hq/inventory/attention` 500ed the instant a row entered the low/out/negative bucket — Postgres `timestamp without time zone` values for `LastInDate`/`LastOutDate` round-trip through Npgsql/System.Text.Json without a `Z`/offset, and Go's strict-RFC3339 decoder rejects that. Fixed with a global UTC-forcing `DateTime` JSON converter in the gateway (`sync-gateway/Program.cs`), plus error logging on `writeHqError`'s 500 fallback (`api/internal/httpapi/hq_handlers.go`) so this class of bug surfaces immediately next time.
 
+### Phase 5 — Notifications + Ctrl+K (slice 5)
+
+**Design notes (2026-07-15):**
+- **Only ConflictLog needs new backend surface.** The other alert sources already flow live: stale/never branches ride `useHqBranches` (SSE-invalidated), low/out/negative counts ride `/hq/inventory/attention`'s unpaged `counts`. Alert derivation is therefore client-side (`lib/alerts.ts`), one shared function feeding both the Overview panel (grows the existing `OverviewAlert` shape as planned) and the new bell — same rows, same deep links, can't drift.
+- **Conflict alerts need server-side ack state.** Derived alerts clear when their condition clears; a ConflictLog row is a historical event that never clears on its own. `ConflictLog` is gateway-ensured DDL, central-only, NOT in `AribONE.Data` — adding a nullable `AcknowledgedAt` column is **not** a SchemaVersion bump (no fleet flag day). Existing tenant DBs upgrade via add-column-if-missing in the ensure DDL (both dialects). Ack lives next to the data and holds across sessions/users, unlike a client-side watermark.
+- **Kept vs overridden:** the gateway logs upload conflicts, where DMS's `LocalRow` = the central/server row (kept under ServerWins) and `RemoteRow` = the branch's losing write. The review page presents them as «القيمة المعتمدة» / «تعديل الفرع المرفوض». A null RemoteRow (branch delete) renders as such. Checkpoint 5 verifies this orientation against a real forced conflict.
+- **Product deep-links from conflicts are best-effort, gateway-side:** TableName `Products` → RowPk is the product id; `UnitOfMeasure` → row JSON carries ProductId; `Barcodes` → row's UnitOfMeasureId resolved via EF. Anything else gets `product_id: null` — the alert still has a destination (the conflicts review page), satisfying the spec rule.
+- **Ctrl+K is built in-house** on the existing Radix Dialog (cmdk would be a new dependency — not needed). Sections: pages, branches (from the cached bundle), products (debounced `useCatalogProducts` search ≥2 chars — name/code/barcode, same gateway query as the Catalog page). Arabic RTL, ↑/↓/Enter/Esc.
+- **Top-bar branch-status indicator** (the spec's remaining "Global" item) = worst health tier over `useHqBranches` + per-branch dropdown; mounting the hook in AppShell means every console page now keeps that query warm — acceptable, it's the API-side sum over one gateway call, already on a 60s/SSE cadence.
+
+- [ ] T35: Gateway — ConflictLog `AcknowledgedAt` + `GET /hq/conflicts` (paged, unacked count, best-effort product link) + `POST /hq/conflicts/ack`
+- [ ] T36: API — conflicts passthrough + ack + branch-name decoration + tests
+- [ ] T37: Console — lib plumbing (conflict types/api/hooks, `hq-conflicts` SSE invalidation) + shared `lib/alerts.ts` derivation adopted by Overview
+- [ ] T38: Console — notifications bell in the AppShell header (badge + dropdown, every row deep-links)
+- [ ] T39: Console — conflicts review page (kept-vs-overridden diff, per-row + bulk ack, product deep-links)
+- [ ] T40: Console — top-bar branch-status indicator
+- [ ] T41: Console — Ctrl+K command palette
+
+### Checkpoint 5 (slice 5 shipped)
+- [ ] All gates green (api `go build ./... && go vet ./... && go test ./...`, gateway `dotnet build`, console `pnpm build && pnpm lint`)
+- [ ] Manual e2e: force a real conflict (HQ price change + branch edit of the same unit before its sync) → ServerWins at the branch, conflict appears in bell + review page **without refresh** (SSE), kept/overridden columns correctly oriented, product deep-link opens the right product, ack clears the badge everywhere
+- [ ] Manual e2e: low/out/negative stock and stale-branch alerts show in the bell with working deep links (attention view / branch detail); alerts clear when conditions clear
+- [ ] Manual e2e: Ctrl+K — navigate to a page, jump to a branch, find a product by name/code/barcode; keyboard-only round trip; RTL rendering correct
+- [ ] Existing ConflictLog rows from before this phase (no AcknowledgedAt column) survive the DDL upgrade and list correctly
+- [ ] RTL/Arabic-numerals audit (badge counts, palette, review page)
+- [ ] Human review before Phase 6 (Reports — gated on open question 2)
+
 ### Later phases (outline only — broken down when reached)
-- **Phase 5 — Notifications + Ctrl+K (slice 5):** alert derivation (stale sync, low stock, ConflictLog), deep links, command palette.
 - **Phase 6 — Reports (slice 6):** question-organized report pages. **Gated on open question 2** (aggregate cost).
 - **Phase 7 — Live tier (SignalR):** separate spec, per the main spec's slice 7.
 
