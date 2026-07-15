@@ -161,6 +161,305 @@ export interface HqBranchesResponse {
   totals: HqTotals
 }
 
+// --- HQ catalog reads (slice 3; hq/service.go's catalog methods) ---
+//
+// Catalog data is read live off the tenant's central DB on every call (no
+// per-branch sync grading), so this envelope's `source` is always "synced" —
+// the freshness pill is honestly reporting "just read", not staleness.
+export interface CatalogEnvelope<T> {
+  data: T
+  source: 'synced'
+  as_of: string
+}
+
+// One product group; the console builds the parent/child tree client-side
+// from parent_id (root groups use the all-zero GUID).
+export interface CatalogGroup {
+  id: string
+  parent_id: string
+  name: string
+  is_active: boolean
+  num: number
+  product_count: number
+}
+
+// One row of the paged product list.
+export interface CatalogProduct {
+  id: string
+  code: number
+  name: string
+  kind: number
+  group_id?: string | null
+  group_name?: string | null
+  is_active: boolean
+  unit?: string | null
+  sale: number
+  buy: number
+  barcodes: string[]
+  total_qty: number
+}
+
+export interface CatalogProductsPage {
+  total: number
+  page: number
+  page_size: number
+  items: CatalogProduct[]
+}
+
+// GET /v1/tenants/{id}/hq/catalog/groups
+export type CatalogGroupsResponse = CatalogEnvelope<CatalogGroup[]>
+
+// GET /v1/tenants/{id}/hq/catalog/products
+export type CatalogProductsResponse = CatalogEnvelope<CatalogProductsPage>
+
+// One unit of measure with its full price ladder and barcodes.
+export interface ProductUnit {
+  id: string
+  name: string
+  val_sub: number
+  level: number
+  buy: number
+  sale: number
+  prices: number[]
+  barcodes: string[]
+}
+
+// One branch warehouse's stock of the product, decorated with that branch's
+// sync health tier so the console needs no second call to judge trust.
+export interface ProductAvailability {
+  branch_id: string
+  branch_name: string
+  health: BranchHealth
+  warehouse_id: string
+  warehouse_name: string
+  total_qty: number
+  unit_cost: number
+  updated_at?: string | null
+  last_sync_at?: string | null
+}
+
+export interface ProductDetail {
+  id: string
+  code: number
+  name: string
+  kind: number
+  group_id?: string | null
+  group_name?: string | null
+  is_active: boolean
+  re_order: number
+  is_expire: boolean
+  created_at: string
+  units: ProductUnit[]
+  availability: ProductAvailability[]
+}
+
+// GET /v1/tenants/{id}/hq/catalog/products/{productId}
+export type ProductDetailResponse = CatalogEnvelope<ProductDetail>
+
+// PUT /v1/tenants/{id}/hq/catalog/products/{pid}/prices — one unit's price
+// update; omitted fields are left unchanged by the gateway.
+export interface PriceChangeInput {
+  unit_id: string
+  sale?: number
+  buy?: number
+}
+
+// The gateway's write receipt: the UTC instant the change committed to
+// central. A branch "has" the write once its live `last_sync_at` (already
+// streamed via SSE) is at or after this timestamp.
+export interface PriceChangeResult {
+  written_at: string
+}
+
+// POST /v1/tenants/{id}/hq/catalog/products — v1 keeps this minimal: one
+// unit, Sale/Buy only (no opening balance, no price tiers), matching
+// EditUnitPriceDialog's same scope decision for consistency.
+export interface NewProductUnitInput {
+  name: string
+  val_sub: number
+  buy: number
+  sale: number
+  barcodes?: string[]
+}
+export interface NewProductInput {
+  name: string
+  kind: number // 0 = Product (inventory), 1 = SalesService, 2 = PurchaseService
+  group_id?: string
+  units: NewProductUnitInput[]
+}
+export interface NewProductResult {
+  id: string
+  code: number
+  written_at: string
+}
+
+// --- HQ inventory reads (slice 4; hq/service.go's inventory methods) ---
+//
+// One dataset (WarehousesProductInventories + InventoryMovements), three
+// perspectives. Like catalog, these read the central DB live on every call —
+// `source` is always "synced"; the per-branch `health`/`last_sync_at` fields
+// are what actually grade trust.
+
+// A WPI row's stock condition, mirroring the desktop's InventoryStockRule.
+// `ok` means none of the other three apply (including every inactive
+// product, which never gets flagged).
+export type InventoryStatus = 'negative' | 'out' | 'low' | 'ok'
+
+// Query-param status filter — 'attention' additionally matches any row
+// failing the desktop rule (negative, out, or under reorder), same set the
+// needs-attention view lists.
+export type InventoryStatusFilter = InventoryStatus | 'attention'
+
+// One warehouse's slice of a branch's stock summary.
+export interface WarehouseStock {
+  warehouse_id: string
+  warehouse_name: string
+  is_active: boolean
+  sku_count: number
+  stock_value: number
+  negative_count: number
+  out_count: number
+  low_count: number
+}
+
+// One branch's stock summary, decorated with sync health (zeroed if the
+// gateway has no stock rows for it — still a real branch, just no stock yet).
+export interface InventoryBranchView {
+  branch_id: string
+  branch_name: string
+  health: BranchHealth
+  last_sync_at?: string | null
+  sku_count: number
+  stock_value: number
+  negative_count: number
+  out_count: number
+  low_count: number
+  warehouses: WarehouseStock[]
+}
+
+// Company-wide roll-up over every InventoryBranchView (no sku_count — a
+// product stocked at two branches would double-count).
+export interface InventoryTotals {
+  stock_value: number
+  negative_count: number
+  out_count: number
+  low_count: number
+}
+
+export interface InventoryBranchesData {
+  branches: InventoryBranchView[]
+  totals: InventoryTotals
+}
+
+// GET /v1/tenants/{id}/hq/inventory/branches
+export type InventoryBranchesResponse = CatalogEnvelope<InventoryBranchesData>
+
+// One row of the "by product" inventory view. Qty/value are company-wide, or
+// scoped to one branch when the branch_id param is set.
+export interface InventoryProduct {
+  id: string
+  code: number
+  name: string
+  group_id?: string | null
+  group_name?: string | null
+  is_active: boolean
+  unit?: string | null
+  re_order: number
+  total_qty: number
+  stock_value: number
+  branches_with_stock: number
+  last_activity_at?: string | null
+  status: InventoryStatus
+}
+
+export interface InventoryProductsPage {
+  total: number
+  page: number
+  page_size: number
+  items: InventoryProduct[]
+}
+
+// GET /v1/tenants/{id}/hq/inventory/products
+export type InventoryProductsResponse = CatalogEnvelope<InventoryProductsPage>
+
+export interface AttentionCounts {
+  negative: number
+  out: number
+  low: number
+}
+
+// One WPI row needing attention, decorated with its branch's name and
+// current health tier.
+export interface AttentionItem {
+  status: InventoryStatus
+  product_id: string
+  product_code: number
+  product_name: string
+  unit?: string | null
+  re_order: number
+  branch_id: string
+  branch_name: string
+  health: BranchHealth
+  warehouse_id: string
+  warehouse_name: string
+  total_qty: number
+  unit_cost: number
+  last_in_date?: string | null
+  last_out_date?: string | null
+}
+
+// A branch whose data is too old to trust — a separate list from the paged
+// stock items so it never disturbs paging math. Never-synced branches are
+// excluded (Overview's alerts already own "never connected").
+export interface StaleBranch {
+  branch_id: string
+  branch_name: string
+  last_sync_at?: string | null
+}
+
+export interface AttentionData {
+  stale_branches: StaleBranch[]
+  counts: AttentionCounts
+  total: number
+  page: number
+  page_size: number
+  items: AttentionItem[]
+}
+
+// GET /v1/tenants/{id}/hq/inventory/attention
+export type AttentionResponse = CatalogEnvelope<AttentionData>
+
+// One inventory movement, decorated with its branch's name.
+export interface MovementRow {
+  id: string
+  issue_date: string
+  dealing: number
+  branch_id: string
+  branch_name: string
+  warehouse_id: string
+  warehouse_name: string
+  customer_name?: string | null
+  in_qty: number
+  in_price: number
+  out_qty: number
+  out_price: number
+  cost: number
+  unit: string
+  reg_num: string
+  running_qty: number
+}
+
+export interface MovementsPage {
+  opening_qty: number
+  total: number
+  page: number
+  page_size: number
+  items: MovementRow[]
+}
+
+// GET /v1/tenants/{id}/hq/catalog/products/{productId}/movements
+export type MovementsResponse = CatalogEnvelope<MovementsPage>
+
 // auth session (sessionResponse map in auth_handlers.go)
 export interface Session {
   access_token: string

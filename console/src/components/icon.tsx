@@ -47,6 +47,11 @@ import {
   TagPrice,
   BoxMinimalistic,
   ChartSquare,
+  Folder,
+  Magnifer,
+  Scale,
+  Scanner,
+  History,
 } from '@solar-icons/react'
 
 /** Shared type for any icon component in this module (Solar forward-ref svg). */
@@ -66,6 +71,11 @@ export const DashboardIcon = Widget
 export const CatalogIcon = TagPrice
 export const InventoryIcon = BoxMinimalistic
 export const ReportsIcon = ChartSquare
+export const GroupIcon = Folder
+export const SearchIcon = Magnifer
+export const UnitIcon = Scale
+export const BarcodeIcon = Scanner
+export const HistoryIcon = History
 
 // Actions
 export const AddIcon = AddCircle

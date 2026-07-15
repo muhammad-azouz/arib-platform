@@ -1,11 +1,23 @@
 import type {
+  AttentionResponse,
   Branch,
   BranchActivityResponse,
   BranchDevice,
   Bundle,
+  CatalogGroupsResponse,
+  CatalogProductsResponse,
   Company,
   HqBranchesResponse,
+  InventoryBranchesResponse,
+  InventoryProductsResponse,
+  InventoryStatusFilter,
   MeView,
+  MovementsResponse,
+  NewProductInput,
+  NewProductResult,
+  PriceChangeInput,
+  PriceChangeResult,
+  ProductDetailResponse,
   Session,
   SyncToken,
   Tenant,
@@ -238,6 +250,101 @@ export const api = {
 
   hqBranches: (tenantId: string) =>
     request<HqBranchesResponse>(`/v1/tenants/${tenantId}/hq/branches`),
+
+  // catalog (slice 3): groups + paged/searchable products, read live off the
+  // tenant central DB via the same HQ chain.
+  catalogGroups: (tenantId: string) =>
+    request<CatalogGroupsResponse>(`/v1/tenants/${tenantId}/hq/catalog/groups`),
+
+  catalogProducts: (
+    tenantId: string,
+    params: { search?: string; groupId?: string; page?: number; pageSize?: number },
+  ) => {
+    const q = new URLSearchParams()
+    if (params.search) q.set('search', params.search)
+    if (params.groupId) q.set('group_id', params.groupId)
+    if (params.page) q.set('page', String(params.page))
+    if (params.pageSize) q.set('page_size', String(params.pageSize))
+    const qs = q.toString()
+    return request<CatalogProductsResponse>(
+      `/v1/tenants/${tenantId}/hq/catalog/products${qs ? `?${qs}` : ''}`,
+    )
+  },
+
+  catalogProduct: (tenantId: string, productId: string) =>
+    request<ProductDetailResponse>(
+      `/v1/tenants/${tenantId}/hq/catalog/products/${productId}`,
+    ),
+
+  changeProductPrices: (tenantId: string, productId: string, changes: PriceChangeInput[]) =>
+    request<PriceChangeResult>(
+      `/v1/tenants/${tenantId}/hq/catalog/products/${productId}/prices`,
+      { method: 'PUT', body: JSON.stringify({ changes }) },
+    ),
+
+  createProduct: (tenantId: string, input: NewProductInput) =>
+    request<NewProductResult>(`/v1/tenants/${tenantId}/hq/catalog/products`, post(input)),
+
+  // inventory (slice 4): one dataset, three perspectives over the same HQ
+  // chain — search/group/branch/status params are gateway-owned, same as
+  // catalogProducts.
+  inventoryBranches: (tenantId: string) =>
+    request<InventoryBranchesResponse>(`/v1/tenants/${tenantId}/hq/inventory/branches`),
+
+  inventoryProducts: (
+    tenantId: string,
+    params: {
+      search?: string
+      groupId?: string
+      branchId?: string
+      status?: InventoryStatusFilter
+      page?: number
+      pageSize?: number
+    },
+  ) => {
+    const q = new URLSearchParams()
+    if (params.search) q.set('search', params.search)
+    if (params.groupId) q.set('group_id', params.groupId)
+    if (params.branchId) q.set('branch_id', params.branchId)
+    if (params.status) q.set('status', params.status)
+    if (params.page) q.set('page', String(params.page))
+    if (params.pageSize) q.set('page_size', String(params.pageSize))
+    const qs = q.toString()
+    return request<InventoryProductsResponse>(
+      `/v1/tenants/${tenantId}/hq/inventory/products${qs ? `?${qs}` : ''}`,
+    )
+  },
+
+  inventoryAttention: (
+    tenantId: string,
+    params: { branchId?: string; page?: number; pageSize?: number },
+  ) => {
+    const q = new URLSearchParams()
+    if (params.branchId) q.set('branch_id', params.branchId)
+    if (params.page) q.set('page', String(params.page))
+    if (params.pageSize) q.set('page_size', String(params.pageSize))
+    const qs = q.toString()
+    return request<AttentionResponse>(
+      `/v1/tenants/${tenantId}/hq/inventory/attention${qs ? `?${qs}` : ''}`,
+    )
+  },
+
+  productMovements: (
+    tenantId: string,
+    productId: string,
+    params: { branchId?: string; from?: string; to?: string; page?: number; pageSize?: number },
+  ) => {
+    const q = new URLSearchParams()
+    if (params.branchId) q.set('branch_id', params.branchId)
+    if (params.from) q.set('from', params.from)
+    if (params.to) q.set('to', params.to)
+    if (params.page) q.set('page', String(params.page))
+    if (params.pageSize) q.set('page_size', String(params.pageSize))
+    const qs = q.toString()
+    return request<MovementsResponse>(
+      `/v1/tenants/${tenantId}/hq/catalog/products/${productId}/movements${qs ? `?${qs}` : ''}`,
+    )
+  },
 
   // SSE stream URL. EventSource cannot set an Authorization header, so the
   // current access token rides the query string (the server keeps this route

@@ -5,6 +5,9 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"net/url"
+	"regexp"
+	"strings"
 	"time"
 
 	"github.com/aribpos/license-api/internal/hq"
@@ -32,6 +35,260 @@ func (s *Server) handleHqBranches(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, res)
+}
+
+// --- Catalog (slice 3): same auth chain, read-only master tables. ---
+
+func (s *Server) handleHqCatalogGroups(w http.ResponseWriter, r *http.Request) {
+	c := claimsFrom(r.Context())
+	env, err := s.hq.CatalogGroups(r.Context(), c.Subject, chi.URLParam(r, "id"))
+	if err != nil {
+		s.writeHqError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, env)
+}
+
+func (s *Server) handleHqCatalogProducts(w http.ResponseWriter, r *http.Request) {
+	c := claimsFrom(r.Context())
+	params := url.Values{}
+	for _, k := range []string{"search", "group_id", "page", "page_size"} {
+		if v := r.URL.Query().Get(k); v != "" {
+			params.Set(k, v)
+		}
+	}
+	env, err := s.hq.CatalogProducts(r.Context(), c.Subject, chi.URLParam(r, "id"), params)
+	if err != nil {
+		s.writeHqError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, env)
+}
+
+func (s *Server) handleHqCatalogProduct(w http.ResponseWriter, r *http.Request) {
+	c := claimsFrom(r.Context())
+	env, err := s.hq.CatalogProductDetail(r.Context(), c.Subject, chi.URLParam(r, "id"), chi.URLParam(r, "productId"))
+	if err != nil {
+		s.writeHqError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, env)
+}
+
+// maxPriceChanges bounds one write's batch size — generous headroom over the
+// realistic max of a handful of UoMs per product — so a malformed client
+// can't send an unbounded body.
+const maxPriceChanges = 50
+
+// handleHqCatalogProductPrices is the first HQ write (slice 3, T24): a batch
+// of per-unit price updates, forwarded to the gateway after cheap validation
+// (bounds, non-negative prices) that never needs a gateway round-trip to
+// reject. The gateway itself is the source of truth for "does this unit_id
+// belong to this product" (ErrInvalidUnits) since only it can see the DB.
+func (s *Server) handleHqCatalogProductPrices(w http.ResponseWriter, r *http.Request) {
+	c := claimsFrom(r.Context())
+	var req struct {
+		Changes []hq.PriceChange `json:"changes"`
+	}
+	if err := decode(r, &req); err != nil {
+		writeErr(w, http.StatusBadRequest, "invalid body")
+		return
+	}
+	if len(req.Changes) == 0 || len(req.Changes) > maxPriceChanges {
+		writeErr(w, http.StatusBadRequest, fmt.Sprintf("changes must have between 1 and %d entries", maxPriceChanges))
+		return
+	}
+	for _, ch := range req.Changes {
+		if ch.UnitID == "" {
+			writeErr(w, http.StatusBadRequest, "unit_id is required for every change")
+			return
+		}
+		for _, v := range []*float64{
+			ch.Sale, ch.Buy, ch.Price1, ch.Price2, ch.Price3, ch.Price4,
+			ch.Price5, ch.Price6, ch.Price7, ch.Price8, ch.Price9,
+		} {
+			if v != nil && *v < 0 {
+				writeErr(w, http.StatusBadRequest, "prices must not be negative")
+				return
+			}
+		}
+	}
+
+	tenantID, productID := chi.URLParam(r, "id"), chi.URLParam(r, "productId")
+	result, err := s.hq.ChangeProductPrices(r.Context(), c.Subject, tenantID, productID, req.Changes)
+	if err != nil {
+		s.writeHqError(w, err)
+		return
+	}
+	// HQ writes should be traceable: who changed prices on which product/tenant.
+	s.log.Info("hq.price_change",
+		"tenant_id", tenantID, "product_id", productID,
+		"account_id", c.Subject, "email", c.Email, "units", len(req.Changes))
+	writeJSON(w, http.StatusOK, result)
+}
+
+// handleHqCatalogProductCreate is the second HQ write (slice 3, T26): create
+// a product with at least one unit. Validation here mirrors the console
+// form's zod schema (defense in depth, and fast feedback with no gateway
+// round-trip for the cheap checks); the gateway is the only thing that can
+// check group existence and tenant-wide barcode uniqueness, since only it
+// has the tenant DB.
+func (s *Server) handleHqCatalogProductCreate(w http.ResponseWriter, r *http.Request) {
+	c := claimsFrom(r.Context())
+	var req struct {
+		Name     string  `json:"name"`
+		Kind     int     `json:"kind"`
+		GroupID  string  `json:"group_id"`
+		ReOrder  float64 `json:"re_order"`
+		IsExpire bool    `json:"is_expire"`
+		Units    []struct {
+			Name     string   `json:"name"`
+			ValSub   float64  `json:"val_sub"`
+			Buy      float64  `json:"buy"`
+			Sale     float64  `json:"sale"`
+			Barcodes []string `json:"barcodes"`
+		} `json:"units"`
+	}
+	if err := decode(r, &req); err != nil {
+		writeErr(w, http.StatusBadRequest, "invalid body")
+		return
+	}
+
+	name := strings.TrimSpace(req.Name)
+	if name == "" {
+		writeErr(w, http.StatusBadRequest, "product name is required")
+		return
+	}
+	if req.Kind < 0 || req.Kind > 2 {
+		writeErr(w, http.StatusBadRequest, "invalid kind")
+		return
+	}
+	if req.ReOrder < 0 {
+		writeErr(w, http.StatusBadRequest, "re_order must not be negative")
+		return
+	}
+	if len(req.Units) == 0 {
+		writeErr(w, http.StatusBadRequest, "at least one unit is required")
+		return
+	}
+	units := make([]hq.NewProductUnit, 0, len(req.Units))
+	for _, u := range req.Units {
+		uname := strings.TrimSpace(u.Name)
+		if uname == "" {
+			writeErr(w, http.StatusBadRequest, "unit name is required")
+			return
+		}
+		if u.ValSub <= 0 {
+			writeErr(w, http.StatusBadRequest, "unit factor (val_sub) must be positive")
+			return
+		}
+		if u.Buy < 0 || u.Sale < 0 {
+			writeErr(w, http.StatusBadRequest, "prices must not be negative")
+			return
+		}
+		units = append(units, hq.NewProductUnit{
+			Name: uname, ValSub: u.ValSub, Buy: u.Buy, Sale: u.Sale, Barcodes: u.Barcodes,
+		})
+	}
+
+	var groupID *string
+	if g := strings.TrimSpace(req.GroupID); g != "" {
+		groupID = &g
+	}
+
+	tenantID := chi.URLParam(r, "id")
+	result, err := s.hq.CreateProduct(r.Context(), c.Subject, tenantID, hq.NewProduct{
+		Name: name, Kind: req.Kind, GroupID: groupID,
+		ReOrder: req.ReOrder, IsExpire: req.IsExpire, Units: units,
+	})
+	if err != nil {
+		s.writeHqError(w, err)
+		return
+	}
+	s.log.Info("hq.product_create",
+		"tenant_id", tenantID, "product_id", result.ID,
+		"account_id", c.Subject, "email", c.Email)
+	writeJSON(w, http.StatusCreated, result)
+}
+
+// --- Inventory (slice 4): same auth chain, one dataset three perspectives. ---
+
+func (s *Server) handleHqInventoryBranches(w http.ResponseWriter, r *http.Request) {
+	c := claimsFrom(r.Context())
+	env, err := s.hq.InventoryByBranch(r.Context(), c.Subject, chi.URLParam(r, "id"))
+	if err != nil {
+		s.writeHqError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, env)
+}
+
+func (s *Server) handleHqInventoryProducts(w http.ResponseWriter, r *http.Request) {
+	c := claimsFrom(r.Context())
+	status := r.URL.Query().Get("status")
+	if status != "" {
+		switch status {
+		case "negative", "out", "low", "attention":
+		default:
+			writeErr(w, http.StatusBadRequest, "invalid status")
+			return
+		}
+	}
+	params := url.Values{}
+	for _, k := range []string{"search", "group_id", "branch_id", "status", "page", "page_size"} {
+		if v := r.URL.Query().Get(k); v != "" {
+			params.Set(k, v)
+		}
+	}
+	env, err := s.hq.InventoryProducts(r.Context(), c.Subject, chi.URLParam(r, "id"), params)
+	if err != nil {
+		s.writeHqError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, env)
+}
+
+func (s *Server) handleHqInventoryAttention(w http.ResponseWriter, r *http.Request) {
+	c := claimsFrom(r.Context())
+	params := url.Values{}
+	for _, k := range []string{"branch_id", "page", "page_size"} {
+		if v := r.URL.Query().Get(k); v != "" {
+			params.Set(k, v)
+		}
+	}
+	env, err := s.hq.InventoryAttention(r.Context(), c.Subject, chi.URLParam(r, "id"), params)
+	if err != nil {
+		s.writeHqError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, env)
+}
+
+// dateParamRE validates from/to as a plain YYYY-MM-DD date — the gateway
+// interprets them in its own local time (same assumption as BranchSnapshot's
+// day scope), so anything with a time/zone component would be misleading.
+var dateParamRE = regexp.MustCompile(`^\d{4}-\d{2}-\d{2}$`)
+
+func (s *Server) handleHqProductMovements(w http.ResponseWriter, r *http.Request) {
+	c := claimsFrom(r.Context())
+	for _, k := range []string{"from", "to"} {
+		if v := r.URL.Query().Get(k); v != "" && !dateParamRE.MatchString(v) {
+			writeErr(w, http.StatusBadRequest, k+" must be YYYY-MM-DD")
+			return
+		}
+	}
+	params := url.Values{}
+	for _, k := range []string{"branch_id", "from", "to", "page", "page_size"} {
+		if v := r.URL.Query().Get(k); v != "" {
+			params.Set(k, v)
+		}
+	}
+	env, err := s.hq.ProductMovements(r.Context(), c.Subject, chi.URLParam(r, "id"), chi.URLParam(r, "productId"), params)
+	if err != nil {
+		s.writeHqError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, env)
 }
 
 // handleTenantEvents streams tenant-scoped events over SSE. Registered
@@ -98,6 +355,11 @@ func (s *Server) handleTenantEvents(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) writeHqError(w http.ResponseWriter, err error) {
+	var dup *hq.DuplicateBarcodeError
+	if errors.As(err, &dup) {
+		writeErr(w, http.StatusConflict, dup.Error())
+		return
+	}
 	switch {
 	case errors.Is(err, hq.ErrForbidden):
 		writeErr(w, http.StatusForbidden, "resource does not belong to this account")
@@ -105,9 +367,16 @@ func (s *Server) writeHqError(w http.ResponseWriter, err error) {
 		writeErr(w, http.StatusPaymentRequired, "tenant has no sync subscription")
 	case errors.Is(err, hq.ErrGatewayUnreachable):
 		writeErr(w, http.StatusServiceUnavailable, "sync gateway unreachable")
-	case errors.Is(err, mongostore.ErrNotFound):
+	case errors.Is(err, hq.ErrNotFound), errors.Is(err, mongostore.ErrNotFound):
 		writeErr(w, http.StatusNotFound, "not found")
+	case errors.Is(err, hq.ErrInvalidUnits):
+		writeErr(w, http.StatusBadRequest, err.Error())
+	case errors.Is(err, hq.ErrInvalidGroup):
+		writeErr(w, http.StatusBadRequest, err.Error())
+	case errors.Is(err, hq.ErrTenantNotProvisioned):
+		writeErr(w, http.StatusServiceUnavailable, err.Error())
 	default:
+		s.log.Error("hq.unhandled_error", "err", err.Error())
 		writeErr(w, http.StatusInternalServerError, "request failed")
 	}
 }

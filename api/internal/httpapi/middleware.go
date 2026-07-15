@@ -83,6 +83,17 @@ func (w *statusWriter) WriteHeader(code int) {
 	w.ResponseWriter.WriteHeader(code)
 }
 
+// Flush implements http.Flusher by delegating to the wrapped ResponseWriter.
+// Embedding http.ResponseWriter only promotes its own three methods, not
+// Flush — without this, every request through requestLogger (i.e. every
+// request) fails the SSE handler's w.(http.Flusher) check and the event
+// stream 500s on every connection attempt.
+func (w *statusWriter) Flush() {
+	if f, ok := w.ResponseWriter.(http.Flusher); ok {
+		f.Flush()
+	}
+}
+
 // --- OTP rate limiting (per client IP) ---
 
 func (s *Server) rateLimitOTP(next http.Handler) http.Handler {
