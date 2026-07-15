@@ -390,12 +390,12 @@ Design notes (2026-07-15): only ConflictLog needs new backend surface — stale/
   - Files: `console/src/lib/{types,api,query,hooks}.ts`, `console/src/lib/alerts.ts`, `console/src/pages/console/Overview.tsx`
   - Dependencies: T36 · **Size: M**
 
-- [ ] **T38: Console — notifications bell**
-  - **Description:** `NotificationsBell` in the AppShell header (both desktop and mobile rows): bell icon + count badge (Arabic digits, hidden at 0, «٩+» cap) over the same `deriveAlerts` output as Overview (bell mounts `useHqBranches` + attention-counts + conflicts queries — all cached/shared keys, SSE-live). Dropdown (existing dropdown-menu primitive): alert rows with tone icon + text, each deep-linking and closing the menu; footer «عرض كل التعارضات» → `/conflicts` when any conflict alert exists; success-toned empty state «لا توجد تنبيهات».
+- [x] **T38: Console — notifications bell** *(2026-07-15)*
+  - **Description:** `NotificationsBell` in the AppShell header (the single header bar covers both the desktop breadcrumb row and the mobile nav row — the bell sits beside `AccountMenu`, unconditional on breakpoint): bell icon + count badge (Arabic digits, hidden at 0, «٩+» cap) over the same `deriveAlerts` output as Overview (bell mounts `useHqBranches` + `useInventoryAttention({})` + `useConflicts({})` — all cached/shared keys, SSE-live). Dropdown (existing dropdown-menu primitive, `DropdownMenuItem asChild` wrapping `Link`): alert rows with tone icon + text, each deep-linking and closing the menu; footer «عرض كل التعارضات» → `/conflicts` when any conflict alert exists; success-toned empty state «لا توجد تنبيهات». Added `BellIcon` (Solar `BellBing`) to the shared icon surface.
   - Acceptance:
-    - [ ] Badge count == Overview alerts panel row count (same derivation, by construction); flips live via SSE without refresh
-    - [ ] Every row navigates to the screen that resolves it; RTL layout correct
-  - Verify: `pnpm build && pnpm lint` clean; manual click-through folds into checkpoint 5
+    - [x] Badge count == Overview alerts panel row count (same derivation, by construction) *(both call `deriveAlerts` with the same three inputs)*; flips live via SSE without refresh *(inherits `hq-branches`/`hq-inventory`/`hq-conflicts` invalidation from `useTenantEvents`)*
+    - [x] Every row navigates to the screen that resolves it; RTL layout correct *(dropdown-menu primitive already defaults `dir="rtl"`)*
+  - Verify: `pnpm build && pnpm lint` clean, 2026-07-15; manual click-through **pending — folds into checkpoint 5**
   - Files: `console/src/components/NotificationsBell.tsx`, `console/src/components/AppShell.tsx`, `console/src/components/icon.tsx` (bell icon)
   - Dependencies: T37 · **Size: S**
 

@@ -4,6 +4,7 @@ import { useTenantEvents } from '@/lib/hooks'
 import { Brand } from '@/components/Brand'
 import { Breadcrumbs } from '@/components/Breadcrumbs'
 import { AccountMenu } from '@/components/AccountMenu'
+import { NotificationsBell } from '@/components/NotificationsBell'
 import {
   DashboardIcon,
   CompanyIcon,
@@ -122,7 +123,10 @@ export function AppShell() {
             />
           </div>
 
-          <AccountMenu />
+          <div className="flex items-center gap-1">
+            <NotificationsBell />
+            <AccountMenu />
+          </div>
         </header>
 
         <main className="mx-auto w-full max-w-6xl flex-1 px-5 py-7">
