@@ -158,12 +158,12 @@ Bugs found and fixed during this checkpoint's e2e pass (2026-07-15): desktop `Up
 - [x] T42: Gateway — `GET /hq/reports/sales` (totals + tender split + per-day series) *(sync-gateway `ccdc8b6`)*
 - [x] T43: Gateway — `GET /hq/reports/products|branches|staff` (period GroupBys; paged products with revenue/qty/profit sorts) *(sync-gateway `ccdc8b6`)*
 - [x] T44: API — four passthroughs + registry decoration on branches + table-driven tests *(2026-07-15)*
-- [ ] T45: Console — lib plumbing + `PeriodPicker` + Reports shell (`?view=` toggle, default sales)
-- [ ] T46: Console — Sales + Branches views (KPI tiles, tender split, SVG daily bars, comparison table)
-- [ ] T47: Console — Products + Staff + Inventory views
+- [x] T45: Console — lib plumbing + `PeriodPicker` + Reports shell (`?view=` toggle, default sales) *(2026-07-15)*
+- [x] T46: Console — Sales + Branches views (KPI tiles, tender split, CSS-bar daily chart, comparison table) *(2026-07-15)*
+- [x] T47: Console — Products + Staff + Inventory views *(2026-07-15)*
 
 ### Checkpoint 6 (slice 6 shipped)
-- [ ] All gates green
+- [x] All gates green (api `go build ./... && go vet ./... && go test ./...`, gateway `dotnet build AribSyncGateway.csproj`, console `pnpm build && pnpm lint` — all clean 2026-07-15)
 - [ ] Manual e2e: sales totals/tender, products revenue/profit, staff and branch rows all match the desktop's own screens for a real synced tenant + period
 - [ ] POS sale lands in today's report live via SSE, no refresh
 - [ ] RTL/Arabic-numerals audit across all five views

@@ -9,6 +9,7 @@ import type {
   InventoryStatusFilter,
   NewProductInput,
   PriceChangeInput,
+  ReportSort,
   Tenant,
 } from './types'
 
@@ -258,6 +259,9 @@ export function useTenantEvents(tenantId: string | undefined) {
         // upload time), so a branch-synced event is exactly when new rows
         // can appear.
         void qc.invalidateQueries({ queryKey: ['hq-conflicts', tenantId] })
+        // Report figures come from Bills the round just uploaded — same
+        // moment, same mechanism.
+        void qc.invalidateQueries({ queryKey: ['hq-reports', tenantId] })
       })
       es.onerror = () => {
         es?.close()
@@ -273,6 +277,70 @@ export function useTenantEvents(tenantId: string | undefined) {
       es?.close()
     }
   }, [tenantId, qc])
+}
+
+// --- Reports (slice 6): question-organized period aggregates. All four keep
+// previous data so a period/filter change never blanks the view (Catalog's
+// pattern); the shared 'hq-reports' key prefix is SSE-invalidated. ---
+
+export interface ReportPeriodParams {
+  from?: string
+  to?: string
+}
+
+/** Period sales report: totals, tender split and gap-filled day series. */
+export function useReportSales(
+  tenantId: string | undefined,
+  params: ReportPeriodParams & { branchId?: string },
+) {
+  return useQuery({
+    queryKey: qk.reportSales(tenantId ?? '', params),
+    queryFn: () => api.reportSales(tenantId as string, params),
+    enabled: !!tenantId,
+    placeholderData: keepPreviousData,
+  })
+}
+
+/** One page of the period products report (top sellers by revenue/qty/profit). */
+export function useReportProducts(
+  tenantId: string | undefined,
+  params: ReportPeriodParams & {
+    branchId?: string
+    groupId?: string
+    sort?: ReportSort
+    page?: number
+    pageSize?: number
+  },
+) {
+  return useQuery({
+    queryKey: qk.reportProducts(tenantId ?? '', params),
+    queryFn: () => api.reportProducts(tenantId as string, params),
+    enabled: !!tenantId,
+    placeholderData: keepPreviousData,
+  })
+}
+
+/** Period branches comparison (registry-complete, health-decorated). */
+export function useReportBranches(tenantId: string | undefined, params: ReportPeriodParams) {
+  return useQuery({
+    queryKey: qk.reportBranches(tenantId ?? '', params),
+    queryFn: () => api.reportBranches(tenantId as string, params),
+    enabled: !!tenantId,
+    placeholderData: keepPreviousData,
+  })
+}
+
+/** Period per-cashier report. */
+export function useReportStaff(
+  tenantId: string | undefined,
+  params: ReportPeriodParams & { branchId?: string },
+) {
+  return useQuery({
+    queryKey: qk.reportStaff(tenantId ?? '', params),
+    queryFn: () => api.reportStaff(tenantId as string, params),
+    enabled: !!tenantId,
+    placeholderData: keepPreviousData,
+  })
 }
 
 /** Create a tenant and prime the list cache so the resolver sees it instantly. */

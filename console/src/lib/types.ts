@@ -506,6 +506,112 @@ export interface AckConflictsResult {
   acked: number
 }
 
+// --- HQ reports (slice 6; hq/service.go's Report* methods) ---
+//
+// Question-organized period aggregates, computed live off the central DB —
+// like catalog, `source` is always "synced" and `as_of` is the read time.
+// All money figures follow the desktop's own report semantics (Sale/ReSale
+// bills, tender fields, Σ(Total − ItemCost) profit).
+
+// How the period's sales were paid: cash in drawer, bank/card, e-wallet, and
+// credit = the on-account remainder.
+export interface TenderSplit {
+  cash: number
+  bank: number
+  wallet: number
+  credit: number
+}
+
+// One local calendar day of the sales series. `day` is a plain YYYY-MM-DD
+// string in the tenant's day-scope, not an instant — render it as a date.
+export interface SalesDay {
+  day: string
+  sales_total: number
+  sales_count: number
+  refunds_total: number
+}
+
+// Period totals + tender split + gap-filled day series. `from`/`to` echo the
+// gateway's resolved period (it owns defaulting and clamping).
+export interface SalesReport {
+  from: string
+  to: string
+  sales_total: number
+  sales_count: number
+  refunds_total: number
+  refunds_count: number
+  tender: TenderSplit
+  days: SalesDay[]
+}
+
+// GET /v1/tenants/{id}/hq/reports/sales
+export type SalesReportResponse = CatalogEnvelope<SalesReport>
+
+// Products report sort order (gateway-side, descending).
+export type ReportSort = 'revenue' | 'qty' | 'profit'
+
+// One product's period performance. qty_sold is in base units, labeled with
+// the master-unit name (same convention as the inventory views).
+export interface ProductReportRow {
+  id: string
+  code: number
+  name: string
+  group_name?: string | null
+  unit?: string | null
+  qty_sold: number
+  revenue: number
+  profit: number
+}
+
+export interface ProductsReportPage {
+  total: number
+  page: number
+  page_size: number
+  items: ProductReportRow[]
+}
+
+// GET /v1/tenants/{id}/hq/reports/products
+export type ProductsReportResponse = CatalogEnvelope<ProductsReportPage>
+
+// One branch's period performance, registry-decorated (every branch renders,
+// zeroed when it has no rows in the period).
+export interface BranchReportRow {
+  branch_id: string
+  branch_name: string
+  health: BranchHealth
+  last_sync_at?: string | null
+  sales_total: number
+  sales_count: number
+  refunds_total: number
+  refunds_count: number
+  profit: number
+}
+
+export interface BranchesReportData {
+  branches: BranchReportRow[]
+}
+
+// GET /v1/tenants/{id}/hq/reports/branches
+export type BranchesReportResponse = CatalogEnvelope<BranchesReportData>
+
+// One user's period performance. user_name comes from the tenant DB's Tier-A
+// Users table, not the control plane.
+export interface StaffReportRow {
+  user_id: string
+  user_name: string
+  sales_total: number
+  sales_count: number
+  refunds_total: number
+  refunds_count: number
+}
+
+export interface StaffReportData {
+  staff: StaffReportRow[]
+}
+
+// GET /v1/tenants/{id}/hq/reports/staff
+export type StaffReportResponse = CatalogEnvelope<StaffReportData>
+
 // auth session (sessionResponse map in auth_handlers.go)
 export interface Session {
   access_token: string

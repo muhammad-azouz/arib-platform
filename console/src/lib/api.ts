@@ -5,6 +5,7 @@ import type {
   Branch,
   BranchActivityResponse,
   BranchDevice,
+  BranchesReportResponse,
   Bundle,
   CatalogGroupsResponse,
   CatalogProductsResponse,
@@ -21,7 +22,11 @@ import type {
   PriceChangeInput,
   PriceChangeResult,
   ProductDetailResponse,
+  ProductsReportResponse,
+  ReportSort,
+  SalesReportResponse,
   Session,
+  StaffReportResponse,
   SyncToken,
   Tenant,
 } from './types'
@@ -367,6 +372,73 @@ export const api = {
 
   ackConflicts: (tenantId: string, input: AckConflictsInput) =>
     request<AckConflictsResult>(`/v1/tenants/${tenantId}/hq/conflicts/ack`, post(input)),
+
+  // reports (slice 6): question-organized period aggregates, same HQ chain.
+  // from/to are plain YYYY-MM-DD dates; the gateway owns defaulting (last 7
+  // days) and clamping (max a year).
+  reportSales: (
+    tenantId: string,
+    params: { from?: string; to?: string; branchId?: string },
+  ) => {
+    const q = new URLSearchParams()
+    if (params.from) q.set('from', params.from)
+    if (params.to) q.set('to', params.to)
+    if (params.branchId) q.set('branch_id', params.branchId)
+    const qs = q.toString()
+    return request<SalesReportResponse>(
+      `/v1/tenants/${tenantId}/hq/reports/sales${qs ? `?${qs}` : ''}`,
+    )
+  },
+
+  reportProducts: (
+    tenantId: string,
+    params: {
+      from?: string
+      to?: string
+      branchId?: string
+      groupId?: string
+      sort?: ReportSort
+      page?: number
+      pageSize?: number
+    },
+  ) => {
+    const q = new URLSearchParams()
+    if (params.from) q.set('from', params.from)
+    if (params.to) q.set('to', params.to)
+    if (params.branchId) q.set('branch_id', params.branchId)
+    if (params.groupId) q.set('group_id', params.groupId)
+    if (params.sort) q.set('sort', params.sort)
+    if (params.page) q.set('page', String(params.page))
+    if (params.pageSize) q.set('page_size', String(params.pageSize))
+    const qs = q.toString()
+    return request<ProductsReportResponse>(
+      `/v1/tenants/${tenantId}/hq/reports/products${qs ? `?${qs}` : ''}`,
+    )
+  },
+
+  reportBranches: (tenantId: string, params: { from?: string; to?: string }) => {
+    const q = new URLSearchParams()
+    if (params.from) q.set('from', params.from)
+    if (params.to) q.set('to', params.to)
+    const qs = q.toString()
+    return request<BranchesReportResponse>(
+      `/v1/tenants/${tenantId}/hq/reports/branches${qs ? `?${qs}` : ''}`,
+    )
+  },
+
+  reportStaff: (
+    tenantId: string,
+    params: { from?: string; to?: string; branchId?: string },
+  ) => {
+    const q = new URLSearchParams()
+    if (params.from) q.set('from', params.from)
+    if (params.to) q.set('to', params.to)
+    if (params.branchId) q.set('branch_id', params.branchId)
+    const qs = q.toString()
+    return request<StaffReportResponse>(
+      `/v1/tenants/${tenantId}/hq/reports/staff${qs ? `?${qs}` : ''}`,
+    )
+  },
 
   // SSE stream URL. EventSource cannot set an Authorization header, so the
   // current access token rides the query string (the server keeps this route

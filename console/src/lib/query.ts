@@ -51,4 +51,30 @@ export const qk = {
     id: string,
     params: { page?: number; pageSize?: number; all?: boolean },
   ) => ['hq-conflicts', id, params] as const,
+  // Shared 'hq-reports' prefix — one SSE invalidation flips every report view
+  // (a sync round is exactly when new bills can land in a period).
+  reportSales: (
+    id: string,
+    params: { from?: string; to?: string; branchId?: string },
+  ) => ['hq-reports', id, 'sales', params] as const,
+  reportProducts: (
+    id: string,
+    params: {
+      from?: string
+      to?: string
+      branchId?: string
+      groupId?: string
+      sort?: string
+      page?: number
+      pageSize?: number
+    },
+  ) => ['hq-reports', id, 'products', params] as const,
+  reportBranches: (
+    id: string,
+    params: { from?: string; to?: string },
+  ) => ['hq-reports', id, 'branches', params] as const,
+  reportStaff: (
+    id: string,
+    params: { from?: string; to?: string; branchId?: string },
+  ) => ['hq-reports', id, 'staff', params] as const,
 }

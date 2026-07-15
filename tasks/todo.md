@@ -467,35 +467,36 @@ Design notes (2026-07-15): **open question 2 resolved by the plan's standing ass
   - Files: `api/internal/hq/service.go` + `service_test.go`, `api/internal/httpapi/hq_handlers.go`, `api/internal/httpapi/server.go`
   - Dependencies: T42, T43 (contract; may start on fakes) · **Size: M**
 
-- [ ] **T45: Console — lib plumbing + PeriodPicker + Reports shell**
+- [x] **T45: Console — lib plumbing + PeriodPicker + Reports shell** *(2026-07-15)*
   - **Description:** Types (`SalesReport`, `ProductReportRow`, `BranchReportRow`, `StaffReportRow`, paged/envelope aliases), `api.ts` functions, `qk` keys under a shared `['hq-reports', tenantId, …]` prefix, four hooks (`enabled: !!tenantId`, `keepPreviousData` on the paged products one); `useTenantEvents` gains the `hq-reports` prefix so `branch-synced` flips reports live. New `components/PeriodPicker.tsx`: presets (اليوم / أمس / آخر ٧ أيام / آخر ٣٠ يومًا / هذا الشهر) + custom from/to date inputs, reading/writing `?from=&to=` URL params. `Reports.tsx` shell: `PageHeader` + five-question URL-state toggle (`?view=sales|products|branches|staff|inventory`, default `sales`), same pattern as Inventory's toggle.
   - Acceptance:
-    - [ ] `pnpm build` type-checks the contract against T44's shapes; SSE invalidation wired
-    - [ ] Preset clicks and custom dates round-trip through the URL (deep-linkable); view toggle preserves period params
+    - [x] `pnpm build` type-checks the contract against T44's shapes; SSE invalidation wired *(`useTenantEvents` invalidates the `hq-reports` prefix on `branch-synced`)*
+    - [x] Preset clicks and custom dates round-trip through the URL (deep-linkable); view toggle preserves period params *(both write the same `URLSearchParams` instance — `setView` copies existing params, so `from`/`to`/`branch` survive; presets compute local dates via a `localISO` helper, never `toISOString`'s UTC shift)*
   - Verify: `pnpm build && pnpm lint`
   - Files: `console/src/lib/{types,api,query,hooks}.ts`, `console/src/components/PeriodPicker.tsx`, `console/src/pages/console/Reports.tsx`
   - Dependencies: T44 (contract) · **Size: M**
 
-- [ ] **T46: Console — Sales + Branches report views**
+- [x] **T46: Console — Sales + Branches report views** *(2026-07-15)*
   - **Description:** Sales view: KPI tiles (المبيعات، عدد الفواتير، المرتجعات، الصافي، متوسط الفاتورة — net/avg derived client-side), tender split row (نقدًا / بنك / محفظة / آجل), daily inline-SVG bar chart + day table, optional branch `<select>`. Branches view: comparison table — HealthDot + name, sales, refunds, net, profit, bills, متوسط الفاتورة — rows → branch detail; totals row; `<Freshness>` from the envelope.
   - Acceptance:
-    - [ ] Branch filter + period changes refetch correctly without spinner-blanking; Arabic digits/RTL throughout; 402 → EmptyState
-    - [ ] Branches view renders every registry branch (zeroed included) with correct health colors
-  - Verify: `pnpm build && pnpm lint`; visual pass folds into checkpoint 6
-  - Files: `console/src/pages/console/Reports.tsx` (+ subcomponents if they earn extraction)
+    - [x] Branch filter + period changes refetch correctly without spinner-blanking (`keepPreviousData` on all four report hooks); Arabic digits/RTL throughout; 402 → EmptyState
+    - [x] Branches view renders every registry branch (zeroed included) with correct health colors *(rows come from T44's registry merge; HealthDot per row; client-side totals row)*
+  - Note: the daily chart is CSS flex bars (no SVG, no chart dependency) — theme tokens apply directly, the row is pinned `dir="ltr"` so time reads chronologically, native tooltips per bar, only the peak day direct-labeled, x-labels thinned to ~8, and the day table below is the accessible view of the same numbers. Visual pass folds into checkpoint 6 (no browser automation this session, same as T21/T32).
+  - Verify: `pnpm build && pnpm lint` clean, 2026-07-15
+  - Files: `console/src/pages/console/Reports.tsx`, `console/src/components/PeriodPicker.tsx`
   - Dependencies: T45 · **Size: M**
 
-- [ ] **T47: Console — Products + Staff + Inventory report views**
+- [x] **T47: Console — Products + Staff + Inventory report views** *(2026-07-15)*
   - **Description:** Products view: sort chips (الأعلى قيمةً / كميةً / ربحًا), group + branch `<select>`s, paged table (code/name/group/qty+unit/revenue/profit) with rows → `/catalog/{productId}`; render-time page reset on filter change (Catalog's pattern). Staff view: table (الموظف، عدد الفواتير، المبيعات، المرتجعات، متوسط الفاتورة). Inventory view: tiles from `useInventoryByBranch` (قيمة المخزون، سالب/نفاد/تحت الحد counts) deep-linking into `/inventory?view=branches|attention` — zero new backend.
   - Acceptance:
-    - [ ] Sort/filter changes reset paging deterministically; every row lands on the screen that answers the next question (product detail / inventory views)
-    - [ ] Staff view renders user names from the report payload (no extra call); empty period → clean empty state
+    - [x] Sort/filter changes reset paging deterministically (`filterKey`/`lastFilterKey` render-time reset, Catalog's pattern — period/branch/group/sort all in the key); product rows → `/catalog/{id}`, inventory cards → `/inventory?view=branches|attention`
+    - [x] Staff view renders user names from the report payload (no extra call); empty period → clean empty state
   - Verify: `pnpm build && pnpm lint`; visual pass folds into checkpoint 6
   - Files: `console/src/pages/console/Reports.tsx`, `console/src/lib/hooks.ts` (if a lazy-enable arg is needed)
   - Dependencies: T45 · **Size: M**
 
 ### Checkpoint 6
-- [ ] All gates green (api `go build ./... && go vet ./... && go test ./...`, gateway `dotnet build AribSyncGateway.csproj`, console `pnpm build && pnpm lint`)
+- [x] All gates green (api `go build ./... && go vet ./... && go test ./...`, gateway `dotnet build AribSyncGateway.csproj`, console `pnpm build && pnpm lint` — all clean 2026-07-15)
 - [ ] Manual e2e: sales report totals + tender split match the desktop's own numbers for a real synced tenant and period (incl. a deleted bill staying excluded and a multi-branch day)
 - [ ] Manual e2e: products report revenue/profit spot-checked against the desktop's profit screen for the same period (note the deliberate deleted-bill/date-anchor divergence); top-seller ordering sane in all three sorts
 - [ ] Manual e2e: staff report rows match per-cashier desktop numbers; branches comparison matches the per-branch bills screens
