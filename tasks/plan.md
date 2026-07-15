@@ -138,7 +138,7 @@ Bugs found and fixed during this checkpoint's e2e pass (2026-07-15):
 - [x] T38: Console — notifications bell in the AppShell header (badge + dropdown, every row deep-links) *(platform, 2026-07-15)*
 - [x] T39: Console — conflicts review page (kept-vs-overridden diff, per-row + bulk ack, product deep-links) *(platform, 2026-07-15)*
 - [x] T40: Console — top-bar branch-status indicator *(platform, 2026-07-15)*
-- [ ] T41: Console — Ctrl+K command palette
+- [x] T41: Console — Ctrl+K command palette *(platform, 2026-07-15)*
 
 ### Checkpoint 5 (slice 5 shipped)
 - [ ] All gates green (api `go build ./... && go vet ./... && go test ./...`, gateway `dotnet build`, console `pnpm build && pnpm lint`)

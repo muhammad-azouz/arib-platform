@@ -416,13 +416,13 @@ Design notes (2026-07-15): only ConflictLog needs new backend surface — stale/
   - Files: `console/src/components/BranchStatusIndicator.tsx`, `console/src/components/AppShell.tsx`
   - Dependencies: T37 (shares the always-mounted `useHqBranches`) · **Size: S**
 
-- [ ] **T41: Console — Ctrl+K command palette**
-  - **Description:** In-house `CommandPalette` on the existing Radix Dialog (top-aligned, RTL): opened by Ctrl+K/Cmd+K (window keydown, ignoring inputs' own editing only when palette closed — the shortcut always wins) or a search button in the header. Input + grouped results with full keyboard nav (↑/↓ wraps, Enter navigates, Esc closes; listbox/option ARIA roles). Sections: **الصفحات** (static nav registry incl. التعارضات), **الفروع** (client-filtered from the cached bundle), **المنتجات** (debounced ≥2-char `useCatalogProducts` search — name/code/barcode via the existing gateway query — top 8, «بحث في الكتالوج…» row linking to `/catalog?search=`), **إجراءات** (تنزيل التطبيق، إضافة فرع، إضافة منتج — navigation shortcuts to the owning screens). Selecting navigates and closes; query resets on close.
+- [x] **T41: Console — Ctrl+K command palette** *(2026-07-15)*
+  - **Description:** In-house `CommandPalette` on the raw Radix Dialog primitive (top-aligned, RTL, custom width/chrome instead of the shared `ui/dialog` wrapper): opened by Ctrl+K/Cmd+K (a window-level `keydown` listener that always wins, even while focus is inside a text input) or a search button in the header (shows the ⌘K/Ctrl K hint). Input + grouped results with full keyboard nav (↑/↓ wraps via modulo, Enter navigates, Esc closes and restores focus — Radix's default `onCloseAutoFocus`; `role="combobox"`/`listbox`/`option` + `aria-activedescendant`). Sections: **الصفحات** (static registry mirroring AppShell's nav + التعارضات, which has no sidebar entry), **الفروع** (client-filtered from the cached bundle, zero extra requests), **المنتجات** (only once the query is ≥2 chars, debounced 300ms via `useCatalogProducts`, top 8 + a «بحث في الكتالوج…» row linking to `/catalog?search=`), **إجراءات** (تنزيل التطبيق، إضافة فرع، إضافة منتج — navigation shortcuts to the owning screens, not auto-opened dialogs). Selecting navigates and closes; the dialog body unmounts on close (Radix default), so query/selection always reset on next open with no explicit reset code. `Catalog.tsx` now seeds its search box from `?search=` on mount.
   - Acceptance:
-    - [ ] Keyboard-only round trip: Ctrl+K → type → ↑/↓ → Enter lands on the target; Esc restores focus
-    - [ ] No new dependency added; product search issues zero requests under 2 chars and is debounced
-  - Verify: `pnpm build && pnpm lint` clean; manual pass folds into checkpoint 5
-  - Files: `console/src/components/CommandPalette.tsx`, `console/src/components/AppShell.tsx`, `console/src/pages/console/Catalog.tsx` (honor `?search=` deep-link if not already)
+    - [x] Keyboard-only round trip: Ctrl+K → type → ↑/↓ → Enter lands on the target; Esc restores focus *(structural: global listener + combobox keydown handler + Radix's default close-autofocus; live keyboard pass pending)*
+    - [x] No new dependency added *(built on the already-installed `@radix-ui/react-dialog`, no `cmdk`)*; product search issues zero requests under 2 chars and is debounced *(`useCatalogProducts` only called with a defined `tenantId` once `debouncedQuery.length >= 2`)*
+  - Verify: `pnpm build && pnpm lint` clean, 2026-07-15; manual pass **pending — folds into checkpoint 5**
+  - Files: `console/src/components/CommandPalette.tsx`, `console/src/components/AppShell.tsx`, `console/src/pages/console/Catalog.tsx` (`?search=` deep-link)
   - Dependencies: T37 (product search hook already exists — only ordering with the shell changes) · **Size: M**
 
 ### Checkpoint 5

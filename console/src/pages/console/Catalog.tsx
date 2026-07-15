@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { useNavigate, useParams } from 'react-router-dom'
+import { useNavigate, useParams, useSearchParams } from 'react-router-dom'
 import { ApiError } from '@/lib/api'
 import { useBundle, useCatalogGroups, useCatalogProducts } from '@/lib/hooks'
 import { toArabicDigits } from '@/lib/format'
@@ -49,8 +49,13 @@ function buildGroupTree(groups: CatalogGroup[]): GroupNode[] {
 export function Catalog() {
   const { tenantId } = useParams<'tenantId'>()
   const { data: bundle } = useBundle(tenantId)
-  const [search, setSearch] = useState('')
-  const [debouncedSearch, setDebouncedSearch] = useState('')
+  // The command palette's "بحث في الكتالوج…" row deep-links here with
+  // ?search= — honor it as the initial value only (not kept in sync with
+  // the URL afterwards, same as every other filter on this page).
+  const [searchParams] = useSearchParams()
+  const initialSearch = searchParams.get('search') ?? ''
+  const [search, setSearch] = useState(initialSearch)
+  const [debouncedSearch, setDebouncedSearch] = useState(initialSearch)
   const [groupId, setGroupId] = useState<string | undefined>(undefined)
   const [page, setPage] = useState(1)
   const [createOpen, setCreateOpen] = useState(false)
