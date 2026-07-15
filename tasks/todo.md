@@ -381,12 +381,12 @@ Design notes (2026-07-15): only ConflictLog needs new backend surface — stale/
   - Files: `api/internal/hq/service.go` + `service_test.go`, `api/internal/httpapi/hq_handlers.go`, `api/internal/httpapi/server.go`
   - Dependencies: T35 (contract; may start on fakes) · **Size: M**
 
-- [ ] **T37: Console — lib plumbing + shared alert derivation**
-  - **Description:** Types (`ConflictItem`, `ConflictsResponse`, ack input/result), `api.ts` functions, `qk.conflicts` under a `['hq-conflicts', tenantId, …]` prefix, hooks (`useConflicts(tenantId, {page, all})` with `keepPreviousData`; `useAckConflicts` invalidating the prefix). `useTenantEvents` gains the `hq-conflicts` prefix invalidation (conflicts only change on sync rounds). New `lib/alerts.ts`: `deriveAlerts(tenantId, {branches, attention, conflicts})` → ordered `Alert[]` (danger: unacked conflicts «تعارض مزامنة» → `/conflicts`, negative/out counts → `/inventory?view=attention`, stale branch → branch detail; info: low count → attention, never → download). Overview drops its private `deriveAlerts` and consumes the shared one (now passing attention counts + conflicts — two extra cheap queries on Overview), keeping panel behavior otherwise identical.
+- [x] **T37: Console — lib plumbing + shared alert derivation** *(2026-07-15)*
+  - **Description:** Types (`ConflictItem`, `ConflictsResponse`, ack input/result), `api.ts` functions, `qk.conflicts` under a `['hq-conflicts', tenantId, …]` prefix, hooks (`useConflicts(tenantId, {page, all})` with `keepPreviousData`; `useAckConflicts` invalidating the prefix). `useTenantEvents` gains the `hq-conflicts` prefix invalidation (conflicts only change on sync rounds). New `lib/alerts.ts`: `deriveAlerts(tenantId, {branches, attention, conflictsUnacked})` → ordered `Alert[]` (danger: unacked conflicts «تعارض مزامنة» → `/conflicts`, negative/out counts → `/inventory?view=attention`, stale branch → branch detail; info: low count → attention, never → download). Overview drops its private `deriveAlerts` and consumes the shared one (now also calling `useInventoryAttention`/`useConflicts` — two extra cheap queries), keeping panel behavior otherwise identical.
   - Acceptance:
-    - [ ] Overview alert rows for stale/never render exactly as before (same text/links), now from the shared lib
-    - [ ] `pnpm build` type-checks the contract against T36's shapes; SSE `branch-synced` invalidates conflicts
-  - Verify: `pnpm build && pnpm lint` clean
+    - [x] Overview alert rows for stale/never render exactly as before (same text/links), now from the shared lib *(same key/tone/text/to strings, just sourced from `lib/alerts.ts`)*
+    - [x] `pnpm build` type-checks the contract against T36's shapes; SSE `branch-synced` invalidates conflicts *(`hq-conflicts` prefix added to `useTenantEvents`)*
+  - Verify: `pnpm build && pnpm lint` clean, 2026-07-15
   - Files: `console/src/lib/{types,api,query,hooks}.ts`, `console/src/lib/alerts.ts`, `console/src/pages/console/Overview.tsx`
   - Dependencies: T36 · **Size: M**
 

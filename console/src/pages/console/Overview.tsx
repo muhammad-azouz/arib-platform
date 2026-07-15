@@ -1,13 +1,8 @@
 import type { ReactNode } from 'react'
 import { Link, useParams } from 'react-router-dom'
-import { useBundle, useHqBranches } from '@/lib/hooks'
-import {
-  relative,
-  tenantStatusLabel,
-  tenantStatusTone,
-  toArabicDigits,
-} from '@/lib/format'
-import type { BranchView } from '@/lib/types'
+import { useBundle, useConflicts, useHqBranches, useInventoryAttention } from '@/lib/hooks'
+import { tenantStatusLabel, tenantStatusTone, toArabicDigits } from '@/lib/format'
+import { deriveAlerts, type Alert } from '@/lib/alerts'
 import { cn } from '@/lib/utils'
 import { PageHeader } from '@/components/PageHeader'
 import { LoadingState } from '@/components/States'
@@ -34,45 +29,14 @@ import { Button } from '@/components/ui/button'
 
 const money = new Intl.NumberFormat('ar', { maximumFractionDigits: 2 })
 
-// One derived alert. The spec's rule: an alert with no destination doesn't
-// ship — `to` is mandatory. Slice 5 (notifications) grows this same shape
-// with server-derived alerts (low stock, sync conflicts).
-interface OverviewAlert {
-  key: string
-  tone: 'danger' | 'info'
-  text: string
-  to: string
-}
-
-// The alerts stub derives from data already on hand: sync health. A stale
-// branch resolves at its detail page; a never-connected branch resolves by
-// installing the desktop app.
-function deriveAlerts(tenantId: string, branches: BranchView[]): OverviewAlert[] {
-  const alerts: OverviewAlert[] = []
-  for (const v of branches) {
-    if (v.health === 'stale') {
-      alerts.push({
-        key: `stale-${v.id}`,
-        tone: 'danger',
-        text: `${v.name}: منقطع عن المزامنة — آخر مزامنة ${relative(v.last_sync_at)}`,
-        to: `/tenants/${tenantId}/branches/${v.id}`,
-      })
-    } else if (v.health === 'never') {
-      alerts.push({
-        key: `never-${v.id}`,
-        tone: 'info',
-        text: `${v.name}: لم يتصل بعد — ثبّت تطبيق سطح المكتب للبدء`,
-        to: `/tenants/${tenantId}/download`,
-      })
-    }
-  }
-  return alerts
-}
-
 export function Overview() {
   const { tenantId } = useParams<'tenantId'>()
   const { data: bundle } = useBundle(tenantId)
   const { data: hq, isLoading: hqLoading } = useHqBranches(tenantId)
+  // Two cheap extra queries so the Overview alerts panel matches the bell
+  // (T38) exactly — same shared deriveAlerts, same inputs.
+  const { data: attention } = useInventoryAttention(tenantId, {})
+  const { data: conflicts } = useConflicts(tenantId, {})
 
   // The gate guarantees a complete bundle before this renders; guard anyway.
   if (!bundle) return <LoadingState />
@@ -176,7 +140,17 @@ export function Overview() {
         {/* Alerts — every row deep-links to the screen that resolves it. */}
         <section>
           <h2 className="mb-3 font-display text-base font-bold">التنبيهات</h2>
-          <AlertsPanel alerts={hq ? deriveAlerts(t.ID, hq.branches) : undefined} />
+          <AlertsPanel
+            alerts={
+              hq
+                ? deriveAlerts(t.ID, {
+                    branches: hq.branches,
+                    attention: attention?.data.counts,
+                    conflictsUnacked: conflicts?.data.unacked,
+                  })
+                : undefined
+            }
+          />
         </section>
 
         {/* Quick actions */}
@@ -241,7 +215,7 @@ export function Overview() {
 }
 
 // undefined alerts = HQ data still loading (skeleton row).
-function AlertsPanel({ alerts }: { alerts?: OverviewAlert[] }) {
+function AlertsPanel({ alerts }: { alerts?: Alert[] }) {
   if (!alerts) {
     return (
       <Card className="p-4">

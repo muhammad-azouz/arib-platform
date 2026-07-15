@@ -3,6 +3,7 @@ import { keepPreviousData, useMutation, useQuery, useQueryClient } from '@tansta
 import { api, session } from './api'
 import { qk } from './query'
 import type {
+  AckConflictsInput,
   Bundle,
   BranchStatus,
   InventoryStatusFilter,
@@ -199,6 +200,33 @@ export function useProductMovements(
   })
 }
 
+/** One page of the sync-conflict review log (T39), or just the unacked count for the bell (T38). */
+export interface ConflictsParams {
+  page?: number
+  pageSize?: number
+  all?: boolean
+}
+
+export function useConflicts(tenantId: string | undefined, params: ConflictsParams) {
+  return useQuery({
+    queryKey: qk.conflicts(tenantId ?? '', params),
+    queryFn: () => api.conflicts(tenantId as string, params),
+    enabled: !!tenantId,
+    placeholderData: keepPreviousData,
+  })
+}
+
+/** Acknowledge conflicts by id and/or up-to-id; clears them from every mounted view (bell + review page). */
+export function useAckConflicts(tenantId: string) {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: (input: AckConflictsInput) => api.ackConflicts(tenantId, input),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ['hq-conflicts', tenantId] })
+    },
+  })
+}
+
 /**
  * Live console updates: subscribes to the tenant's SSE stream and, on
  * branch-synced, invalidates the branch-derived query keys so every mounted
@@ -226,6 +254,10 @@ export function useTenantEvents(tenantId: string | undefined) {
         // movements in one call — a POS sale or branch adjustment flips stock
         // numbers and attention rows live, same mechanism as the branch cards.
         void qc.invalidateQueries({ queryKey: ['hq-inventory', tenantId] })
+        // Conflicts only change on sync rounds (ServerWins resolves them at
+        // upload time), so a branch-synced event is exactly when new rows
+        // can appear.
+        void qc.invalidateQueries({ queryKey: ['hq-conflicts', tenantId] })
       })
       es.onerror = () => {
         es?.close()

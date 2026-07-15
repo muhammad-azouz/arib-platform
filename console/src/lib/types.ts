@@ -460,6 +460,52 @@ export interface MovementsPage {
 // GET /v1/tenants/{id}/hq/catalog/products/{productId}/movements
 export type MovementsResponse = CatalogEnvelope<MovementsPage>
 
+// --- HQ conflicts read (slice 5; hq/service.go's Conflicts/AckConflicts) ---
+//
+// ServerWins (D12) already resolved these at sync time; this is the review
+// trail. `local_row` is the central row that was kept, `remote_row` is the
+// branch's losing write (null when the branch had deleted the row) — both
+// JSON-encoded entity snapshots, diffed client-side on the review page.
+
+export interface ConflictItem {
+  id: number
+  occurred_at: string
+  branch_id?: string | null
+  branch_name?: string
+  table_name: string
+  row_pk?: string | null
+  conflict_type: string
+  resolution: string
+  local_row?: string | null
+  remote_row?: string | null
+  acknowledged_at?: string | null
+  product_id?: string | null
+  product_name?: string | null
+}
+
+export interface ConflictsData {
+  unacked: number
+  total: number
+  page: number
+  page_size: number
+  items: ConflictItem[]
+}
+
+// GET /v1/tenants/{id}/hq/conflicts
+export type ConflictsResponse = CatalogEnvelope<ConflictsData>
+
+// POST /v1/tenants/{id}/hq/conflicts/ack — at least one of ids/up_to_id is
+// required (handler-enforced); up_to_id acks everything with a lower-or-equal
+// id, ids acks an explicit set. Both are inclusive and idempotent.
+export interface AckConflictsInput {
+  ids?: number[]
+  up_to_id?: number
+}
+
+export interface AckConflictsResult {
+  acked: number
+}
+
 // auth session (sessionResponse map in auth_handlers.go)
 export interface Session {
   access_token: string

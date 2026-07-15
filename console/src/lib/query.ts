@@ -45,4 +45,10 @@ export const qk = {
     productId: string,
     params: { branchId?: string; from?: string; to?: string; page?: number; pageSize?: number },
   ) => ['hq-inventory', id, 'movements', productId, params] as const,
+  // 'hq-conflicts' prefix so useTenantEvents can invalidate every page/filter
+  // variant in one call, same pattern as 'hq-inventory'.
+  conflicts: (
+    id: string,
+    params: { page?: number; pageSize?: number; all?: boolean },
+  ) => ['hq-conflicts', id, params] as const,
 }

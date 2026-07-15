@@ -1,4 +1,6 @@
 import type {
+  AckConflictsInput,
+  AckConflictsResult,
   AttentionResponse,
   Branch,
   BranchActivityResponse,
@@ -7,6 +9,7 @@ import type {
   CatalogGroupsResponse,
   CatalogProductsResponse,
   Company,
+  ConflictsResponse,
   HqBranchesResponse,
   InventoryBranchesResponse,
   InventoryProductsResponse,
@@ -345,6 +348,25 @@ export const api = {
       `/v1/tenants/${tenantId}/hq/catalog/products/${productId}/movements${qs ? `?${qs}` : ''}`,
     )
   },
+
+  // conflicts (slice 5): ConflictLog review chain, same HQ chain as
+  // catalog/inventory.
+  conflicts: (
+    tenantId: string,
+    params: { page?: number; pageSize?: number; all?: boolean },
+  ) => {
+    const q = new URLSearchParams()
+    if (params.page) q.set('page', String(params.page))
+    if (params.pageSize) q.set('page_size', String(params.pageSize))
+    if (params.all) q.set('all', '1')
+    const qs = q.toString()
+    return request<ConflictsResponse>(
+      `/v1/tenants/${tenantId}/hq/conflicts${qs ? `?${qs}` : ''}`,
+    )
+  },
+
+  ackConflicts: (tenantId: string, input: AckConflictsInput) =>
+    request<AckConflictsResult>(`/v1/tenants/${tenantId}/hq/conflicts/ack`, post(input)),
 
   // SSE stream URL. EventSource cannot set an Authorization header, so the
   // current access token rides the query string (the server keeps this route
