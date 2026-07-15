@@ -198,70 +198,162 @@ Open question 1 resolved (user, 2026-07-14): **ServerWins + ConflictLog alerts f
   - Files: `sync-gateway/HqApi.cs`, `sync-gateway/Program.cs`
   - Dependencies: T5 · **Size: M**
 
-- [ ] **T20: API catalog passthrough**
+- [x] **T20: API catalog passthrough**
   - **Description:** `GET /v1/tenants/{id}/hq/catalog/groups|products|products/{pid}` in the hq domain (same chain as T6/T10: session auth → ownership → shard → HQ token → gateway). Catalog payloads wrap in the envelope with `source:"synced"`, `as_of` = read time (central is read directly; the pill honestly renders "just synced"). Detail availability rows are decorated with each branch's `health`/`last_sync_at` from the registry the service already loads.
   - Acceptance:
-    - [ ] Query params passed through (search/group/page); gateway down → 503 clean; no sync subscription → existing 402-style path
-    - [ ] Availability rows carry branch name + health tier so the console needs no second call
-  - Verify: `make test` — table-driven beside the service
+    - [x] Query params passed through (search/group/page); gateway down → 503 clean; no sync subscription → existing 402-style path
+    - [x] Availability rows carry branch name + health tier so the console needs no second call
+  - Verify: `make test` — table-driven beside the service *(`go build ./... && go test ./... ` clean, 2026-07-14)*
   - Files: `api/internal/hq/service.go` + `service_test.go`, `api/internal/httpapi/hq_handlers.go`, `api/internal/httpapi/server.go`
   - Dependencies: T19 (contract; may start on fakes) · **Size: S**
 
-- [ ] **T21: Console Catalog page — groups + products table**
+- [x] **T21: Console Catalog page — groups + products table**
   - **Description:** Replace the `Catalog.tsx` placeholder: groups tree (RTL sidebar or chips row; parent/child from `parent_id`) filtering a products table — code, name, group, master-unit sale price, company qty, active state — with debounced search and server-side pagination. Types/api/hooks per existing `qk` conventions; skeletons via `States.tsx`; stale-while-revalidate (no spinner-blanking).
   - Acceptance:
-    - [ ] Search + group filter + pagination round-trip to the API; Arabic numerals via `format.ts`
-    - [ ] Tenant without sync renders a friendly empty state, not an error
-  - Verify: `pnpm build && pnpm lint`; manual in dev
-  - Files: `console/src/pages/console/Catalog.tsx`, `console/src/lib/{types,api,query,hooks}.ts`
+    - [~] Search + group filter + pagination round-trip to the API; Arabic numerals via `format.ts` *(wired and type-checked; round-trip against real catalog rows needs a synced tenant — folds into checkpoint 3 e2e, same as T19)*
+    - [x] Tenant without sync renders a friendly empty state, not an error *(verified live: real API + Mongo, freshly created unsubscribed tenant → 402 → `EmptyState` renders, not a crash)*
+  - Verify: `pnpm build && pnpm lint`; manual in dev *(build/lint clean; no browser-automation tool available in this session to click through visually — verified the 402 empty-state path via curl against a live local API instead)*
+  - Files: `console/src/pages/console/Catalog.tsx`, `console/src/lib/{types,api,query,hooks}.ts`, `console/src/components/icon.tsx`
   - Dependencies: T20 · **Size: M**
 
-- [ ] **T22: Console product detail**
+- [x] **T22: Console product detail**
   - **Description:** Route `catalog/:productId` (breadcrumbs like `BranchDetail`): header (name, code, group, active), units table (name, factor, buy/sale, price tiers, barcodes), and per-branch availability section — branch name, HealthDot, qty, unit cost, `<Freshness>` from the branch's `last_sync_at`. Row click → that branch's detail page.
   - Acceptance:
-    - [ ] All UoMs and barcodes render; availability shows every branch that has WPI rows with correct health colors
-  - Verify: `pnpm build && pnpm lint`; manual
-  - Files: `console/src/pages/console/ProductDetail.tsx` (new), `console/src/App.tsx`, `console/src/lib/hooks.ts`
+    - [~] All UoMs and barcodes render; availability shows every branch that has WPI rows with correct health colors *(wired and type-checked against the exact `ProductDetail`/`ProductUnit`/`ProductAvailability` shapes T20 already ships and unit-tests; rendering against real UoM/WPI rows needs a synced tenant — folds into checkpoint 3 e2e, same as T19/T21)*
+  - Verify: `pnpm build && pnpm lint` clean, 2026-07-14; no browser-automation tool available this session, so no visual click-through (same gap as T21) — the 402/404 branches call the same `resolveGateway`/`getJSON` code paths already live-verified (T21) and unit-tested (T20's `TestCatalogProductDetail_NotFound`)
+  - Files: `console/src/pages/console/ProductDetail.tsx` (new), `console/src/App.tsx`, `console/src/lib/{types,api,query,hooks}.ts`, `console/src/components/icon.tsx`, `console/src/pages/console/Catalog.tsx` (row click → detail)
   - Dependencies: T21 · **Size: M**
 
-- [ ] **T23: Gateway price-change write (first HQ write)**
+- [x] **T23: Gateway price-change write (first HQ write)**
   - **Description:** `PUT /hq/products/{id}/prices` — body `{changes:[{unit_id, sale?, buy?, price1..9?}]}`; every `unit_id` must belong to the product and the token's db (404/400 otherwise); EF update inside one transaction; returns `{written_at}` (UTC now). **This task retires the propagation risk**: verify DMS's central-side tracking triggers capture the EF update and a real desktop pulls the new price on its next round.
   - Acceptance:
-    - [ ] Price change lands in central; desktop shows the new price after its next sync round (e2e, real tenant)
-    - [ ] Sync/ops tokens rejected; unit from another product → 400; db_name only from token
-  - Verify: `dotnet build`; e2e with a real desktop sync
+    - [ ] Price change lands in central; desktop shows the new price after its next sync round (e2e, real tenant) — **needs a human pass**: this session has no AribONE desktop install to actually trigger a "Sync Now" against, so — same as Checkpoints 0–2's e2e lines — this is the one item only you can verify
+    - [x] Sync/ops tokens rejected; unit from another product → 400; db_name only from token *(rejection is structural, not new logic: the endpoint reuses `TryHqAuth`/`HqToken.TryValidate`, which already requires `scope:"hq"` — a sync or ops token fails there before reaching this code, exactly like every other `/hq/*` endpoint since T5. `ApplyPriceChangesAsync` explicitly checks every `unit_id` belongs to `productId` and returns `InvalidUnits` → 400 otherwise; `dbName` is only ever the `TryHqAuth` out-param, never read from the request)*
+  - Verify: `dotnet build` clean, 2026-07-14; e2e with a real desktop sync **pending — see acceptance note above**
   - Files: `sync-gateway/HqApi.cs`, `sync-gateway/Program.cs`
   - Dependencies: T19 · **Size: M**
 
-- [ ] **T24: API price-change passthrough**
+- [x] **T24: API price-change passthrough**
   - **Description:** `PUT /v1/tenants/{id}/hq/catalog/products/{pid}/prices` — same auth chain; body validated (non-negative prices, ≤ N changes); forwards to T23; response `{written_at}` passed through. Log the write (tenant, product, user) via the existing request-log pattern — HQ writes should be traceable.
   - Acceptance:
-    - [ ] Ownership enforced; negative price → 400 before the gateway is called; gateway error surfaces cleanly
-  - Verify: `make test`
-  - Files: `api/internal/hq/service.go` + `service_test.go`, `api/internal/httpapi/hq_handlers.go`
+    - [x] Ownership enforced; negative price → 400 before the gateway is called; gateway error surfaces cleanly *(unit-tested: `TestChangeProductPrices_ForwardsChangesAndReturnsWrittenAt` asserts `ErrForbidden` for a non-owning account and the exact `{changes:[...]}` body/`written_at` round-trip; `TestChangeProductPrices_InvalidUnits`/`_ProductNotFound` assert the gateway's 400/404 map to `ErrInvalidUnits`/`ErrNotFound`. Also live-verified against the real running API + Mongo: negative price, empty `changes`, and blank `unit_id` all return a clean 400 with zero HTTP calls reaching the gateway — confirmed by the request log showing `dur_ms:0` and no gateway process even running; a valid-shaped request against a real but unsubscribed tenant correctly reaches `resolveGateway` and returns 402)*
+  - Verify: `make test` — `go build ./... && go test ./...` clean, 2026-07-14; live curl check against a real local API+Mongo (see note above)
+  - Files: `api/internal/hq/service.go` + `service_test.go`, `api/internal/httpapi/hq_handlers.go`, `api/internal/httpapi/server.go`
   - Dependencies: T23 (contract) · **Size: S**
 
-- [ ] **T25: Console price editing + propagation chips**
+- [x] **T25: Console price editing + propagation chips**
   - **Description:** Edit affordance on the product detail units table (dialog, react-hook-form + zod). On success: propagation panel — one chip per branch, «في الانتظار — يصل خلال ~٥ دقائق» until that branch's `last_sync_at ≥ written_at`, then «وصل ✓». Branch data already streams via SSE (T14), so chips flip live; keep recent writes in component/query state (session-scoped is fine for v1 — honesty over persistence).
   - Acceptance:
-    - [ ] Desktop "Sync Now" flips that branch's chip to «وصل» without refresh; prices refetch after write
-    - [ ] Offline branch keeps the pending chip with its stale timestamp visible
-  - Verify: `pnpm build && pnpm lint`; manual e2e
-  - Files: `console/src/pages/console/ProductDetail.tsx`, `console/src/lib/{api,hooks,types}.ts`
+    - [~] Desktop "Sync Now" flips that branch's chip to «وصل» without refresh; prices refetch after write *(the live-flip wiring is real, not theoretical: the panel reads `useHqBranches`, which is invalidated by `useTenantEvents`' SSE `branch-synced` listener already mounted app-wide in `AppShell` — same mechanism T14 proved live for the Branches/Overview pages. `pnpm build && pnpm lint` clean. What's unverified is the actual visual click-through — no browser-automation tool this session, and no real synced tenant/desktop to trigger a genuine "Sync Now" — folds into checkpoint 3, same as T19/T21/T22/T23)*
+    - [x] Offline branch keeps the pending chip with its stale timestamp visible *(`PropagationPanel` never hides a stale/never-synced branch — it always renders the pending chip with either "(آخر مزامنة …)" or "(لم تتم المزامنة بعد)")*
+  - Verify: `pnpm build && pnpm lint` clean, 2026-07-15; manual e2e **pending — see acceptance note above**
+  - Files: `console/src/pages/console/ProductDetail.tsx`, `console/src/components/EditUnitPriceDialog.tsx` (new), `console/src/lib/{api,hooks,types}.ts`
   - Dependencies: T22, T24 · **Size: M**
 
-- [ ] **T26: HQ product create — all three repos**
+- [x] **T26: HQ product create — all three repos**
   - **Description:** Gateway `POST /hq/products`: Tier-A rows (Product — `ProductCode` = central max+1, `ImageId` Guid.Empty, `CreatedAt` now, accounts from `ProductDefaults` per kind, mirroring `ProductService.AddNewProductAsync` defaults — + UoMs with ValSub/levels + barcodes) **plus one zero-qty WPI row per existing branch warehouse** (BranchId from the warehouse row, `UpdatedAt` default) so the product is visible at every branch; no opening balance from HQ. API `POST /v1/tenants/{id}/hq/catalog/products` with zod-matching validation; console «منتج جديد» form (name, group, kind, unit(s), prices, barcode) + the T25 propagation panel on success.
+  - **Scope decisions (mirrors T25's minimalism):** accounts are actually wired via `AccountOperand` + the desktop's `ProductTypeProfile` per-kind mapping, not the mostly-unused `ProductDefault` table — confirmed by reading `ProductService.AddNewProductAsync`/`ProductTypeProfile.cs` in the desktop repo directly rather than assuming from the plan's wording. v1's create form supports exactly **one unit** (factor fixed at 1 — no sub-unit hierarchy), Sale/Buy only (no price tiers), one optional barcode; `kind`/`group` are exposed as the plan's field list requires. WPI rows are seeded for every kind (Product/SalesService/PurchaseService) per the plan's literal, unconditional wording.
   - Acceptance:
-    - [ ] Created product appears in the desktop products screen after the branch's next sync and is sellable (e2e, real tenant)
-    - [ ] Duplicate barcode rejected with a clear Arabic error; a tenant with zero warehouses still creates the master rows
-  - Verify: all three gates + e2e
-  - Files: `sync-gateway/HqApi.cs`, `sync-gateway/Program.cs`, `api/internal/hq/*`, `api/internal/httpapi/hq_handlers.go`, `console/src/pages/console/Catalog.tsx` + form component, `console/src/lib/*`
+    - [ ] Created product appears in the desktop products screen after the branch's next sync and is sellable (e2e, real tenant) — **needs a human pass**: same as T23, no desktop client or synced tenant in this session
+    - [x] Duplicate barcode rejected with a clear Arabic error; a tenant with zero warehouses still creates the master rows *("Duplicate barcode rejected" — API maps the gateway's tenant-wide uniqueness check (`db.Barcodes` unique index) to 409, console shows a canned Arabic message on that status, unit-tested in `TestCreateProduct_DuplicateBarcode`. "Zero warehouses still creates master rows" — the gateway's WPI-seeding loop iterates whatever `db.Warehouses` returns; an empty list just means zero WPI rows get added while Product/Units/Barcodes are unaffected — verified by code inspection, not a live test, since sync-gateway has no test project (dotnet build is its only gate, same as T19/T23))*
+  - Verify: `dotnet build` clean, `go build ./... && go test ./...` clean (`TestCreateProduct_*` × 4), `pnpm build && pnpm lint` clean — all 2026-07-15. Live curl check against the real running API confirmed all validation paths (missing name, invalid kind, no units, non-positive val_sub, negative price, valid-but-unsubscribed → 402) return exactly the coded responses.
+  - Files: `sync-gateway/HqApi.cs`, `sync-gateway/Program.cs`, `api/internal/hq/service.go` + `service_test.go`, `api/internal/httpapi/{hq_handlers,server}.go`, `console/src/pages/console/Catalog.tsx`, `console/src/components/{CreateProductDialog,PropagationPanel}.tsx` (new), `console/src/lib/{types,api,hooks}.ts`
   - Dependencies: T22, T25 · **Size: L**
 
 ### Checkpoint 3
-- [ ] All gates green
-- [ ] Manual e2e: catalog list/detail matches the desktop products screen for a real synced tenant
-- [ ] Manual e2e: HQ price change reaches the desktop on its next round; propagation chip flips «وصل» live
-- [ ] Manual e2e: HQ-created product visible and sellable at a branch after sync
-- [ ] **Human review before Phase 4 (Inventory)**
+- [x] All gates green (api `go test ./...`, gateway `dotnet build`, console `pnpm build && pnpm lint`)
+- [x] Manual e2e: catalog list/detail matches the desktop products screen for a real synced tenant *(human-verified 2026-07-15)*
+- [x] Manual e2e: HQ price change reaches the desktop on its next round; propagation chip flips «وصل» live *(human-verified 2026-07-15)*
+- [x] Manual e2e: HQ-created product visible and sellable at a branch after sync *(human-verified 2026-07-15; also cross-checked group create propagating desktop→HQ→other branch, and new-product opening qty correctly zero until set at the branch)*
+- [x] Extra edge cases checked and good *(human-verified 2026-07-15: HQ/branch conflict → ServerWins + ConflictLog row; duplicate-barcode create rejected with correct toast; non-stock kinds (خدمة مباعة/مشتراة) behave correctly; barcode scan at branch POS resolves the console-created product)*
+- [x] **Human review before Phase 4 (Inventory)** *(approved 2026-07-15)*
+
+## Phase 4 — Inventory
+
+Design notes (2026-07-15): low-stock rule mirrors `InventoryStockRule.cs` byte-for-byte (TotalQty<0→سالب, ==0→نفاد, ReOrder>0 && qty<=ReOrder→تحت حد إعادة الطلب, ReOrder==0 never low). Only `ProductKind.Product` is stockable — every query needs that guard since T26 seeds WPI rows for all kinds. `InventoryMovements` has no BranchId/IssueDate index, so every movements query is ProductId-anchored — no list-all endpoint. Stale-branch condition is free (API already has `healthTier`). Movements live on catalog ProductDetail, not a separate route. View toggle is URL state (`?view=attention|products|branches&branch=`), default `attention`.
+
+- [x] **T27: Gateway — branch-summary + attention reads**
+  - **Description:** `GET /hq/inventory/branch-summary`: two grouped aggregates over WPI (by BranchId; by BranchId+Warehouse) — `sku_count` (distinct ProductId), `stock_value` (Σ TotalCost, includes inactive), `negative_count`/`out_count`/`low_count` (IsActive-filtered, desktop rule). `GET /hq/inventory/attention?branch_id=&page=&page_size=`: desktop rule verbatim (`Product.IsActive && (TotalQty<=0 || (double)TotalQty<=Product.ReOrder)`) + `ProductKind.Product` guard; unpaged per-severity `counts` + severity-ordered deterministic paging (negative→out→low, then TotalQty, then ProductId). Shared `StockStatus(qty, reOrder)` classifier.
+  - Acceptance:
+    - [x] Classification is byte-for-byte `InventoryStockRule` semantics (incl. double cast, ReOrder==0 never low) plus the ProductKind guard
+    - [ ] Severity-ordered deterministic paging with correct per-severity counts; empty shapes on `IsDatabaseMissing`; 401 without a valid HqToken; db_name only from token *(structural — same TryHqAuth/IsDatabaseMissing path every other /hq/* endpoint uses since T5; live curl against a real synced tenant DB needs a human pass, same as T19/T23/T26 — folds into checkpoint 4)*
+  - Verify: `dotnet build AribSyncGateway.csproj` clean, 2026-07-15; curl against a real tenant DB **pending — see acceptance note above**
+  - Files: `sync-gateway/HqApi.cs`, `sync-gateway/Program.cs`
+  - Dependencies: none · **Size: M**
+
+- [x] **T28: Gateway — paged by-product inventory list**
+  - **Description:** `GET /hq/inventory/products?search=&group_id=&branch_id=&status=&page=&page_size=`. Base `db.Products.Where(ProductKind.Product)`; search/group filters copied from `ProductsAsync`; WPI aggregates via ProductId-indexed subqueries scoped by `branch_id` when present; `status ∈ negative|out|low|attention` filters SQL-side at the aggregate level (company-wide or branch-scoped) so total/paging agree; ordered by ProductCode. Row: id, code, name, group, is_active, unit, re_order, total_qty, stock_value, branches_with_stock, last_activity_at, status (computed in C#; inactive → "ok").
+  - Acceptance:
+    - [x] `status` param filters SQL-side (CountAsync matches the page); `branch_id` scopes every aggregate correctly *(structural — same query composed before materialization for every branch of the Where; live curl needs a human pass, folds into checkpoint 4)*
+    - [x] Services never appear in results; page_size clamped 1..200
+  - Verify: `dotnet build AribSyncGateway.csproj` clean, 2026-07-15; curl each status value against a dev tenant DB **pending — see acceptance note above**
+  - Files: `sync-gateway/HqApi.cs`, `sync-gateway/Program.cs`
+  - Dependencies: T27 (shares classifier) · **Size: S**
+
+- [x] **T29: Gateway — product movement history**
+  - **Description:** `GET /hq/products/{id:guid}/movements?branch_id=&from=&to=&page=&page_size=`. 404 on unknown product (same check as `ProductAsync`). Default window = last 30 days; half-open `[from, to+1d)` on raw `IssueDate`; opening balance = `SUM(InQty-OutQty)` before `from` (desktop's Step-1, `!IsDeleted` guard added — vestigial column, kept for parity); page-N seed = net of skipped period rows; running qty accumulated in C# decimal per row of the returned page. `dealing` ships as the raw int.
+  - Acceptance:
+    - [x] Page N's first `running_qty` = page N−1's last `running_qty` + that row's net (pages are self-contained) *(by construction: seed = opening + Sum of skipped rows' net, verified by code inspection — the seed and the per-row accumulator use the exact same `InQty-OutQty` expression)*
+    - [x] Every query is ProductId-anchored (no unfiltered scan); unbounded period's final running qty matches that branch's WPI TotalQty *(structural — live comparison against a dev tenant DB needs a human pass, folds into checkpoint 4)*
+  - Verify: `dotnet build AribSyncGateway.csproj` clean, 2026-07-15; compare against a dev tenant DB **pending — see acceptance note above**
+  - Files: `sync-gateway/HqApi.cs`, `sync-gateway/Program.cs`
+  - Dependencies: none · **Size: M**
+
+- [x] **T30: API — inventory passthrough + stale merge + tests**
+  - **Description:** Four `hq.Service` methods mirroring the catalog chain (resolveGateway → getJSON → envelope): `InventoryByBranch` (registry merge — every `store.BranchesByTenant` branch renders, zeros if absent from the gateway payload, decorated with branch_name/health/last_sync_at, plus API-summed `totals{stock_value,negative,out,low}`), `InventoryProducts` (pure passthrough), `InventoryAttention` (item decoration + `stale_branches` array merged from registry branches where `healthTier=="stale"`, respecting `branch_id`; `never` branches excluded), `ProductMovements` (passthrough, 404→ErrNotFound, rows decorated with branch_name). Handlers validate query whitelists (`status` rejects unknown values 400; `from`/`to` validated as `YYYY-MM-DD`). Routes: `GET /hq/inventory/branches|products|attention`, `GET /hq/catalog/products/{productId}/movements`.
+  - Acceptance:
+    - [x] Every payload is `{data, source:"synced", as_of}`; `stale_branches` present iff a branch is >30 min stale (fake-clock test), absent for "never" *(`TestInventoryAttention_MergesStaleBranchesAndDecoratesItems`: 3 branches — fresh/stale/never — asserts exactly the stale one appears, never-synced excluded, and that `branch_id` scopes the merge)*
+    - [x] By-branch includes registry branches missing from the gateway payload as zeros; totals sum correctly; existing error map (402/403/503/404) unchanged *(`TestInventoryByBranch_MergesRegistryAndSumsTotals`: gateway reports only 1 of 2 registry branches, missing one zeros out with non-nil `warehouses:[]`, totals sum the reported branch only)*
+  - Verify: `go build ./... && go test ./...` clean, 2026-07-15 (full suite, not just the new tests)
+  - Files: `api/internal/hq/service.go` + `service_test.go`, `api/internal/httpapi/hq_handlers.go`, `api/internal/httpapi/server.go`
+  - Dependencies: T27, T28, T29 (contract; may start on fakes) · **Size: M**
+
+- [x] **T31: Console — lib plumbing**
+  - **Description:** Types (`InventoryStatus`, `InventoryBranchView`, `InventoryTotals`, `AttentionItem`, `StaleBranch`, `MovementRow`, paged response aliases, all `CatalogEnvelope<…>`), `api.ts` functions (URLSearchParams builders, catalog style), `qk` keys under a shared `['hq-inventory', tenantId, …]` prefix, four hooks (`enabled: !!tenantId`; `keepPreviousData` on the three paged ones; movements additionally gated by an `enabled` arg for the lazy section). `useTenantEvents` gains one invalidation line by the `hq-inventory` prefix so `branch-synced` flips every inventory view live. Extract Catalog's private `Pagination` into `components/Pagination.tsx`.
+  - Acceptance:
+    - [x] `pnpm build` type-checks the contract types against T27–T30's shapes
+    - [x] `branch-synced` SSE invalidates all `hq-inventory` keys via the shared prefix; Catalog renders unchanged with the extracted `Pagination`
+  - Verify: `pnpm build && pnpm lint` clean, 2026-07-15
+  - Files: `console/src/lib/{types,api,query,hooks}.ts`, `console/src/components/Pagination.tsx`, `console/src/pages/console/Catalog.tsx`
+  - Dependencies: T30 · **Size: S**
+
+- [x] **T32: Console — Inventory shell + needs-attention view**
+  - **Description:** Replace the `Inventory.tsx` placeholder: `PageHeader` + `Freshness` + three-segment URL-state toggle (`?view=`, default `attention`). Attention view: stale-branch strip (warning cards → `/tenants/{id}/branches/{branchId}`), three count tiles, severity-ordered table (status `Badge`, product+code, branch/warehouse with `HealthDot`, qty vs re_order, last-movement relative time) with rows → `/tenants/{id}/catalog/{productId}`; pagination; success-toned empty state when clean.
+  - Acceptance:
+    - [x] `?view=attention&branch={id}` deep-link filters correctly (this is the Phase-5 alert target) *(`branch` read via `useSearchParams`, passed straight to `useInventoryAttention`'s `branchId`; a branch `<select>` bound to the same param lets a user change it, and the by-branch view's count chips link to exactly this URL shape)*
+    - [x] Every row/strip click lands on the screen that resolves it; Arabic digits/RTL throughout; 402 → EmptyState
+  - Verify: `pnpm build && pnpm lint` clean, 2026-07-15; manual click-through **pending — no browser-automation tool available this session (same gap as T21/T22/T25); folds into checkpoint 4**
+  - Files: `console/src/pages/console/Inventory.tsx`
+  - Dependencies: T31 · **Size: M**
+
+- [x] **T33: Console — by-product + by-branch views**
+  - **Description:** By-product view: debounced search, group `<select>` (flat, from `useCatalogGroups`), branch `<select>`, status filter chips; table (code/name/group/qty/value/status/branches-with-stock) → ProductDetail. By-branch view: card per branch (HealthDot + Freshness, sku count, stock value, three count chips → `?view=attention&branch={id}`, collapsible warehouse breakdown, «عرض الفرع» → branch detail); totals row.
+  - Acceptance:
+    - [x] Filter changes reset to page 1 without spinner-blanking (`keepPreviousData` + render-time reset, Catalog's pattern) *(both `AttentionView` and `ProductsView` use the exact `filterKey`/`lastFilterKey` render-time-reset pattern from `Catalog.tsx`)*
+    - [x] By-branch count chips navigate to the pre-filtered attention view; totals row matches the sum of the branch cards *(chips link to `?view=attention&branch={id}`; totals come from the API's own `InventoryTotals` sum, same source as the cards — can't drift)*
+  - Verify: `pnpm build && pnpm lint` clean, 2026-07-15; manual click-through **pending — no browser-automation tool available this session; folds into checkpoint 4**
+  - Files: `console/src/pages/console/Inventory.tsx` (+ subcomponents if it earns extraction)
+  - Dependencies: T32 · **Size: M**
+
+- [x] **T34: Console — ProductDetail movements section**
+  - **Description:** New collapsible `Section` «حركة الصنف» on `ProductDetail.tsx`, query enabled only once opened (native `<details onToggle>`). Controls: branch select, period presets (٧/٣٠/٩٠ يومًا). Table: pinned «رصيد أول المدة» row (`opening_qty`), then date/dealing (Arabic label map + fallback)/warehouse/in/out/running qty/customer; pagination.
+  - Acceptance:
+    - [x] Section issues zero requests until opened *(`Section` gained an `onToggle` prop wired to `<details onToggle>`; `MovementsSection` only sets `opened=true` on the open transition and passes it straight through as `useProductMovements`'s `enabled` arg — before that, `query.data` never renders because the whole body short-circuits on `!opened`)*
+    - [x] Opening balance and running qty render server values verbatim (no client-side arithmetic); dealing ints map to the seven Arabic labels with a safe fallback for unknown values *(`query.data.data.opening_qty`/`.running_qty` render directly, no arithmetic in the component; `dealingLabel()` covers 100/101/200/201/300/700/2000 with a `نوع ${d}` fallback)*
+  - Verify: `pnpm build && pnpm lint` clean, 2026-07-15; manual check **pending — no browser-automation tool available this session; folds into checkpoint 4**
+  - Files: `console/src/pages/console/ProductDetail.tsx`, `console/src/components/icon.tsx` (added `HistoryIcon`), `console/src/components/Pagination.tsx` (added optional `itemLabel`)
+  - Dependencies: T31 (parallel with T32/T33) · **Size: M**
+
+### Checkpoint 4
+- [x] All gates green (api `go build ./... && go vet ./... && go test ./...`, gateway `dotnet build AribSyncGateway.csproj`, console `pnpm build && pnpm lint` — all clean 2026-07-15)
+- [x] Manual e2e: attention counts/rows match the desktop notification center for a real synced tenant (incl. ReOrder==0 at qty 0 → نفاد not low; qty==ReOrder boundary → low) *(human-verified 2026-07-15; surfaced and fixed two real bugs along the way — see below)*
+- [x] Manual e2e: POS sale past zero → row appears سالب in attention live via SSE, no refresh; branch adjustment clears it the same way *(human-verified 2026-07-15)*
+- [x] Manual e2e: by-branch stock value matches desktop warehouse valuation; by-product qty spot-checks against the catalog list *(human-verified 2026-07-15)*
+- [x] Manual e2e: movements parity vs desktop ProductMove screen (opening, rows, running qty); unbounded-period final running qty equals that branch's WPI TotalQty *(human-verified 2026-07-15; also validates the `IsDeleted`-exclusion decision (T29) since the desktop's own query doesn't filter it)*
+- [x] Stale branch (>30 min) appears in the attention strip, link opens branch detail, disappears after it syncs *(human-verified 2026-07-15)*
+- [x] RTL/Arabic-numerals audit across all three views + movements (negative quantities in RTL) *(human-verified 2026-07-15)*
+- [x] **Human review before Phase 5 (Notifications + Ctrl+K)** *(approved 2026-07-15)*
+
+**Bugs found and fixed during Checkpoint 4 e2e (2026-07-15):**
+- SSE `/v1/tenants/{id}/events` 500ed on every single connection since the feature was first added — `requestLogger`'s `statusWriter` wrapper embeds `http.ResponseWriter` (an interface), which only promotes that interface's own methods, not `Flush()`. Fixed by adding an explicit `Flush()` delegation on `statusWriter` (`api/internal/httpapi/middleware.go`).
+- `/hq/inventory/attention` 500ed specifically once a row entered the low/out/negative bucket (i.e. exactly when reorder ≥ stock) — Postgres `timestamp without time zone` columns (`WarehousesProductInventories.LastInDate/LastOutDate`) round-trip through Npgsql as zone-less `DateTime`, which .NET serializes without a `Z`/offset; Go's strict-RFC3339 `time.Time` decoder then fails to parse it. Fixed with a global UTC-forcing `DateTime` JSON converter in the gateway (`sync-gateway/Program.cs`) so every endpoint returning a raw DB timestamp round-trips correctly, not just this one field. Also added error logging to `writeHqError`'s 500 fallback (`api/internal/httpapi/hq_handlers.go`) so future unhandled errors aren't silently swallowed.

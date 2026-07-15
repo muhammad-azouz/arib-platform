@@ -75,23 +75,54 @@ Spec: `tasks/spec-console.md`. This plan details **Slice 0 (HQ read path + fresh
 - **HQ product-create must seed inventory rows:** the desktop's product browser queries `WarehousesProductInventories` (`WarehousesAndProductsViewModel.FetchProduct`), so a product without per-branch WPI rows is invisible at branches. HQ create therefore writes Tier-A rows (Product + UoMs + Barcodes) **plus** one zero-qty WPI row per branch warehouse (Tier-B rows carry each branch's BranchId and sync down to their owners). No opening balance from HQ in v1.
 
 - [ ] T19: Gateway catalog reads — `GET /hq/groups`, `GET /hq/products` (paged + search + group filter), `GET /hq/products/{id}` (UoM price tiers, barcodes, per-branch availability)
-- [ ] T20: API catalog passthrough `GET /v1/tenants/{id}/hq/catalog/*` with freshness envelope + per-branch health on availability rows
-- [ ] T21: Console Catalog page — groups tree + products table (search, pagination)
-- [ ] T22: Console product detail — units/prices/barcodes + per-branch availability with freshness
-- [ ] T23: Gateway first HQ write — `PUT /hq/products/{id}/prices` (UoM price updates), propagation proven e2e
-- [ ] T24: API write passthrough `PUT /v1/tenants/{id}/hq/catalog/products/{pid}/prices`
-- [ ] T25: Console price editing + per-branch propagation chips (flip live via SSE)
-- [ ] T26: HQ product create — gateway `POST /hq/products` (+ WPI seeding), API passthrough, console form
+- [x] T20: API catalog passthrough `GET /v1/tenants/{id}/hq/catalog/*` with freshness envelope + per-branch health on availability rows
+- [x] T21: Console Catalog page — groups tree + products table (search, pagination)
+- [x] T22: Console product detail — units/prices/barcodes + per-branch availability with freshness
+- [~] T23: Gateway first HQ write — `PUT /hq/products/{id}/prices` (UoM price updates); code done, `dotnet build` clean; propagation e2e against a real desktop sync still needs a human pass
+- [x] T24: API write passthrough `PUT /v1/tenants/{id}/hq/catalog/products/{pid}/prices`
+- [x] T25: Console price editing + per-branch propagation chips (flip live via SSE); build/lint clean — real click-through/desktop-sync visual check folds into checkpoint 3
+- [x] T26: HQ product create — gateway `POST /hq/products` (+ WPI seeding), API passthrough, console form; all gates green — real desktop-sync visibility/sellability check needs a human pass
 
 ### Checkpoint 3 (slice 3 shipped)
-- [ ] All gates green
-- [ ] Manual e2e: catalog list/detail numbers match the desktop's own products screen for a real synced tenant
-- [ ] Manual e2e: HQ price change → desktop shows the new price after its next sync round; propagation chip flips «وصل» without refresh
-- [ ] Manual e2e: HQ-created product appears in the desktop products screen after sync and is sellable
-- [ ] Human review before Phase 4 (Inventory)
+- [x] All gates green (api `go test ./...`, gateway `dotnet build`, console `pnpm build && pnpm lint`)
+- [x] Manual e2e: catalog list/detail numbers match the desktop's own products screen for a real synced tenant *(human-verified 2026-07-15)*
+- [x] Manual e2e: HQ price change → desktop shows the new price after its next sync round; propagation chip flips «وصل» without refresh *(human-verified 2026-07-15)*
+- [x] Manual e2e: HQ-created product appears in the desktop products screen after sync and is sellable *(human-verified 2026-07-15)*
+- [x] Extra edge cases checked and good *(human-verified 2026-07-15: HQ/branch conflict → ServerWins + ConflictLog; duplicate barcode rejected; non-stock kinds; barcode scan at POS)*
+- [x] Human review before Phase 4 (Inventory) *(approved 2026-07-15)*
+
+### Phase 4 — Inventory (slice 4)
+
+**Design notes (2026-07-15):**
+- **Low-stock rule mirrors the desktop exactly** (`AribONE.Data/Services/Notifications/Rules/InventoryStockRule.cs`): rows where `Product.IsActive && (TotalQty <= 0 || (double)TotalQty <= Product.ReOrder)`; classify `<0` → سالب, `==0` → نفاد, else `ReOrder>0 && qty<=ReOrder` → تحت حد إعادة الطلب. `ReOrder==0` never low. No other threshold exists anywhere in the schema.
+- **Only `ProductKind.Product` is stockable** — and T26's HQ create seeds zero-qty WPI rows for every kind, so every inventory query needs an explicit `ProductKind == Product` guard (the desktop rule gets away without it only because the desktop never creates WPI rows for services).
+- **Movements must be ProductId-anchored**: `InventoryMovements` is indexed only on ProductId/WarehouseId/CustomerId — no BranchId or IssueDate index — so no "list all movements" endpoint exists; every movements read requires a product.
+- **Stale-branch detection is free**: the Go API already computes `healthTier` (ok/lagging/stale/never) per branch from `last_sync_at` — the fourth needs-attention condition needs zero gateway work, just an API-side merge.
+- **Movements drill-in lives on the catalog ProductDetail page**, not a separate route — attention/by-product rows already deep-link there; it's the single "investigate this product" surface. Running qty is computed gateway-side in decimal so every page is self-contained (opening balance + net of skipped rows as the page-N seed).
+- **View toggle lives in the URL** (`?view=attention|products|branches&branch=`), default `attention` (spec: problems surface unprompted) — this makes Phase 5's alert deep-links free.
+
+- [x] T27: Gateway — `/hq/inventory/branch-summary` + `/hq/inventory/attention` (shared `StockStatus` classifier + stockable-kind guard)
+- [x] T28: Gateway — `/hq/inventory/products` paged by-product list (search/group/branch/status filters)
+- [x] T29: Gateway — `/hq/products/{id}/movements` (opening balance, running qty, ProductId-anchored, paged)
+- [x] T30: API — four `hq.Service` passthrough methods + handlers + routes (registry merge for by-branch, stale-branch merge for attention, table-driven tests)
+- [x] T31: Console — lib plumbing (types/api/query/hooks under `hq-inventory` key prefix), shared `Pagination` extraction, SSE invalidation
+- [x] T32: Console — Inventory shell + needs-attention view (default view, URL-state toggle)
+- [x] T33: Console — by-product + by-branch views
+- [x] T34: Console — ProductDetail movements section (lazy, collapsible)
+
+### Checkpoint 4 (slice 4 shipped)
+- [x] All gates green (api `go build ./... && go vet ./... && go test ./...`, gateway `dotnet build`, console `pnpm build && pnpm lint` — 2026-07-15)
+- [x] Manual e2e: attention counts/rows match the desktop notification center for a real synced tenant (incl. ReOrder==0 and qty==ReOrder boundary cases) *(human-verified 2026-07-15; two real bugs found and fixed during this pass, see below)*
+- [x] Manual e2e: POS sale past zero → row appears سالب in attention live (SSE, no refresh); branch adjustment clears it the same way *(human-verified 2026-07-15)*
+- [x] Manual e2e: movements parity vs desktop ProductMove screen (opening balance, rows, running qty); unbounded-period final running qty equals that branch's WPI TotalQty *(human-verified 2026-07-15)*
+- [x] Stale branch (>30 min) appears in the attention strip with a working link; disappears after sync *(human-verified 2026-07-15)*
+- [x] Human review before Phase 5 (Notifications + Ctrl+K) *(approved 2026-07-15)*
+
+Bugs found and fixed during this checkpoint's e2e pass (2026-07-15):
+- SSE `/v1/tenants/{id}/events` had 500ed on every connection since the feature was first built — `requestLogger`'s `statusWriter` wraps `http.ResponseWriter` by embedding the interface, which promotes only that interface's own methods, not `Flush()`. Fixed with an explicit `Flush()` delegation (`api/internal/httpapi/middleware.go`).
+- `/hq/inventory/attention` 500ed the instant a row entered the low/out/negative bucket — Postgres `timestamp without time zone` values for `LastInDate`/`LastOutDate` round-trip through Npgsql/System.Text.Json without a `Z`/offset, and Go's strict-RFC3339 decoder rejects that. Fixed with a global UTC-forcing `DateTime` JSON converter in the gateway (`sync-gateway/Program.cs`), plus error logging on `writeHqError`'s 500 fallback (`api/internal/httpapi/hq_handlers.go`) so this class of bug surfaces immediately next time.
 
 ### Later phases (outline only — broken down when reached)
-- **Phase 4 — Inventory (slice 4):** three views over WarehousesProductInventories + movements; "needs attention" query.
 - **Phase 5 — Notifications + Ctrl+K (slice 5):** alert derivation (stale sync, low stock, ConflictLog), deep links, command palette.
 - **Phase 6 — Reports (slice 6):** question-organized report pages. **Gated on open question 2** (aggregate cost).
 - **Phase 7 — Live tier (SignalR):** separate spec, per the main spec's slice 7.
