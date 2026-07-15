@@ -141,13 +141,15 @@ Bugs found and fixed during this checkpoint's e2e pass (2026-07-15):
 - [x] T41: Console — Ctrl+K command palette *(platform, 2026-07-15)*
 
 ### Checkpoint 5 (slice 5 shipped)
-- [ ] All gates green (api `go build ./... && go vet ./... && go test ./...`, gateway `dotnet build`, console `pnpm build && pnpm lint`)
-- [ ] Manual e2e: force a real conflict (HQ price change + branch edit of the same unit before its sync) → ServerWins at the branch, conflict appears in bell + review page **without refresh** (SSE), kept/overridden columns correctly oriented, product deep-link opens the right product, ack clears the badge everywhere
-- [ ] Manual e2e: low/out/negative stock and stale-branch alerts show in the bell with working deep links (attention view / branch detail); alerts clear when conditions clear
-- [ ] Manual e2e: Ctrl+K — navigate to a page, jump to a branch, find a product by name/code/barcode; keyboard-only round trip; RTL rendering correct
-- [ ] Existing ConflictLog rows from before this phase (no AcknowledgedAt column) survive the DDL upgrade and list correctly
-- [ ] RTL/Arabic-numerals audit (badge counts, palette, review page)
-- [ ] Human review before Phase 6 (Reports — gated on open question 2)
+- [x] All gates green (api `go build ./... && go vet ./... && go test ./...`, gateway `dotnet build`, console `pnpm build && pnpm lint`)
+- [x] Manual e2e: force a real conflict (HQ price change + branch edit of the same unit before its sync) → ServerWins at the branch, conflict appears in bell + review page **without refresh** (SSE), kept/overridden columns correctly oriented, product deep-link opens the right product, ack clears the badge everywhere
+- [x] Manual e2e: low/out/negative stock and stale-branch alerts show in the bell with working deep links (attention view / branch detail); alerts clear when conditions clear
+- [x] Manual e2e: Ctrl+K — navigate to a page, jump to a branch, find a product by name/code/barcode; keyboard-only round trip; RTL rendering correct
+- [x] Existing ConflictLog rows from before this phase (no AcknowledgedAt column) survive the DDL upgrade and list correctly
+- [x] RTL/Arabic-numerals audit (badge counts, palette, review page)
+- [x] Human review before Phase 6 (Reports — gated on open question 2)
+
+Bugs found and fixed during this checkpoint's e2e pass (2026-07-15): desktop `UpsertAccountViewModel.SaveAccount` re-stamped `Account.CreatedAt` to now on every edit, diverging from central and flooding `ConflictLog` with spurious `Accounts` conflicts — fixed by preserving the original `CreatedAt` on the edit path. Separately, ~1508 pre-existing `ConflictLog` rows were a harmless DMS artifact (a branch's first sync re-uploads all pre-existing local rows as "untracked," including the deterministic seed `Accounts` rows already on central, producing an identical-row `RemoteExistsLocalExists` "conflict") — fixed in `sync-gateway/ConflictLog.cs` by skipping the log write when `LocalRow`/`RemoteRow` are field-for-field equal.
 
 ### Later phases (outline only — broken down when reached)
 - **Phase 6 — Reports (slice 6):** question-organized report pages. **Gated on open question 2** (aggregate cost).

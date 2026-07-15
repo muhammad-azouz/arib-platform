@@ -426,10 +426,12 @@ Design notes (2026-07-15): only ConflictLog needs new backend surface — stale/
   - Dependencies: T37 (product search hook already exists — only ordering with the shell changes) · **Size: M**
 
 ### Checkpoint 5
-- [ ] All gates green (api `go build ./... && go vet ./... && go test ./...`, gateway `dotnet build AribSyncGateway.csproj`, console `pnpm build && pnpm lint`)
-- [ ] Manual e2e: forced real conflict (HQ price change + branch edit before its sync) → ServerWins at the branch; conflict appears in bell + review page live via SSE; kept/overridden orientation correct; product deep-link works; ack clears everywhere
-- [ ] Manual e2e: low/out/negative and stale alerts in the bell deep-link to attention view / branch detail and clear when resolved
-- [ ] Manual e2e: Ctrl+K keyboard-only navigation (page, branch, product by name/code/barcode); RTL correct
-- [ ] Pre-existing ConflictLog rows survive the AcknowledgedAt DDL upgrade and list correctly
-- [ ] RTL/Arabic-numerals audit (badge, palette, review page)
-- [ ] **Human review before Phase 6 (Reports)**
+- [x] All gates green (api `go build ./... && go vet ./... && go test ./...`, gateway `dotnet build AribSyncGateway.csproj`, console `pnpm build && pnpm lint` — all clean 2026-07-15)
+- [x] Manual e2e: forced real conflict → ServerWins at the branch; conflict appears in bell + review page live via SSE; kept/overridden orientation correct; product deep-link works; ack clears everywhere *(human-verified 2026-07-15)*
+- [x] Manual e2e: low/out/negative and stale alerts in the bell deep-link to attention view / branch detail and clear when resolved *(human-verified 2026-07-15)*
+- [x] Manual e2e: Ctrl+K keyboard-only navigation (page, branch, product by name/code/barcode); RTL correct *(human-verified 2026-07-15)*
+- [x] Pre-existing ConflictLog rows survive the AcknowledgedAt DDL upgrade and list correctly *(human-verified 2026-07-15)*
+- [x] RTL/Arabic-numerals audit (badge, palette, review page) *(human-verified 2026-07-15)*
+- [x] **Human review before Phase 6 (Reports)** *(approved 2026-07-15)*
+
+**Bugs found and fixed during Checkpoint 5 e2e (2026-07-15):** desktop `UpsertAccountViewModel.SaveAccount` re-stamped `Account.CreatedAt = DateTime.Now` on every edit (the entity's property initializer firing on the reconstructed object), diverging from central and flooding `ConflictLog` with spurious `Accounts` conflicts — fixed by preserving the original `CreatedAt` on the edit path. Separately, ~1508 pre-existing `ConflictLog` rows turned out to be a harmless DMS artifact: a branch's first sync re-uploads all pre-existing local rows as "untracked" (`desktop/Services/Sync/SyncService.cs`'s E2 initial-upload step), including the ~252 deterministic seed `Accounts` rows already present on central — DMS reports the PK collision as `RemoteExistsLocalExists` even when every column is byte-identical. Fixed in `sync-gateway/ConflictLog.cs`: `LogAsync` now skips writing a row when `LocalRow`/`RemoteRow` are field-for-field equal, since there's nothing to review.
