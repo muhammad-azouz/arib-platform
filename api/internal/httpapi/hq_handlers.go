@@ -760,6 +760,286 @@ func (s *Server) handleHqCustomersImport(w http.ResponseWriter, r *http.Request)
 	writeJSON(w, http.StatusOK, result)
 }
 
+// --- Suppliers (slice 8): mirrors every Customer handler above verbatim,
+// hitting the hq.*Supplier* service methods instead of hq.*Customer*. There
+// is deliberately no handleHqSupplierGroups — groups aren't type-scoped in
+// the schema (see hq.CustomerGroups' doc comment), so the console reuses
+// handleHqCustomerGroups' /hq/customer-groups route for suppliers too. ---
+
+func (s *Server) handleHqSuppliers(w http.ResponseWriter, r *http.Request) {
+	if v := r.URL.Query().Get("active"); v != "" && v != "true" && v != "false" {
+		writeErr(w, http.StatusBadRequest, "active must be true or false")
+		return
+	}
+	if v := r.URL.Query().Get("debt"); v != "" && !validDebtFilters[v] {
+		writeErr(w, http.StatusBadRequest, "invalid debt filter")
+		return
+	}
+	c := claimsFrom(r.Context())
+	params := url.Values{}
+	for _, k := range []string{"search", "branch_id", "group_id", "active", "debt", "page", "page_size"} {
+		if v := r.URL.Query().Get(k); v != "" {
+			params.Set(k, v)
+		}
+	}
+	env, err := s.hq.Suppliers(r.Context(), c.Subject, chi.URLParam(r, "id"), params)
+	if err != nil {
+		s.writeHqError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, env)
+}
+
+func (s *Server) handleHqSupplierDetail(w http.ResponseWriter, r *http.Request) {
+	c := claimsFrom(r.Context())
+	env, err := s.hq.SupplierDetail(r.Context(), c.Subject, chi.URLParam(r, "id"), chi.URLParam(r, "supplierId"))
+	if err != nil {
+		s.writeHqError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, env)
+}
+
+func (s *Server) handleHqSupplierPurchases(w http.ResponseWriter, r *http.Request) {
+	c := claimsFrom(r.Context())
+	params := url.Values{}
+	for _, k := range []string{"page", "page_size"} {
+		if v := r.URL.Query().Get(k); v != "" {
+			params.Set(k, v)
+		}
+	}
+	env, err := s.hq.SupplierPurchases(r.Context(), c.Subject, chi.URLParam(r, "id"), chi.URLParam(r, "supplierId"), params)
+	if err != nil {
+		s.writeHqError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, env)
+}
+
+func (s *Server) handleHqSupplierLedger(w http.ResponseWriter, r *http.Request) {
+	c := claimsFrom(r.Context())
+	params := url.Values{}
+	for _, k := range []string{"page", "page_size"} {
+		if v := r.URL.Query().Get(k); v != "" {
+			params.Set(k, v)
+		}
+	}
+	env, err := s.hq.SupplierLedger(r.Context(), c.Subject, chi.URLParam(r, "id"), chi.URLParam(r, "supplierId"), params)
+	if err != nil {
+		s.writeHqError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, env)
+}
+
+func (s *Server) handleHqSupplierInsights(w http.ResponseWriter, r *http.Request) {
+	if !validReportPeriod(w, r) {
+		return
+	}
+	c := claimsFrom(r.Context())
+	params := url.Values{}
+	for _, k := range []string{"branch_id", "from", "to"} {
+		if v := r.URL.Query().Get(k); v != "" {
+			params.Set(k, v)
+		}
+	}
+	env, err := s.hq.SupplierInsights(r.Context(), c.Subject, chi.URLParam(r, "id"), params)
+	if err != nil {
+		s.writeHqError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, env)
+}
+
+// handleHqSupplierCreate mirrors handleHqCustomerCreate's validation
+// exactly; branch_id/group_id existence can only be checked by the gateway.
+func (s *Server) handleHqSupplierCreate(w http.ResponseWriter, r *http.Request) {
+	c := claimsFrom(r.Context())
+	var req struct {
+		Name        string   `json:"name"`
+		Phone1      string   `json:"phone1"`
+		Phone2      *string  `json:"phone2"`
+		Phone3      *string  `json:"phone3"`
+		Address     *string  `json:"address"`
+		Note        *string  `json:"note"`
+		GroupID     *string  `json:"group_id"`
+		CreditLimit *float64 `json:"credit_limit"`
+		BranchID    string   `json:"branch_id"`
+	}
+	if err := decode(r, &req); err != nil {
+		writeErr(w, http.StatusBadRequest, "invalid body")
+		return
+	}
+
+	name := strings.TrimSpace(req.Name)
+	if name == "" || len(name) > 100 {
+		writeErr(w, http.StatusBadRequest, "name is required and must be at most 100 characters")
+		return
+	}
+	phone1 := strings.TrimSpace(req.Phone1)
+	if phone1 == "" || len(phone1) > 12 {
+		writeErr(w, http.StatusBadRequest, "phone1 is required and must be at most 12 characters")
+		return
+	}
+	if strings.TrimSpace(req.BranchID) == "" {
+		writeErr(w, http.StatusBadRequest, "branch_id is required")
+		return
+	}
+	if req.CreditLimit != nil && *req.CreditLimit < 0 {
+		writeErr(w, http.StatusBadRequest, "credit_limit must not be negative")
+		return
+	}
+
+	tenantID := chi.URLParam(r, "id")
+	result, err := s.hq.CreateSupplier(r.Context(), c.Subject, tenantID, hq.NewSupplier{
+		Name: name, Phone1: phone1, Phone2: req.Phone2, Phone3: req.Phone3,
+		Address: req.Address, Note: req.Note, GroupID: req.GroupID,
+		CreditLimit: req.CreditLimit, BranchID: req.BranchID,
+	})
+	if err != nil {
+		s.writeHqError(w, err)
+		return
+	}
+	s.log.Info("hq.suppliers_create",
+		"tenant_id", tenantID, "supplier_id", result.ID,
+		"account_id", c.Subject, "email", c.Email)
+	writeJSON(w, http.StatusCreated, result)
+}
+
+// handleHqSupplierUpdate mirrors handleHqCustomerUpdate: a flat partial
+// update, "deactivate" is just is_active:false through this same route.
+func (s *Server) handleHqSupplierUpdate(w http.ResponseWriter, r *http.Request) {
+	c := claimsFrom(r.Context())
+	var req struct {
+		Name        *string  `json:"name"`
+		Phone1      *string  `json:"phone1"`
+		Phone2      *string  `json:"phone2"`
+		Phone3      *string  `json:"phone3"`
+		Address     *string  `json:"address"`
+		Note        *string  `json:"note"`
+		GroupID     *string  `json:"group_id"`
+		CreditLimit *float64 `json:"credit_limit"`
+		IsActive    *bool    `json:"is_active"`
+	}
+	if err := decode(r, &req); err != nil {
+		writeErr(w, http.StatusBadRequest, "invalid body")
+		return
+	}
+	if req.Name != nil {
+		n := strings.TrimSpace(*req.Name)
+		if n == "" || len(n) > 100 {
+			writeErr(w, http.StatusBadRequest, "name must be 1-100 characters")
+			return
+		}
+		req.Name = &n
+	}
+	if req.Phone1 != nil {
+		p := strings.TrimSpace(*req.Phone1)
+		if p == "" || len(p) > 12 {
+			writeErr(w, http.StatusBadRequest, "phone1 must be 1-12 characters")
+			return
+		}
+		req.Phone1 = &p
+	}
+	if req.CreditLimit != nil && *req.CreditLimit < 0 {
+		writeErr(w, http.StatusBadRequest, "credit_limit must not be negative")
+		return
+	}
+
+	tenantID, supplierID := chi.URLParam(r, "id"), chi.URLParam(r, "supplierId")
+	result, err := s.hq.UpdateSupplier(r.Context(), c.Subject, tenantID, supplierID, hq.SupplierEdit{
+		Name: req.Name, Phone1: req.Phone1, Phone2: req.Phone2, Phone3: req.Phone3,
+		Address: req.Address, Note: req.Note, GroupID: req.GroupID,
+		CreditLimit: req.CreditLimit, IsActive: req.IsActive,
+	})
+	if err != nil {
+		s.writeHqError(w, err)
+		return
+	}
+	s.log.Info("hq.suppliers_update",
+		"tenant_id", tenantID, "supplier_id", supplierID,
+		"account_id", c.Subject, "email", c.Email)
+	writeJSON(w, http.StatusOK, result)
+}
+
+// maxBulkSupplierIDs mirrors the gateway's own 500-id cap, same as
+// maxBulkCustomerIDs (both prefixes hit the same gateway BulkUpdateCustomersAsync
+// method, capped once there).
+const maxBulkSupplierIDs = 500
+
+func (s *Server) handleHqSuppliersBulkUpdate(w http.ResponseWriter, r *http.Request) {
+	c := claimsFrom(r.Context())
+	var req struct {
+		IDs       []string `json:"ids"`
+		GroupID   *string  `json:"group_id"`
+		PriceTier *int     `json:"price_tier"`
+	}
+	if err := decode(r, &req); err != nil {
+		writeErr(w, http.StatusBadRequest, "invalid body")
+		return
+	}
+	if len(req.IDs) == 0 || len(req.IDs) > maxBulkSupplierIDs {
+		writeErr(w, http.StatusBadRequest, fmt.Sprintf("ids must have between 1 and %d entries", maxBulkSupplierIDs))
+		return
+	}
+	if req.GroupID == nil && req.PriceTier == nil {
+		writeErr(w, http.StatusBadRequest, "group_id or price_tier is required")
+		return
+	}
+
+	tenantID := chi.URLParam(r, "id")
+	result, err := s.hq.BulkUpdateSuppliers(r.Context(), c.Subject, tenantID, req.IDs, req.GroupID, req.PriceTier)
+	if err != nil {
+		s.writeHqError(w, err)
+		return
+	}
+	s.log.Info("hq.suppliers_bulk_update",
+		"tenant_id", tenantID, "account_id", c.Subject, "email", c.Email, "updated", result.Updated)
+	writeJSON(w, http.StatusOK, result)
+}
+
+func (s *Server) handleHqSuppliersExport(w http.ResponseWriter, r *http.Request) {
+	c := claimsFrom(r.Context())
+	if v := r.URL.Query().Get("active"); v != "" && v != "true" && v != "false" {
+		writeErr(w, http.StatusBadRequest, "active must be true or false")
+		return
+	}
+	if v := r.URL.Query().Get("debt"); v != "" && !validDebtFilters[v] {
+		writeErr(w, http.StatusBadRequest, "invalid debt filter")
+		return
+	}
+	params := url.Values{}
+	for _, k := range []string{"search", "branch_id", "group_id", "active", "debt"} {
+		if v := r.URL.Query().Get(k); v != "" {
+			params.Set(k, v)
+		}
+	}
+	if err := s.hq.ExportSuppliers(r.Context(), c.Subject, chi.URLParam(r, "id"), params, w); err != nil {
+		s.writeHqError(w, err)
+		return
+	}
+}
+
+func (s *Server) handleHqSuppliersImport(w http.ResponseWriter, r *http.Request) {
+	c := claimsFrom(r.Context())
+	if !strings.HasPrefix(r.Header.Get("Content-Type"), "multipart/form-data") {
+		writeErr(w, http.StatusBadRequest, "multipart form with a file field is required")
+		return
+	}
+	body := http.MaxBytesReader(w, r.Body, maxImportBytes)
+
+	tenantID := chi.URLParam(r, "id")
+	result, err := s.hq.ImportSuppliers(r.Context(), c.Subject, tenantID, r.Header.Get("Content-Type"), body)
+	if err != nil {
+		s.writeHqError(w, err)
+		return
+	}
+	s.log.Info("hq.suppliers_import",
+		"tenant_id", tenantID, "account_id", c.Subject, "email", c.Email,
+		"created", result.Created, "errors", len(result.Errors))
+	writeJSON(w, http.StatusOK, result)
+}
+
 func (s *Server) handleTenantEvents(w http.ResponseWriter, r *http.Request) {
 	token := bearer(r)
 	if token == "" {

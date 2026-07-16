@@ -172,6 +172,19 @@ func (s *Server) Router() http.Handler {
 					r.Put("/hq/customers/{customerId}", s.handleHqCustomerUpdate)
 					r.Get("/hq/customers/{customerId}/purchases", s.handleHqCustomerPurchases)
 					r.Get("/hq/customers/{customerId}/ledger", s.handleHqCustomerLedger)
+					// Suppliers (slice 8): same route shape as Customers above, one
+					// prefix over. /hq/customer-groups is reused for suppliers too —
+					// groups aren't type-scoped in the schema, no /hq/supplier-groups.
+					r.Get("/hq/suppliers", s.handleHqSuppliers)
+					r.Post("/hq/suppliers", s.handleHqSupplierCreate)
+					r.Put("/hq/suppliers/bulk", s.handleHqSuppliersBulkUpdate)
+					r.Get("/hq/suppliers/export", s.handleHqSuppliersExport)
+					r.Post("/hq/suppliers/import", s.handleHqSuppliersImport)
+					r.Get("/hq/suppliers/insights", s.handleHqSupplierInsights)
+					r.Get("/hq/suppliers/{supplierId}", s.handleHqSupplierDetail)
+					r.Put("/hq/suppliers/{supplierId}", s.handleHqSupplierUpdate)
+					r.Get("/hq/suppliers/{supplierId}/purchases", s.handleHqSupplierPurchases)
+					r.Get("/hq/suppliers/{supplierId}/ledger", s.handleHqSupplierLedger)
 				})
 			})
 		})

@@ -2296,3 +2296,670 @@ func (s *Service) ImportCustomers(ctx context.Context, accountID, tenantID, cont
 	}
 	return &result, nil
 }
+
+// --- Suppliers (slice 8): mirrors every Customer method above verbatim,
+// hitting /hq/suppliers... instead of /hq/customers... — same underlying
+// Customer table/entity on the gateway (Type == Supplier instead of
+// Customer, see HqApi.cs), no separate Supplier schema. CustomerGroups
+// above is reused as-is for suppliers too: groups aren't type-scoped in the
+// schema (the desktop shares one CustomerGroup picker for both customers
+// and suppliers), so there is no SupplierGroups method. InvalidCustomerInputError
+// and ErrMissingAccountOperand are likewise reused as-is below — both are
+// structurally generic (verbatim gateway-message passthrough / generic 500
+// mapping), not worth a Supplier-specific duplicate. ---
+
+// SupplierRow is one row of the paged supplier list, decorated with its
+// owning branch's registry name/health. Balance is always the gateway's
+// recomputed ledger sum (D10), never a stored column.
+type SupplierRow struct {
+	ID             string     `json:"id"`
+	Num            int        `json:"num"`
+	Name           string     `json:"name"`
+	BranchID       string     `json:"branch_id"`
+	BranchName     string     `json:"branch_name"`
+	Health         string     `json:"health"`
+	GroupID        *string    `json:"group_id,omitempty"`
+	GroupName      *string    `json:"group_name,omitempty"`
+	Phone1         string     `json:"phone1"`
+	IsActive       bool       `json:"is_active"`
+	Balance        float64    `json:"balance"`
+	CreditLimit    float64    `json:"credit_limit"`
+	IsCredit       bool       `json:"is_credit"`
+	LastPurchaseAt *time.Time `json:"last_purchase_at,omitempty"`
+}
+
+// SuppliersPage is the paged supplier-list payload.
+type SuppliersPage struct {
+	Total    int           `json:"total"`
+	Page     int           `json:"page"`
+	PageSize int           `json:"page_size"`
+	Items    []SupplierRow `json:"items"`
+}
+
+// SuppliersEnvelope wraps a page of the supplier list in the freshness
+// envelope.
+type SuppliersEnvelope struct {
+	Data   SuppliersPage `json:"data"`
+	Source string        `json:"source"`
+	AsOf   *time.Time    `json:"as_of,omitempty"`
+}
+
+// Suppliers returns one page of the supplier list, each row decorated with
+// its branch's name/health. params carries search/branch_id/group_id/active/
+// debt/page/page_size straight through to the gateway.
+func (s *Service) Suppliers(ctx context.Context, accountID, tenantID string, params url.Values) (*SuppliersEnvelope, error) {
+	t, shard, err := s.resolveGateway(ctx, accountID, tenantID)
+	if err != nil {
+		return nil, err
+	}
+	branches, err := s.store.BranchesByTenant(ctx, tenantID)
+	if err != nil {
+		return nil, err
+	}
+	byID := make(map[string]*model.Branch, len(branches))
+	for i := range branches {
+		byID[branches[i].ID] = &branches[i]
+	}
+
+	u := shard.GatewayURL + "/hq/suppliers"
+	if enc := params.Encode(); enc != "" {
+		u += "?" + enc
+	}
+	var raw struct {
+		Total    int `json:"total"`
+		Page     int `json:"page"`
+		PageSize int `json:"page_size"`
+		Items    []struct {
+			ID             string     `json:"id"`
+			Num            int        `json:"num"`
+			Name           string     `json:"name"`
+			BranchID       string     `json:"branch_id"`
+			GroupID        *string    `json:"group_id"`
+			GroupName      *string    `json:"group_name"`
+			Phone1         string     `json:"phone1"`
+			IsActive       bool       `json:"is_active"`
+			Balance        float64    `json:"balance"`
+			CreditLimit    float64    `json:"credit_limit"`
+			IsCredit       bool       `json:"is_credit"`
+			LastPurchaseAt *time.Time `json:"last_purchase_at"`
+		} `json:"items"`
+	}
+	if err := s.getJSON(ctx, u, t.DBName, &raw); err != nil {
+		return nil, err
+	}
+
+	now := time.Now().UTC()
+	items := make([]SupplierRow, 0, len(raw.Items))
+	for _, r := range raw.Items {
+		row := SupplierRow{
+			ID: r.ID, Num: r.Num, Name: r.Name, BranchID: r.BranchID, Health: "never",
+			GroupID: r.GroupID, GroupName: r.GroupName, Phone1: r.Phone1, IsActive: r.IsActive,
+			Balance: r.Balance, CreditLimit: r.CreditLimit, IsCredit: r.IsCredit, LastPurchaseAt: r.LastPurchaseAt,
+		}
+		if b, ok := byID[r.BranchID]; ok {
+			row.BranchName = b.Name
+			row.Health = healthTier(b.LastSyncAt, now)
+		}
+		items = append(items, row)
+	}
+
+	data := SuppliersPage{Total: raw.Total, Page: raw.Page, PageSize: raw.PageSize, Items: items}
+	source, asOf := syncFreshness(branches, now)
+	return &SuppliersEnvelope{Data: data, Source: source, AsOf: asOf}, nil
+}
+
+// SupplierStats is one supplier's purchase performance (bills the business
+// received from the supplier), straight off the gateway's Bills aggregate —
+// no client-side arithmetic here.
+type SupplierStats struct {
+	NumberOfOrders    int        `json:"number_of_orders"`
+	TotalSpent        float64    `json:"total_spent"`
+	AverageOrderValue float64    `json:"average_order_value"`
+	LastPurchaseDate  *time.Time `json:"last_purchase_date,omitempty"`
+}
+
+// SupplierDetail is the full detail for one supplier, decorated with its
+// branch's name/health.
+type SupplierDetail struct {
+	ID          string        `json:"id"`
+	Num         int           `json:"num"`
+	Name        string        `json:"name"`
+	BranchID    string        `json:"branch_id"`
+	BranchName  string        `json:"branch_name"`
+	Health      string        `json:"health"`
+	GroupID     *string       `json:"group_id,omitempty"`
+	GroupName   *string       `json:"group_name,omitempty"`
+	Phone1      string        `json:"phone1"`
+	Phone2      *string       `json:"phone2,omitempty"`
+	Phone3      *string       `json:"phone3,omitempty"`
+	Address     *string       `json:"address,omitempty"`
+	Note        *string       `json:"note,omitempty"`
+	CreditLimit float64       `json:"credit_limit"`
+	IsCredit    bool          `json:"is_credit"`
+	IsActive    bool          `json:"is_active"`
+	Balance     float64       `json:"balance"`
+	Stats       SupplierStats `json:"stats"`
+}
+
+// SupplierDetailEnvelope wraps one supplier's detail in the freshness
+// envelope.
+type SupplierDetailEnvelope struct {
+	Data   *SupplierDetail `json:"data"`
+	Source string          `json:"source"`
+	AsOf   *time.Time      `json:"as_of,omitempty"`
+}
+
+// SupplierDetail fetches one supplier's full detail. Returns ErrNotFound
+// when the gateway has no such supplier (unknown id, a Customer/All row, or
+// a never-synced tenant).
+func (s *Service) SupplierDetail(ctx context.Context, accountID, tenantID, supplierID string) (*SupplierDetailEnvelope, error) {
+	t, shard, err := s.resolveGateway(ctx, accountID, tenantID)
+	if err != nil {
+		return nil, err
+	}
+	var raw struct {
+		ID          string        `json:"id"`
+		Num         int           `json:"num"`
+		Name        string        `json:"name"`
+		BranchID    string        `json:"branch_id"`
+		GroupID     *string       `json:"group_id"`
+		GroupName   *string       `json:"group_name"`
+		Phone1      string        `json:"phone1"`
+		Phone2      *string       `json:"phone2"`
+		Phone3      *string       `json:"phone3"`
+		Address     *string       `json:"address"`
+		Note        *string       `json:"note"`
+		CreditLimit float64       `json:"credit_limit"`
+		IsCredit    bool          `json:"is_credit"`
+		IsActive    bool          `json:"is_active"`
+		Balance     float64       `json:"balance"`
+		Stats       SupplierStats `json:"stats"`
+	}
+	if err := s.getJSON(ctx, shard.GatewayURL+"/hq/suppliers/"+supplierID, t.DBName, &raw); err != nil {
+		return nil, err
+	}
+
+	branches, err := s.store.BranchesByTenant(ctx, tenantID)
+	if err != nil {
+		return nil, err
+	}
+	detail := &SupplierDetail{
+		ID: raw.ID, Num: raw.Num, Name: raw.Name, BranchID: raw.BranchID, Health: "never",
+		GroupID: raw.GroupID, GroupName: raw.GroupName, Phone1: raw.Phone1, Phone2: raw.Phone2, Phone3: raw.Phone3,
+		Address: raw.Address, Note: raw.Note, CreditLimit: raw.CreditLimit, IsCredit: raw.IsCredit,
+		IsActive: raw.IsActive, Balance: raw.Balance, Stats: raw.Stats,
+	}
+	now := time.Now().UTC()
+	for i := range branches {
+		if branches[i].ID == raw.BranchID {
+			detail.BranchName = branches[i].Name
+			detail.Health = healthTier(branches[i].LastSyncAt, now)
+			break
+		}
+	}
+	source, asOf := syncFreshness(branches, now)
+	return &SupplierDetailEnvelope{Data: detail, Source: source, AsOf: asOf}, nil
+}
+
+// SupplierPurchaseRow is one purchase (a Bill the business received from the
+// supplier), newest first.
+type SupplierPurchaseRow struct {
+	ID        string    `json:"id"`
+	Num       string    `json:"num"`
+	IssuedAt  time.Time `json:"issued_at"`
+	Total     float64   `json:"total"`
+	ItemCount int       `json:"item_count"`
+	IsPaid    bool      `json:"is_paid"`
+	Type      int       `json:"type"`
+}
+
+// SupplierPurchasesPage is the paged purchase-history payload.
+type SupplierPurchasesPage struct {
+	Total    int                    `json:"total"`
+	Page     int                    `json:"page"`
+	PageSize int                    `json:"page_size"`
+	Items    []SupplierPurchaseRow `json:"items"`
+}
+
+// SupplierPurchasesEnvelope wraps a page of purchase history in the
+// freshness envelope.
+type SupplierPurchasesEnvelope struct {
+	Data   SupplierPurchasesPage `json:"data"`
+	Source string                `json:"source"`
+	AsOf   *time.Time            `json:"as_of,omitempty"`
+}
+
+// SupplierPurchases returns one page of a supplier's purchase history.
+// params carries page/page_size straight through. Returns ErrNotFound when
+// the supplier doesn't exist.
+func (s *Service) SupplierPurchases(ctx context.Context, accountID, tenantID, supplierID string, params url.Values) (*SupplierPurchasesEnvelope, error) {
+	t, shard, err := s.resolveGateway(ctx, accountID, tenantID)
+	if err != nil {
+		return nil, err
+	}
+	u := shard.GatewayURL + "/hq/suppliers/" + supplierID + "/purchases"
+	if enc := params.Encode(); enc != "" {
+		u += "?" + enc
+	}
+	var resp SupplierPurchasesPage
+	if err := s.getJSON(ctx, u, t.DBName, &resp); err != nil {
+		return nil, err
+	}
+	if resp.Items == nil {
+		resp.Items = []SupplierPurchaseRow{}
+	}
+	source, asOf := s.tenantFreshness(ctx, tenantID)
+	return &SupplierPurchasesEnvelope{Data: resp, Source: source, AsOf: asOf}, nil
+}
+
+// SupplierLedgerRow is one ledger (CustomerTransaction) row, with its running
+// balance already computed by the gateway — never recomputed here.
+type SupplierLedgerRow struct {
+	ID             string    `json:"id"`
+	CreatedAt      time.Time `json:"created_at"`
+	Dealing        int       `json:"dealing"`
+	Total          float64   `json:"total"`
+	Debit          float64   `json:"debit"`
+	Credit         float64   `json:"credit"`
+	RunningBalance float64   `json:"running_balance"`
+	Note           *string   `json:"note,omitempty"`
+	UserID         string    `json:"user_id"`
+}
+
+// SupplierLedgerPage is the paged ledger payload.
+type SupplierLedgerPage struct {
+	Total    int                  `json:"total"`
+	Page     int                  `json:"page"`
+	PageSize int                  `json:"page_size"`
+	Items    []SupplierLedgerRow `json:"items"`
+}
+
+// SupplierLedgerEnvelope wraps a page of the ledger in the freshness
+// envelope.
+type SupplierLedgerEnvelope struct {
+	Data   SupplierLedgerPage `json:"data"`
+	Source string             `json:"source"`
+	AsOf   *time.Time         `json:"as_of,omitempty"`
+}
+
+// SupplierLedger returns one page of a supplier's credit-history ledger.
+// params carries page/page_size straight through. Returns ErrNotFound when
+// the supplier doesn't exist.
+func (s *Service) SupplierLedger(ctx context.Context, accountID, tenantID, supplierID string, params url.Values) (*SupplierLedgerEnvelope, error) {
+	t, shard, err := s.resolveGateway(ctx, accountID, tenantID)
+	if err != nil {
+		return nil, err
+	}
+	u := shard.GatewayURL + "/hq/suppliers/" + supplierID + "/ledger"
+	if enc := params.Encode(); enc != "" {
+		u += "?" + enc
+	}
+	var resp SupplierLedgerPage
+	if err := s.getJSON(ctx, u, t.DBName, &resp); err != nil {
+		return nil, err
+	}
+	if resp.Items == nil {
+		resp.Items = []SupplierLedgerRow{}
+	}
+	source, asOf := s.tenantFreshness(ctx, tenantID)
+	return &SupplierLedgerEnvelope{Data: resp, Source: source, AsOf: asOf}, nil
+}
+
+// SupplierInsights is the full six-block insights payload. Reuses
+// CustomerInsightRow/CustomerRefList/CreditWarningRow/CustomerGrowthDay
+// field shapes under Supplier-facing Go field names — the gateway's
+// /hq/suppliers/insights response still emits the same JSON keys as
+// /hq/customers/insights (e.g. "top_customers"), since the two share one
+// route-handler function on the gateway (Program.cs's MapCustomerTypeRoutes);
+// only the Go-side field name reads better as TopSuppliers.
+type SupplierInsights struct {
+	TopSuppliers        []CustomerInsightRow `json:"top_customers"`
+	NewThisMonth        CustomerRefList      `json:"new_this_month"`
+	Inactive            CustomerRefList      `json:"inactive"`
+	CreditLimitWarnings []CreditWarningRow   `json:"credit_limit_warnings"`
+	HighestSpenders     []CustomerInsightRow `json:"highest_spenders"`
+	GrowthOverTime      []CustomerGrowthDay  `json:"growth_over_time"`
+}
+
+// SupplierInsightsEnvelope wraps the insights payload in the freshness
+// envelope.
+type SupplierInsightsEnvelope struct {
+	Data   SupplierInsights `json:"data"`
+	Source string           `json:"source"`
+	AsOf   *time.Time       `json:"as_of,omitempty"`
+}
+
+// SupplierInsights returns the six-block insights payload. params carries
+// branch_id/from/to straight through to the gateway.
+func (s *Service) SupplierInsights(ctx context.Context, accountID, tenantID string, params url.Values) (*SupplierInsightsEnvelope, error) {
+	t, shard, err := s.resolveGateway(ctx, accountID, tenantID)
+	if err != nil {
+		return nil, err
+	}
+	u := shard.GatewayURL + "/hq/suppliers/insights"
+	if enc := params.Encode(); enc != "" {
+		u += "?" + enc
+	}
+	var resp SupplierInsights
+	if err := s.getJSON(ctx, u, t.DBName, &resp); err != nil {
+		return nil, err
+	}
+	if resp.TopSuppliers == nil {
+		resp.TopSuppliers = []CustomerInsightRow{}
+	}
+	if resp.NewThisMonth.Items == nil {
+		resp.NewThisMonth.Items = []CustomerRef{}
+	}
+	if resp.Inactive.Items == nil {
+		resp.Inactive.Items = []CustomerRef{}
+	}
+	if resp.CreditLimitWarnings == nil {
+		resp.CreditLimitWarnings = []CreditWarningRow{}
+	}
+	if resp.HighestSpenders == nil {
+		resp.HighestSpenders = []CustomerInsightRow{}
+	}
+	if resp.GrowthOverTime == nil {
+		resp.GrowthOverTime = []CustomerGrowthDay{}
+	}
+	source, asOf := s.tenantFreshness(ctx, tenantID)
+	return &SupplierInsightsEnvelope{Data: resp, Source: source, AsOf: asOf}, nil
+}
+
+// --- Supplier writes (slice 8): mirrors the Customer write methods above
+// verbatim, POSTing/PUTting to /hq/suppliers... instead of /hq/customers...
+// Reuses InvalidCustomerInputError and ErrMissingAccountOperand as-is (see
+// the section note above). ---
+
+// NewSupplier is a supplier to create.
+type NewSupplier struct {
+	Name        string   `json:"name"`
+	Phone1      string   `json:"phone1"`
+	Phone2      *string  `json:"phone2,omitempty"`
+	Phone3      *string  `json:"phone3,omitempty"`
+	Address     *string  `json:"address,omitempty"`
+	Note        *string  `json:"note,omitempty"`
+	GroupID     *string  `json:"group_id,omitempty"`
+	CreditLimit *float64 `json:"credit_limit,omitempty"`
+	BranchID    string   `json:"branch_id"`
+}
+
+// NewSupplierResult is the gateway's create receipt.
+type NewSupplierResult struct {
+	ID        string    `json:"id"`
+	Num       int       `json:"num"`
+	WrittenAt time.Time `json:"written_at"`
+}
+
+// CreateSupplier forwards a supplier-create request to the gateway for an
+// owned, sync-subscribed tenant. Returns an *InvalidCustomerInputError for
+// any validation failure (bad name/phone1, unknown branch_id/group_id) or
+// ErrMissingAccountOperand if the tenant DB lacks the Vendor ledger account
+// mapping.
+func (s *Service) CreateSupplier(ctx context.Context, accountID, tenantID string, input NewSupplier) (*NewSupplierResult, error) {
+	t, shard, err := s.resolveGateway(ctx, accountID, tenantID)
+	if err != nil {
+		return nil, err
+	}
+	tok, err := s.tokens.IssueHQToken(t.DBName)
+	if err != nil {
+		return nil, fmt.Errorf("mint hq token: %w", err)
+	}
+	buf, err := json.Marshal(input)
+	if err != nil {
+		return nil, err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, shard.GatewayURL+"/hq/suppliers", bytes.NewReader(buf))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Authorization", "Bearer "+tok)
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := s.http.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %v", ErrGatewayUnreachable, err)
+	}
+	defer resp.Body.Close()
+
+	switch resp.StatusCode {
+	case http.StatusBadRequest:
+		var body struct {
+			Error string `json:"error"`
+		}
+		_ = json.NewDecoder(resp.Body).Decode(&body)
+		return nil, &InvalidCustomerInputError{Message: body.Error}
+	case http.StatusInternalServerError:
+		return nil, ErrMissingAccountOperand
+	case http.StatusOK, http.StatusCreated:
+		var result NewSupplierResult
+		if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+			return nil, err
+		}
+		return &result, nil
+	default:
+		return nil, fmt.Errorf("%w: gateway status %d", ErrGatewayUnreachable, resp.StatusCode)
+	}
+}
+
+// SupplierEdit is a partial supplier update; nil fields are left unchanged
+// by the gateway.
+type SupplierEdit struct {
+	Name        *string  `json:"name,omitempty"`
+	Phone1      *string  `json:"phone1,omitempty"`
+	Phone2      *string  `json:"phone2,omitempty"`
+	Phone3      *string  `json:"phone3,omitempty"`
+	Address     *string  `json:"address,omitempty"`
+	Note        *string  `json:"note,omitempty"`
+	GroupID     *string  `json:"group_id,omitempty"`
+	CreditLimit *float64 `json:"credit_limit,omitempty"`
+	IsActive    *bool    `json:"is_active,omitempty"`
+}
+
+// UpdateSupplierResult is the gateway's write receipt.
+type UpdateSupplierResult struct {
+	WrittenAt time.Time `json:"written_at"`
+}
+
+// UpdateSupplier forwards a partial supplier update to the gateway.
+// "Deactivate" is just IsActive:false through this same call — no separate
+// method. Returns ErrNotFound for an unknown supplier id or
+// *InvalidCustomerInputError for a rejected field value.
+func (s *Service) UpdateSupplier(ctx context.Context, accountID, tenantID, supplierID string, input SupplierEdit) (*UpdateSupplierResult, error) {
+	t, shard, err := s.resolveGateway(ctx, accountID, tenantID)
+	if err != nil {
+		return nil, err
+	}
+	tok, err := s.tokens.IssueHQToken(t.DBName)
+	if err != nil {
+		return nil, fmt.Errorf("mint hq token: %w", err)
+	}
+	buf, err := json.Marshal(input)
+	if err != nil {
+		return nil, err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPut, shard.GatewayURL+"/hq/suppliers/"+supplierID, bytes.NewReader(buf))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Authorization", "Bearer "+tok)
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := s.http.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %v", ErrGatewayUnreachable, err)
+	}
+	defer resp.Body.Close()
+
+	switch resp.StatusCode {
+	case http.StatusNotFound:
+		return nil, ErrNotFound
+	case http.StatusBadRequest:
+		var body struct {
+			Error string `json:"error"`
+		}
+		_ = json.NewDecoder(resp.Body).Decode(&body)
+		return nil, &InvalidCustomerInputError{Message: body.Error}
+	case http.StatusOK:
+		var result UpdateSupplierResult
+		if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+			return nil, err
+		}
+		return &result, nil
+	default:
+		return nil, fmt.Errorf("%w: gateway status %d", ErrGatewayUnreachable, resp.StatusCode)
+	}
+}
+
+// BulkUpdateSuppliersResult is the gateway's bulk-write receipt.
+type BulkUpdateSuppliersResult struct {
+	Updated   int       `json:"updated"`
+	WrittenAt time.Time `json:"written_at"`
+}
+
+// BulkUpdateSuppliers forwards a bulk group-assign/pricing-tier update; the
+// gateway applies it as one all-or-nothing write. Returns
+// *InvalidCustomerInputError for an id that doesn't belong to this tenant, an
+// unknown group_id, or neither field being provided.
+func (s *Service) BulkUpdateSuppliers(ctx context.Context, accountID, tenantID string, ids []string, groupID *string, priceTier *int) (*BulkUpdateSuppliersResult, error) {
+	t, shard, err := s.resolveGateway(ctx, accountID, tenantID)
+	if err != nil {
+		return nil, err
+	}
+	tok, err := s.tokens.IssueHQToken(t.DBName)
+	if err != nil {
+		return nil, fmt.Errorf("mint hq token: %w", err)
+	}
+	body := map[string]any{"ids": ids}
+	if groupID != nil {
+		body["group_id"] = *groupID
+	}
+	if priceTier != nil {
+		body["price_tier"] = *priceTier
+	}
+	buf, err := json.Marshal(body)
+	if err != nil {
+		return nil, err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPut, shard.GatewayURL+"/hq/suppliers/bulk", bytes.NewReader(buf))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Authorization", "Bearer "+tok)
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := s.http.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %v", ErrGatewayUnreachable, err)
+	}
+	defer resp.Body.Close()
+
+	switch resp.StatusCode {
+	case http.StatusBadRequest:
+		var b struct {
+			Error string `json:"error"`
+		}
+		_ = json.NewDecoder(resp.Body).Decode(&b)
+		return nil, &InvalidCustomerInputError{Message: b.Error}
+	case http.StatusOK:
+		var result BulkUpdateSuppliersResult
+		if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+			return nil, err
+		}
+		return &result, nil
+	default:
+		return nil, fmt.Errorf("%w: gateway status %d", ErrGatewayUnreachable, resp.StatusCode)
+	}
+}
+
+// ExportSuppliers streams the gateway's CSV export for the given filters
+// directly to w — a byte-for-byte passthrough, same reasoning as
+// ExportCustomers. Every error path returns before writing anything to w, so
+// the caller can still send its own error response in that case.
+func (s *Service) ExportSuppliers(ctx context.Context, accountID, tenantID string, params url.Values, w http.ResponseWriter) error {
+	t, shard, err := s.resolveGateway(ctx, accountID, tenantID)
+	if err != nil {
+		return err
+	}
+	tok, err := s.tokens.IssueHQToken(t.DBName)
+	if err != nil {
+		return fmt.Errorf("mint hq token: %w", err)
+	}
+	u := shard.GatewayURL + "/hq/suppliers/export"
+	if enc := params.Encode(); enc != "" {
+		u += "?" + enc
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Authorization", "Bearer "+tok)
+	resp, err := s.http.Do(req)
+	if err != nil {
+		return fmt.Errorf("%w: %v", ErrGatewayUnreachable, err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("%w: gateway status %d", ErrGatewayUnreachable, resp.StatusCode)
+	}
+	w.Header().Set("Content-Type", "text/csv; charset=utf-8")
+	w.Header().Set("Content-Disposition", `attachment; filename="suppliers.csv"`)
+	w.WriteHeader(http.StatusOK)
+	_, err = io.Copy(w, resp.Body)
+	return err
+}
+
+// ImportSuppliersError is one row the gateway could not create.
+type ImportSuppliersError struct {
+	Row     int    `json:"row"`
+	Message string `json:"message"`
+}
+
+// ImportSuppliersResult is the gateway's import receipt: how many rows were
+// created, plus a per-row error for the rest — one bad row never aborts the
+// batch.
+type ImportSuppliersResult struct {
+	Created int                     `json:"created"`
+	Errors  []ImportSuppliersError `json:"errors"`
+}
+
+// ImportSuppliers forwards a multipart CSV upload to the gateway, which
+// reuses CreateSupplier's own validation row-by-row. contentType must be the
+// original request's Content-Type header (carries the multipart boundary);
+// body is the (already size-limited) request body.
+func (s *Service) ImportSuppliers(ctx context.Context, accountID, tenantID, contentType string, body io.Reader) (*ImportSuppliersResult, error) {
+	t, shard, err := s.resolveGateway(ctx, accountID, tenantID)
+	if err != nil {
+		return nil, err
+	}
+	tok, err := s.tokens.IssueHQToken(t.DBName)
+	if err != nil {
+		return nil, fmt.Errorf("mint hq token: %w", err)
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, shard.GatewayURL+"/hq/suppliers/import", body)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Authorization", "Bearer "+tok)
+	req.Header.Set("Content-Type", contentType)
+	resp, err := s.http.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %v", ErrGatewayUnreachable, err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode == http.StatusBadRequest {
+		var b struct {
+			Error string `json:"error"`
+		}
+		_ = json.NewDecoder(resp.Body).Decode(&b)
+		return nil, &InvalidCustomerInputError{Message: b.Error}
+	}
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("%w: gateway status %d", ErrGatewayUnreachable, resp.StatusCode)
+	}
+	var result ImportSuppliersResult
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return nil, err
+	}
+	if result.Errors == nil {
+		result.Errors = []ImportSuppliersError{}
+	}
+	return &result, nil
+}
