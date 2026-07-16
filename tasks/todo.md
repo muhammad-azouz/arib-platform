@@ -498,9 +498,190 @@ Design notes (2026-07-15): **open question 2 resolved by the plan's standing ass
 ### Checkpoint 6
 - [x] All gates green (api `go build ./... && go vet ./... && go test ./...`, gateway `dotnet build AribSyncGateway.csproj`, console `pnpm build && pnpm lint` — all clean 2026-07-15)
 - [x] **Found during checkpoint testing:** the freshness pill read «تمت المزامنة منذ ٠ ثواني» forever — every catalog/inventory/conflicts/movements/reports envelope stamped `as_of` with API request time instead of sync time. Fixed 2026-07-15: `as_of` = newest branch `last_sync_at` from the registry (`syncFreshness`/`tenantFreshness` in `api/internal/hq/service.go`), `source` degrades to `offline` past 30 min, omitted entirely for a never-synced tenant; console `CatalogEnvelope.as_of` now optional. Covered by `TestSyncFreshness` + updated envelope assertions. **Re-verify on the live tenant: pill should show the real last-sync age and advance after a sync.**
-- [ ] Manual e2e: sales report totals + tender split match the desktop's own numbers for a real synced tenant and period (incl. a deleted bill staying excluded and a multi-branch day)
-- [ ] Manual e2e: products report revenue/profit spot-checked against the desktop's profit screen for the same period (note the deliberate deleted-bill/date-anchor divergence); top-seller ordering sane in all three sorts
-- [ ] Manual e2e: staff report rows match per-cashier desktop numbers; branches comparison matches the per-branch bills screens
-- [ ] POS sale lands in today's sales report live via SSE, no refresh
-- [ ] RTL/Arabic-numerals audit across all five views (chart labels included)
-- [ ] **Human review before Phase 7 (Live tier / SignalR — separate spec)**
+- [x] Manual e2e: sales report totals + tender split match the desktop's own numbers for a real synced tenant and period (incl. a deleted bill staying excluded and a multi-branch day) — confirmed 2026-07-15
+- [x] Manual e2e: products report revenue/profit spot-checked against the desktop's profit screen for the same period (note the deliberate deleted-bill/date-anchor divergence); top-seller ordering sane in all three sorts — confirmed 2026-07-15
+- [x] Manual e2e: staff report rows match per-cashier desktop numbers; branches comparison matches the per-branch bills screens — confirmed 2026-07-15
+- [x] **Found during checkpoint testing, fixed 2026-07-15:** POS sale did not land in today's sales report live via SSE — the view only picked up the new sale after switching tabs or changing the period (i.e. on query remount), not from the `branch-synced` invalidation while mounted. Root cause fixed; live sale now appears in the sales report without a refresh, confirmed 2026-07-15.
+- [x] RTL/Arabic-numerals audit across all five views (chart labels included) — completed 2026-07-15
+- [x] **Human review before Phase 7 (Customers)** *(approved 2026-07-15; note: at approval time this was labeled "Phase 7 (Live tier)" — renumbered 2026-07-16 when Customers was inserted as slice 7 and Live tier/Loyalty moved to slices 8/9, see spec-console.md)*
+
+## Phase 7 — Customers
+
+Plan: `tasks/plan.md` §Phase 7 · Spec: `tasks/spec-console.md` §"Customers module (slice 7)"
+
+Design notes (2026-07-16): scope decisions carried from the spec — branch-specific (no cross-branch identity), merge dropped to Future Features, loyalty promoted to its own Phase 9 follow-up spec. List/stats scope to `Customer.Type == CustomerType.Customer` (the table also holds `Supplier`/`All` rows — this phase is not the supplier ledger). Customer groups are Tier-A via the `Groups` TPH discriminator (`Kind="Customer"`, `AribContext.cs:206-209`) but need their own gateway query — the existing `GroupsAsync` filters `OfType<ProductGroup>()` only. **Balance/credit-limit is D10, same rule as `Accounts`:** every balance-derived read recomputes `SUM(CustomerTransaction.Debit − Credit)` server-side; `Customer.Debit/Credit/Balance` are never read directly. `CustomerTransaction.Balance` is itself unreliable — the desktop's own `AddNewCustomer` hardcodes it to `0` and `UpdateCustomer` never touches it — so the ledger view computes running balance server-side exactly like T29's movement running-qty (opening-balance seed strictly before the page + page-accumulated `Debit-Credit`, C# decimal, never the stored column). Purchase stats/history reuse the Reports slice's Bills semantics verbatim: `Type IN (Sale, ReSale)`, `!IsDeleted`, `CustomerId = id`. Create is a bounded write with **no opening balance in v1** (mirrors T26's product-create decision — no `CustomerTransaction`/`JournalEntry` rows written); `AccountId` wired via a single `AccountOperands["Customers"]` lookup (simpler than T26's per-kind mapping since `Type` is always `Customer` here); `Num` = tenant max+1, mirroring `CustomerService.GetCustomerNum`. Edit is a bounded partial-field-update write, mirroring T23's price-change shape. Import reuses the create path row-by-row over a **fixed** CSV template (name, phone1, branch_id, group_id?, credit_limit?) — not the desktop's dynamic column-mapping UI (`ImportCustomerViewModel`) — with per-row error reporting so one bad row doesn't abort the batch, matching the desktop's own validation-reporting shape.
+
+- [x] **T48: Gateway — customer groups read**
+  - **Description:** New `CustomerGroupsAsync(dbName)` in `HqApi.cs`, parallel to `GroupsAsync`: `db.Groups.AsNoTracking().OfType<CustomerGroup>().OrderBy(g => g.Num)`, mapped to a `CustomerGroupRow(Id, ParentId, Name, IsActive, Num)` record (no `ProductCount` — irrelevant here). Route `GET /hq/customer-groups`.
+  - Acceptance:
+    - [x] Only `Kind="Customer"` rows returned; `Kind="Product"` rows never leak in
+    - [x] Empty/never-synced tenant → empty list, not an error (same `IsDatabaseMissing` catch as `GroupsAsync`)
+  - Verify: `dotnet build AribSyncGateway.csproj`; curl against a dev tenant DB
+  - Files: `sync-gateway/HqApi.cs`, `sync-gateway/Program.cs`
+  - Dependencies: none · **Size: XS**
+
+- [x] **T49: Gateway — paged customer list**
+  - **Description:** `GET /hq/customers?search=&branch_id=&group_id=&active=&debt=&page=&page_size=`. Base: `db.Customers.Where(c => c.Type == CustomerType.Customer)`. Search matches name (`EF.Functions.Like`), any of `Phone1/2/3`, or `Num` (int-parsed, same convention as `ProductsAsync`'s code match). Balance recomputed per row via a correlated subquery over `CustomerTransactions` (`Σ Debit − Credit`, 0 when no rows) — **never `Customer.Balance`**. `debt` takes one of `has_debt` (recomputed balance > 0), `credit` (`IsCredit == true`), `exceeding` (recomputed balance > `CreditLimit` && `CreditLimit` > 0); omitted = no debt filter. Row: id, num, name, branch_id, group_id, group_name, phone1, is_active, balance (recomputed), credit_limit, is_credit, last_purchase_at (nullable, `MAX(Bills.IssuedAt)` for that customer).
+  - Acceptance:
+    - [x] Search matches name/phone/code; branch/group/active/`debt` filters compose with AND; `debt` values validated (unknown value → empty result, not a crash — API layer 400s it properly in T54)
+    - [x] Balance in every row is the recomputed ledger sum, never the stored `Balance` column; `Supplier`/`All` type rows never appear; `page_size` clamped 1..200
+  - Verify: `dotnet build AribSyncGateway.csproj`; curl each filter value against a dev tenant DB
+  - Files: `sync-gateway/HqApi.cs`, `sync-gateway/Program.cs`
+  - Dependencies: none · **Size: M**
+
+- [x] **T50: Gateway — customer detail + stats**
+  - **Description:** `GET /hq/customers/{id:guid}`. 404 on unknown id or an id whose `Type != Customer`. Returns basic info (name, phones, address, note, group, credit_limit, is_credit, is_active, num, branch_id) + recomputed balance (T49's subquery) + a stats block from `Bills` where `CustomerId = id`, `Type IN (Sale, ReSale)`, `!IsDeleted`: `number_of_orders` (count), `total_spent` (Σ Total), `average_order_value` (`total_spent / number_of_orders`, 0 when no orders), `last_purchase_date` (`MAX(IssuedAt)`, nullable). `total_purchases` in the note's wording is the same figure as `number_of_orders` — shipped as one field, documented as such rather than inventing a distinct sixth metric.
+  - Acceptance:
+    - [x] Stats match a manual `Σ`/`COUNT`/`MAX` over `Bills` for a synced tenant (human-verified 2026-07-16, folded into checkpoint 7)
+    - [x] Unknown id → 404; an id belonging to a `Supplier` row → 404, not silently returned as a customer
+  - Verify: `dotnet build AribSyncGateway.csproj`; curl against a dev tenant DB
+  - Files: `sync-gateway/HqApi.cs`, `sync-gateway/Program.cs`
+  - Dependencies: none · **Size: M**
+
+- [x] **T51: Gateway — customer purchase history**
+  - **Description:** `GET /hq/customers/{id:guid}/purchases?page=&page_size=`. 404 via T50's lookup. `db.Bills.Where(b => b.CustomerId == id && (b.Type == Sale || b.Type == ReSale) && !b.IsDeleted).OrderByDescending(b => b.IssuedAt)`, paged. Row: id, num, issued_at, total, item_count, is_paid, type.
+  - Acceptance:
+    - [x] Paging is stable and newest-first; deleted bills and non-sale types never appear
+  - Verify: `dotnet build AribSyncGateway.csproj`; curl against a dev tenant DB
+  - Files: `sync-gateway/HqApi.cs`, `sync-gateway/Program.cs`
+  - Dependencies: T50 (shares the 404 lookup) · **Size: S**
+
+- [x] **T52: Gateway — customer ledger with computed running balance**
+  - **Description:** `GET /hq/customers/{id:guid}/ledger?page=&page_size=`. Mirrors T29's movement pagination construction exactly: rows ordered `CreatedAt` then `Id` ASC for determinism; opening-balance seed = `Σ(Debit−Credit)` over rows strictly before the page's first row; running balance accumulated in C# `decimal` per row of the returned page (page-N seed = opening + net of every skipped earlier row, so pages are self-contained, same proof T29 already established). Row: id, created_at, dealing, total, debit, credit, running_balance, note, user_id.
+  - Acceptance:
+    - [x] Page N's first `running_balance` = page N−1's last `running_balance` + that row's net (by construction, same seed/accumulator expression — verified by code inspection like T29)
+    - [x] Every query is `CustomerId`-anchored (no unfiltered scan); unbounded period's final running balance matches the T49/T50 recomputed total
+  - Verify: `dotnet build AribSyncGateway.csproj`; compare against a dev tenant DB
+  - Files: `sync-gateway/HqApi.cs`, `sync-gateway/Program.cs`
+  - Dependencies: T50 · **Size: M**
+
+- [x] **T53: Gateway — customers insights**
+  - **Description:** `GET /hq/customers/insights?branch_id=&period=`. One response, six blocks: `top_customers` (top N by recomputed total-spent over the selected period), `new_this_month` (`Customer.CreatedAt` in the current calendar month — count + list), `inactive` (`IsActive` && no `Sale`/`ReSale` bill in the last N days, N configurable, default 60), `credit_limit_warnings` (recomputed balance vs `CreditLimit`, `CreditLimit > 0`; two buckets — `approaching` ≥80% of limit, `exceeding` ≥100% — thresholds are a judgment call, documented inline in the code, not derived from any existing desktop rule since none exists), `highest_spenders` (top N by **lifetime** recomputed total-spent, unscoped by period — distinct from `top_customers`'s period scoping), `growth_over_time` (count of new customers per day/month over the period, local-date strings, same series shape as the Reports slice's day series).
+  - Acceptance:
+    - [x] Every block's numbers are internally consistent with T49/T50's recomputed-balance and Bills semantics (no separate, drifting aggregation logic)
+    - [x] Empty/never-synced tenant → zeroed/empty shapes for every block, not an error
+  - Verify: `dotnet build AribSyncGateway.csproj`; curl against a dev tenant DB
+  - Files: `sync-gateway/HqApi.cs`, `sync-gateway/Program.cs`
+  - Dependencies: T49, T50 (shares the recompute/aggregation helpers) · **Size: M**
+
+- [x] **T54: API — customer read passthroughs + tests**
+  - **Description:** Six `hq.Service` methods mirroring the reports/inventory chain (resolveGateway → getJSON → `{data, source:"synced", as_of}` envelope): `CustomerGroups` (passthrough), `Customers` (passthrough + branch_name/health decoration from the registry, same as catalog availability rows), `CustomerDetail` (passthrough + branch decoration, 404→`ErrNotFound`), `CustomerPurchases`, `CustomerLedger` (both passthrough, 404 via the same customer lookup), `CustomerInsights` (passthrough). Handlers whitelist query params — `active` boolean, `debt ∈ has_debt|credit|exceeding` (unknown value → 400, no gateway round-trip), `page`/`page_size` numeric. Routes: `GET /v1/tenants/{id}/hq/customer-groups`, `/hq/customers`, `/hq/customers/{cid}`, `/hq/customers/{cid}/purchases`, `/hq/customers/{cid}/ledger`, `/hq/customers/insights`.
+  - Acceptance:
+    - [x] Table-driven tests per method: envelope shape, params forwarded, branch decoration present, unknown `debt`/`active` value → 400 with zero gateway calls, 404 passes through cleanly for an unknown customer
+    - [x] `go test ./...` green (full suite, not just the new tests)
+  - Verify: `go build ./... && go vet ./... && go test ./...`
+  - Files: `api/internal/hq/service.go` + `service_test.go`, `api/internal/httpapi/hq_handlers.go`, `api/internal/httpapi/server.go`
+  - Dependencies: T48, T49, T50, T51, T52, T53 (contract; may start on fakes) · **Size: M**
+
+- [x] **T55: Gateway — customer create**
+  - **Description:** `POST /hq/customers`, body `{name, phone1, phone2?, phone3?, address?, note?, group_id?, credit_limit?, branch_id}`. `branch_id` validated against the tenant's known branches/warehouses (same existence check style as T26's product create). `AccountId` = `AccountOperands["Customers"]`'s `AccountId`; `FromId` = `AccountOperands["Capital"]`'s `AccountId` — both required, mirroring the desktop's `UpsertCustomerViewModel`'s default-account resolution exactly (it resolves both operands for a new customer, not just the ledger account); missing either operand → 500 with a clear message, mirroring the desktop's own defensive `App.RaiseException` check in `UpsertCustomerViewModel`/`CustomerService.AddNewCustomer`. `Num` = `db.Customers.Max(Num) + 1`, falling back to `1` on an empty table (`InvalidOperationException` catch, mirrors `CustomerService.GetCustomerNum` exactly). `Type = Customer`, `IsActive = true`, `Debit = Credit = Balance = OpenBalance = 0`, `IsDoubleType = false`, `CreatedAt = now`. **No opening balance, no `CustomerTransaction`/`JournalEntry` rows in v1** — explicit decision, matches T26's "no opening balance from HQ" for products. Returns `{id, written_at}`.
+  - **Bug found during human review (2026-07-16), fixed same day:** `FromId` was initially left `Guid.Empty` instead of resolving `AccountOperands["Capital"]`. `Customer.FromId` is a non-nullable `Guid` (`AribONE.Data/Models/Entities/Customer.cs:40`), so `Guid.Empty` synced as a real stored value, not "unset" — the desktop's customer form showed "الحساب المكمل" (the FromId-bound field, `UpsertCustomerView.axaml:119-121`) empty/unresolved after sync. Fixed by adding the `Capital` operand lookup alongside `Customers`, both now required for a create to succeed.
+  - Acceptance:
+    - [x] Missing `name`/`phone1`/`branch_id` → 400; unknown `branch_id` → 400; `name` >100 chars or `phone1` >12 chars (entity `MaxLength`) → 400
+    - [x] `Num` increments correctly on a non-empty table and starts at `1` on an empty one; created row is immediately visible via T49's list (self-check)
+    - [x] `FromId` resolves to the `Capital` AccountOperand's account and appears correctly as "الحساب المكمل" on the desktop after sync *(fixed and human-verified against a real synced tenant, 2026-07-16)*
+  - Verify: `dotnet build AribSyncGateway.csproj`; curl against a dev tenant DB (missing name, missing branch, valid create)
+  - Files: `sync-gateway/HqApi.cs`, `sync-gateway/Program.cs`
+  - Dependencies: none · **Size: M**
+
+- [x] **T56: Gateway — customer edit/deactivate**
+  - **Description:** `PUT /hq/customers/{id:guid}`, body `{name?, phone1?, phone2?, phone3?, address?, note?, group_id?, credit_limit?, is_active?}` — every field optional, only provided fields updated (partial update; unlike T23's `{changes:[...]}` per-unit collection, this is a flat partial object since a customer has no child rows to target). `AccountId`/`BranchId`/`Num` are never touched by this endpoint. "Deactivate" (the note's list-page bullet) is just `is_active:false` through this same endpoint — no separate route. Returns `{written_at}`.
+  - Acceptance:
+    - [x] Unknown id → 404; a two-call sequence (set `name`, then separately set `is_active`) leaves `name` unchanged by the second call — proves partial-update semantics
+    - [x] Negative `credit_limit` → 400
+  - Verify: `dotnet build AribSyncGateway.csproj`; curl against a dev tenant DB
+  - Files: `sync-gateway/HqApi.cs`, `sync-gateway/Program.cs`
+  - Dependencies: T55 · **Size: S**
+
+- [x] **T57: API — create/edit passthroughs + tests**
+  - **Description:** `hq.Service.CreateCustomer` + `UpdateCustomer`, same auth/ownership chain as T24/T26. Body validated before the gateway call (`name` non-empty ≤100 chars, `phone1` non-empty ≤12 chars, `credit_limit` ≥ 0 when present). Routes: `POST /v1/tenants/{id}/hq/customers`, `PUT /v1/tenants/{id}/hq/customers/{cid}`. Writes logged like other HQ writes (`hq.customers_create` / `hq.customers_update`: tenant, account, email — same request-log pattern as T24).
+  - Acceptance:
+    - [x] Table-driven: ownership enforced (`ErrForbidden` for a non-owning account); validation 400s fire before any gateway call; `written_at` round-trips; gateway 400/404 map cleanly to the existing error types
+  - Verify: `go build ./... && go test ./...`
+  - Files: `api/internal/hq/service.go` + `service_test.go`, `api/internal/httpapi/hq_handlers.go`, `api/internal/httpapi/server.go`
+  - Dependencies: T55, T56 (contract; may start on fakes) · **Size: S**
+
+- [x] **T58: Gateway — bulk group-assign + pricing-tier update**
+  - **Description:** `PUT /hq/customers/bulk`, body `{ids: [...], group_id?, price_tier?}` (at least one of `group_id`/`price_tier` required, else 400). Every id validated to belong to the token's `db` and have `Type == Customer` before any write (matches T23's per-row "belongs to this product" 400 pattern) — invalid id anywhere in the batch aborts the whole write (single transaction, no partial application). `ids` capped at 500. Returns `{updated: count, written_at}`.
+  - Acceptance:
+    - [x] An unknown/foreign id anywhere in the batch → 400 with zero rows updated (transaction rollback verified by a follow-up read)
+    - [x] Neither `group_id` nor `price_tier` present → 400
+  - Verify: `dotnet build AribSyncGateway.csproj`; curl against a dev tenant DB
+  - Files: `sync-gateway/HqApi.cs`, `sync-gateway/Program.cs`
+  - Dependencies: T56 · **Size: S**
+
+- [x] **T59: Gateway — CSV export + import**
+  - **Description:** `GET /hq/customers/export?search=&branch_id=&group_id=&active=&debt=` — streams the same filtered rows as T49 (unpaged, capped at e.g. 5000 rows) as CSV with a UTF-8 BOM (Arabic-safe when opened directly in Excel); fixed columns: code, name, branch, group, phone1, address, credit_limit, balance, is_active. `POST /hq/customers/import` — multipart body: a CSV file (fixed columns name, phone1, group_id?, credit_limit?) plus a separate `branch_id` form field; reuses T55's create logic **row-by-row, one transaction per row** so a bad row doesn't abort the batch (mirrors the desktop's `ImportCustomerViewModel` per-row error collection, without reproducing its dynamic Excel column-mapping step). Returns `{created: count, errors: [{row, message}]}`. Row count capped at 1000 per import.
+  - **Bug found during human review (2026-07-16), fixed same day:** the CSV originally carried its own `branch_id` column, but the console user importing a file has no way to know a branch's GUID — every row failed validation with an opaque "invalid branch_id" and the dialog only surfaced a bare `تم إنشاء ٠ عميل` count, with no indication *why*. Fixed two ways: (1) `branch_id` moved out of the CSV entirely into one `branch_id` multipart form field, applied to every row — the console now offers a real branch `<select>` (T65) instead of asking the user to type a GUID; a new `HqApi.BranchExistsAsync` fails the whole upload fast with one clear error if that branch doesn't exist, rather than repeating the same per-row error N times. (2) added explicit pre-validation ahead of `CreateCustomerAsync` for missing/oversized name or phone1, non-numeric `credit_limit`, and non-GUID `group_id`, each with a specific Arabic message (e.g. `حد الائتمان (credit_limit) يجب أن يكون رقمًا`) — previously a bad cell type was silently coerced to `null` (credit_limit/group_id) with no error reported at all.
+  - Acceptance:
+    - [x] Export → re-import on an empty tenant recreates equivalent rows (minus `balance`/`is_active`, which import doesn't set — those come from the ledger and default `true` respectively)
+    - [x] A bad row (missing name, non-numeric credit_limit) reports a specific per-row Arabic error and the batch still completes for the remaining valid rows *(fixed and human-verified against a real synced tenant, 2026-07-16)*
+    - [x] An unknown/missing `branch_id` form field fails the whole upload with one clear top-level error instead of a silent `created: 0`
+  - Verify: `dotnet build AribSyncGateway.csproj`; curl export + import against a dev tenant DB
+  - Files: `sync-gateway/HqApi.cs`, `sync-gateway/Program.cs`
+  - Dependencies: T55 (reuses create) · **Size: M**
+
+- [x] **T60: API — bulk/export/import passthroughs + tests**
+  - **Description:** `hq.Service.BulkUpdateCustomers`, `ExportCustomers` (streams the gateway's CSV through with `Content-Type: text/csv` + `Content-Disposition: attachment`), `ImportCustomers` (forwards the multipart body, request size-limited). Routes: `PUT /v1/tenants/{id}/hq/customers/bulk`, `GET .../hq/customers/export`, `POST .../hq/customers/import`.
+  - Acceptance:
+    - [x] Table-driven tests for bulk (validation, gateway error map) and import (size limit, per-row error-list passthrough)
+    - [x] Export content-type/headers verified by a live curl against the running API — streaming isn't a natural table-driven-test shape, same reasoning as T13's SSE endpoint
+  - Verify: `go build ./... && go test ./...`; curl export against a real running API
+  - Files: `api/internal/hq/service.go` + `service_test.go`, `api/internal/httpapi/hq_handlers.go`, `api/internal/httpapi/server.go`
+  - Dependencies: T58, T59 (contract; may start on fakes) · **Size: M**
+
+- [x] **T61: Console — lib plumbing**
+  - **Description:** Types (`CustomerGroup`, `CustomerRow`, `CustomerDetail`, `CustomerStats`, `PurchaseRow`, `LedgerRow`, `InsightsResponse`, paged/envelope aliases matching T54/T57/T60's shapes), `api.ts` functions (`URLSearchParams` builders, Catalog style; import/export use `fetch` directly for multipart/blob handling rather than the JSON `getJSON` helper), `qk` keys under a shared `['hq-customers', tenantId, …]` prefix, hooks (list/detail/purchases/ledger/insights with `enabled: !!tenantId`, `keepPreviousData` on the paged ones; create/update/bulk mutations invalidating the prefix). `useTenantEvents` gains the `hq-customers` prefix so `branch-synced` flips customer data live, same mechanism as every prior slice.
+  - Acceptance:
+    - [x] `pnpm build` type-checks the contract against T54/T57/T60's shapes
+    - [x] `branch-synced` SSE invalidates every `hq-customers` key via the shared prefix
+  - Verify: `pnpm build && pnpm lint`
+  - Files: `console/src/lib/{types,api,query,hooks}.ts`
+  - Dependencies: T54, T57, T60 (contract; may start on fakes) · **Size: M**
+
+- [x] **T62: Console — Customers list page + nav/route wiring**
+  - **Description:** New `pages/console/Customers.tsx`: `PageHeader` + `Freshness`, debounced search box, branch/group/active/`debt` filter row (reusing the `<select>`/chip patterns already established in Catalog/Inventory), paged table (code, name, branch badge + `HealthDot`, group, phone, recomputed balance, credit_limit, status) with rows → `/customers/{id}`; create dialog (react-hook-form + zod, fields per T55's body). Nav entry «العملاء» + route added to `AppShell.tsx`/`App.tsx` — no placeholder existed from T8, since Customers was only added to the spec's IA on 2026-07-16.
+  - Acceptance:
+    - [x] Filter changes reset to page 1 without spinner-blanking (Catalog's `filterKey`/`lastFilterKey` render-time-reset pattern)
+    - [x] Create dialog success navigates to the new customer's profile; nav entry present and RTL-correct
+  - Verify: `pnpm build && pnpm lint`; manual click-through human-verified 2026-07-16 (folded into checkpoint 7)
+  - Files: `console/src/pages/console/Customers.tsx` (new), `console/src/components/{AppShell,CreateCustomerDialog}.tsx`, `console/src/App.tsx`, `console/src/components/icon.tsx` (if a customers nav icon is needed)
+  - Dependencies: T61 · **Size: M**
+
+- [x] **T63: Console — Customer profile page**
+  - **Description:** New `pages/console/CustomerDetail.tsx`, route `customers/:customerId` (breadcrumbs like `ProductDetail`/`BranchDetail`): header (name, branch badge, group, status, edit button → dialog reusing T62's form fields plus an `is_active` toggle for deactivate); stats tiles (number of orders, total spent, average order value, last purchase date); purchase history section (paged, T51's rows, bill detail expandable inline — no cross-branch Orders page to link out to, per the spec's branch-specific scope decision); ledger/credit-history section (paged, T52's rows with a `running_balance` column).
+  - Acceptance:
+    - [x] All stats render from T50's payload verbatim, no client-side arithmetic beyond what the gateway already computed
+    - [x] Edit dialog partial-updates correctly (only changed fields sent); deactivate flips status without a page reload
+  - Verify: `pnpm build && pnpm lint`; manual human-verified 2026-07-16 (folded into checkpoint 7)
+  - Files: `console/src/pages/console/CustomerDetail.tsx` (new), `console/src/App.tsx` (route), `console/src/components/EditCustomerDialog.tsx` (new), `console/src/lib/hooks.ts`
+  - Dependencies: T62 · **Size: M**
+
+- [x] **T64: Console — Insights view**
+  - **Description:** URL-state view toggle on `Customers.tsx` (`?view=list|insights`, mirroring Inventory/Reports' pattern) rendering T53's six blocks: top-customers/highest-spenders tables (rows → profile), new-this-month and inactive counts+lists, credit-limit warning list (approaching/exceeding, amber/red tone), growth-over-time chart reusing the Reports slice's CSS-bar pattern (T46) — no new chart dependency.
+  - Acceptance:
+    - [x] Every insight row deep-links to that customer's profile (spec rule: no alert/insight ships without a destination)
+    - [x] Growth chart count matches a manual count of `Customer.CreatedAt` rows for a spot-checked period
+  - Verify: `pnpm build && pnpm lint`; manual human-verified 2026-07-16 (folded into checkpoint 7)
+  - Files: `console/src/pages/console/Customers.tsx`
+  - Dependencies: T61 · **Size: M**
+
+- [x] **T65: Console — Bulk operations UI**
+  - **Description:** Multi-select checkboxes on the Customers list table (checks for an existing multi-select pattern in the codebase first; introduces a minimal one if none exists); toolbar appears when ≥1 row selected: «تعيين مجموعة» (group picker → T58), «تحديث فئة السعر» (price-tier input → T58), «تصدير» (calls T59's export with the current filter set, triggers a file download via blob response), «استيراد» (dialog: CSV template download link, file upload, and a required branch `<select>` (T59's `branch_id` form field) → T59's import, per-row error table on partial failure).
+  - **Bug found during human review (2026-07-16), fixed same day:** `ImportCustomersDialog` originally had no branch picker — it relied on a `branch_id` CSV column the user had no way to fill in correctly. Added a required branch `<select>` (same `useBundle(tenantId).Branches` source as `CreateCustomerDialog`) under the file input, sent as a `branch_id` form field alongside the file (`useImportCustomers` and `api.importCustomers` signatures updated to take `{file, branchId}`); the CSV template dropped its `branch_id` column accordingly.
+  - Acceptance:
+    - [x] Bulk group/price-tier mutation reflects immediately in the list (query invalidation, no manual refresh)
+    - [x] Export downloads a file honoring the current filters; import surfaces per-row errors without silently dropping failed rows
+    - [x] Import is disabled until both a file and a branch are selected; the selected branch applies to every row *(fixed and human-verified against a real synced tenant, 2026-07-16)*
+  - Verify: `pnpm build && pnpm lint`; manual human-verified 2026-07-16 (folded into checkpoint 7)
+  - Files: `console/src/pages/console/Customers.tsx`, `console/src/components/{BulkActionsBar,ImportCustomersDialog}.tsx` (new)
+  - Dependencies: T62 · **Size: M**
+
+### Checkpoint 7
+- [x] All gates green (api `go build ./... && go vet ./... && go test ./...`, gateway `dotnet build AribSyncGateway.csproj`, console `pnpm build && pnpm lint`) *(2026-07-16 — machine-verified end-to-end; every manual/e2e item below has since been human-verified against a real synced tenant, including the `FromId`/"الحساب المكمل" (T55) and CSV-import (T59/T65) bugs found and fixed during that pass.)*
+- [x] Manual e2e: list/profile numbers (balance, stats, purchase history, ledger) match the desktop's own `CustomerView`/`CustomerStatementView` for a real synced tenant
+- [x] Manual e2e: HQ create/edit reaches the desktop on its next sync round — this is **HQ's first write into a Tier-B table**; verify the `BranchId` filter routes the row to only the target branch, not every branch (unlike the Tier-A catalog writes from Phase 3)
+- [x] Manual e2e: bulk group-assign/pricing-tier propagate the same way; export downloads a correct CSV honoring the active filters; import creates customers with correct `AccountId` wiring, verified usable in the desktop's own customer picker after sync
+- [x] Debt/credit-limit filters and insights spot-checked against a manual ledger recomputation for a few real customers
+- [x] RTL/Arabic-numerals audit across list/profile/insights
+- [x] **Human review before Phase 8 (Live tier)**
