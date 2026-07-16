@@ -125,8 +125,25 @@ async function authedFetch(path: string, init: RequestInit = {}): Promise<Respon
   return fetch(`${BASE}${path}`, { ...init, headers })
 }
 
-/** Attempt to mint a new access token from the stored refresh token. */
-async function tryRefresh(): Promise<boolean> {
+let refreshPromise: Promise<boolean> | null = null
+
+/**
+ * Attempt to mint a new access token from the stored refresh token.
+ * Concurrent callers (e.g. several requests 401-ing at once) share one
+ * in-flight refresh instead of racing — the server rotates the refresh
+ * token on each use, so a second parallel call would otherwise submit an
+ * already-invalidated token and force a spurious logout.
+ */
+function tryRefresh(): Promise<boolean> {
+  if (!refreshPromise) {
+    refreshPromise = doRefresh().finally(() => {
+      refreshPromise = null
+    })
+  }
+  return refreshPromise
+}
+
+async function doRefresh(): Promise<boolean> {
   const refresh = session.getRefresh()
   if (!refresh) return false
   const res = await fetch(`${BASE}/v1/auth/refresh`, {
