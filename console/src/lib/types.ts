@@ -614,6 +614,254 @@ export interface StaffReportData {
 // GET /v1/tenants/{id}/hq/reports/staff
 export type StaffReportResponse = CatalogEnvelope<StaffReportData>
 
+// --- HQ customers (slice 7; hq/service.go's Customer* methods) ---
+//
+// Read-mostly, branch-specific (Customers is a Tier-B, own-BranchId table —
+// no cross-branch customer identity). Every row is decorated with its owning
+// branch's registry name/health, same "no second call needed" pattern as
+// ProductAvailability. Balance is always the gateway's D10-recomputed ledger
+// sum, never a stored column.
+
+// One customer group; mirrors CatalogGroup minus product_count.
+export interface CustomerGroup {
+  id: string
+  parent_id: string
+  name: string
+  is_active: boolean
+  num: number
+}
+
+// GET /v1/tenants/{id}/hq/customer-groups
+export type CustomerGroupsResponse = CatalogEnvelope<CustomerGroup[]>
+
+// Debt/credit filter for the customer list, profile insights, and export.
+export type CustomerDebtFilter = 'has_debt' | 'credit' | 'exceeding'
+
+// One row of the paged customer list.
+export interface CustomerRow {
+  id: string
+  num: number
+  name: string
+  branch_id: string
+  branch_name: string
+  health: BranchHealth
+  group_id?: string | null
+  group_name?: string | null
+  phone1: string
+  is_active: boolean
+  balance: number
+  credit_limit: number
+  is_credit: boolean
+  last_purchase_at?: string | null
+}
+
+export interface CustomersPage {
+  total: number
+  page: number
+  page_size: number
+  items: CustomerRow[]
+}
+
+// GET /v1/tenants/{id}/hq/customers
+export type CustomersResponse = CatalogEnvelope<CustomersPage>
+
+// One customer's purchase performance, straight off the gateway's Bills
+// aggregate — no client-side arithmetic.
+export interface CustomerStats {
+  number_of_orders: number
+  total_spent: number
+  average_order_value: number
+  last_purchase_date?: string | null
+}
+
+export interface CustomerDetail {
+  id: string
+  num: number
+  name: string
+  branch_id: string
+  branch_name: string
+  health: BranchHealth
+  group_id?: string | null
+  group_name?: string | null
+  phone1: string
+  phone2?: string | null
+  phone3?: string | null
+  address?: string | null
+  note?: string | null
+  credit_limit: number
+  is_credit: boolean
+  is_active: boolean
+  balance: number
+  stats: CustomerStats
+}
+
+// GET /v1/tenants/{id}/hq/customers/{customerId}
+export type CustomerDetailResponse = CatalogEnvelope<CustomerDetail>
+
+// One purchase (Bill), newest first.
+export interface CustomerPurchaseRow {
+  id: string
+  num: string
+  issued_at: string
+  total: number
+  item_count: number
+  is_paid: boolean
+  type: number
+}
+
+export interface CustomerPurchasesPage {
+  total: number
+  page: number
+  page_size: number
+  items: CustomerPurchaseRow[]
+}
+
+// GET /v1/tenants/{id}/hq/customers/{customerId}/purchases
+export type CustomerPurchasesResponse = CatalogEnvelope<CustomerPurchasesPage>
+
+// One ledger (CustomerTransaction) row, running balance already computed
+// server-side (T29-style self-contained pages).
+export interface CustomerLedgerRow {
+  id: string
+  created_at: string
+  dealing: number
+  total: number
+  debit: number
+  credit: number
+  running_balance: number
+  note?: string | null
+  user_id: string
+}
+
+export interface CustomerLedgerPage {
+  total: number
+  page: number
+  page_size: number
+  items: CustomerLedgerRow[]
+}
+
+// GET /v1/tenants/{id}/hq/customers/{customerId}/ledger
+export type CustomerLedgerResponse = CatalogEnvelope<CustomerLedgerPage>
+
+// One customer ranked by a spend figure (period or lifetime, depending on
+// which insights block it appears in).
+export interface CustomerInsightRow {
+  id: string
+  num: number
+  name: string
+  branch_id: string
+  amount: number
+}
+
+// One customer with no ranking figure attached (new-this-month / inactive).
+export interface CustomerRef {
+  id: string
+  num: number
+  name: string
+  branch_id: string
+}
+
+// A count plus a capped preview list — count can exceed items.length.
+export interface CustomerRefList {
+  count: number
+  items: CustomerRef[]
+}
+
+// One customer approaching (>=80% of limit) or exceeding (>=100%) its credit
+// limit.
+export interface CreditWarningRow {
+  id: string
+  num: number
+  name: string
+  branch_id: string
+  balance: number
+  credit_limit: number
+  level: 'approaching' | 'exceeding'
+}
+
+// One local calendar day of the new-customer series — a date string, not an
+// instant, same convention as SalesDay.
+export interface CustomerGrowthDay {
+  day: string
+  new_customers: number
+}
+
+export interface CustomerInsights {
+  top_customers: CustomerInsightRow[]
+  new_this_month: CustomerRefList
+  inactive: CustomerRefList
+  credit_limit_warnings: CreditWarningRow[]
+  highest_spenders: CustomerInsightRow[]
+  growth_over_time: CustomerGrowthDay[]
+}
+
+// GET /v1/tenants/{id}/hq/customers/insights
+export type CustomerInsightsResponse = CatalogEnvelope<CustomerInsights>
+
+// POST /v1/tenants/{id}/hq/customers — bounded create, no opening balance in
+// v1 (mirrors NewProductInput's "no opening balance from HQ" decision).
+export interface NewCustomerInput {
+  name: string
+  phone1: string
+  phone2?: string
+  phone3?: string
+  address?: string
+  note?: string
+  group_id?: string
+  credit_limit?: number
+  branch_id: string
+}
+
+export interface NewCustomerResult {
+  id: string
+  num: number
+  written_at: string
+}
+
+// PUT /v1/tenants/{id}/hq/customers/{customerId} — flat partial update; every
+// field optional, only provided fields are changed. "Deactivate" is just
+// is_active:false through this same call.
+export interface CustomerEditInput {
+  name?: string
+  phone1?: string
+  phone2?: string
+  phone3?: string
+  address?: string
+  note?: string
+  group_id?: string
+  credit_limit?: number
+  is_active?: boolean
+}
+
+export interface UpdateCustomerResult {
+  written_at: string
+}
+
+// PUT /v1/tenants/{id}/hq/customers/bulk — at least one of group_id/price_tier
+// is required.
+export interface BulkUpdateCustomersInput {
+  ids: string[]
+  group_id?: string
+  price_tier?: number
+}
+
+export interface BulkUpdateCustomersResult {
+  updated: number
+  written_at: string
+}
+
+// POST /v1/tenants/{id}/hq/customers/import — one bad row never aborts the
+// batch; each failure is reported here instead.
+export interface ImportCustomersError {
+  row: number
+  message: string
+}
+
+export interface ImportCustomersResult {
+  created: number
+  errors: ImportCustomersError[]
+}
+
 // auth session (sessionResponse map in auth_handlers.go)
 export interface Session {
   access_token: string

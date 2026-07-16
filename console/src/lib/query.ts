@@ -77,4 +77,34 @@ export const qk = {
     id: string,
     params: { from?: string; to?: string; branchId?: string },
   ) => ['hq-reports', id, 'staff', params] as const,
+  // Shared 'hq-customers' prefix — one SSE invalidation flips list/detail/
+  // purchases/ledger/insights together, same pattern as 'hq-inventory'.
+  customerGroups: (id: string) => ['hq-customers', id, 'groups'] as const,
+  customers: (
+    id: string,
+    params: {
+      search?: string
+      branchId?: string
+      groupId?: string
+      active?: boolean
+      debt?: string
+      page?: number
+      pageSize?: number
+    },
+  ) => ['hq-customers', id, 'list', params] as const,
+  customer: (id: string, customerId: string) => ['hq-customers', id, 'detail', customerId] as const,
+  customerPurchases: (
+    id: string,
+    customerId: string,
+    params: { page?: number; pageSize?: number },
+  ) => ['hq-customers', id, 'purchases', customerId, params] as const,
+  customerLedger: (
+    id: string,
+    customerId: string,
+    params: { page?: number; pageSize?: number },
+  ) => ['hq-customers', id, 'ledger', customerId, params] as const,
+  customerInsights: (
+    id: string,
+    params: { branchId?: string; from?: string; to?: string },
+  ) => ['hq-customers', id, 'insights', params] as const,
 }

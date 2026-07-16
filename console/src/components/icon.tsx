@@ -106,6 +106,7 @@ export const DeviceIcon = MonitorSmartphone
 export const DesktopIcon = Monitor
 export const MobileIcon = Smartphone
 export const BillingIcon = Bill
+export const ReceiptIcon = Bill
 export const WalletIcon = Wallet
 export const DownloadIcon = Download
 

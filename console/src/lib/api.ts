@@ -6,17 +6,30 @@ import type {
   BranchActivityResponse,
   BranchDevice,
   BranchesReportResponse,
+  BulkUpdateCustomersInput,
+  BulkUpdateCustomersResult,
   Bundle,
   CatalogGroupsResponse,
   CatalogProductsResponse,
   Company,
   ConflictsResponse,
+  CustomerDebtFilter,
+  CustomerDetailResponse,
+  CustomerEditInput,
+  CustomerGroupsResponse,
+  CustomerInsightsResponse,
+  CustomerLedgerResponse,
+  CustomerPurchasesResponse,
+  CustomersResponse,
   HqBranchesResponse,
+  ImportCustomersResult,
   InventoryBranchesResponse,
   InventoryProductsResponse,
   InventoryStatusFilter,
   MeView,
   MovementsResponse,
+  NewCustomerInput,
+  NewCustomerResult,
   NewProductInput,
   NewProductResult,
   PriceChangeInput,
@@ -29,6 +42,7 @@ import type {
   StaffReportResponse,
   SyncToken,
   Tenant,
+  UpdateCustomerResult,
 } from './types'
 
 const BASE = import.meta.env.VITE_API_BASE_URL ?? ''
@@ -98,6 +112,15 @@ async function rawFetch(path: string, init: RequestInit): Promise<Response> {
   if (!headers.has('Content-Type') && init.body) {
     headers.set('Content-Type', 'application/json')
   }
+  if (accessToken) headers.set('Authorization', `Bearer ${accessToken}`)
+  return fetch(`${BASE}${path}`, { ...init, headers })
+}
+
+// Bearer-only fetch with no auto Content-Type — customers import/export (T61)
+// need this instead of rawFetch: a FormData body needs the browser's own
+// multipart boundary header, and a blob download needs no Content-Type at all.
+async function authedFetch(path: string, init: RequestInit = {}): Promise<Response> {
+  const headers = new Headers(init.headers)
   if (accessToken) headers.set('Authorization', `Bearer ${accessToken}`)
   return fetch(`${BASE}${path}`, { ...init, headers })
 }
@@ -438,6 +461,137 @@ export const api = {
     return request<StaffReportResponse>(
       `/v1/tenants/${tenantId}/hq/reports/staff${qs ? `?${qs}` : ''}`,
     )
+  },
+
+  // customers (slice 7): read-mostly, branch-specific — same HQ chain as
+  // catalog/inventory/reports. search/branch/group/active/debt/page/pageSize
+  // are gateway-owned filters, same convention as inventoryProducts.
+  customerGroups: (tenantId: string) =>
+    request<CustomerGroupsResponse>(`/v1/tenants/${tenantId}/hq/customer-groups`),
+
+  customers: (
+    tenantId: string,
+    params: {
+      search?: string
+      branchId?: string
+      groupId?: string
+      active?: boolean
+      debt?: CustomerDebtFilter
+      page?: number
+      pageSize?: number
+    },
+  ) => {
+    const q = new URLSearchParams()
+    if (params.search) q.set('search', params.search)
+    if (params.branchId) q.set('branch_id', params.branchId)
+    if (params.groupId) q.set('group_id', params.groupId)
+    if (params.active !== undefined) q.set('active', String(params.active))
+    if (params.debt) q.set('debt', params.debt)
+    if (params.page) q.set('page', String(params.page))
+    if (params.pageSize) q.set('page_size', String(params.pageSize))
+    const qs = q.toString()
+    return request<CustomersResponse>(`/v1/tenants/${tenantId}/hq/customers${qs ? `?${qs}` : ''}`)
+  },
+
+  customer: (tenantId: string, customerId: string) =>
+    request<CustomerDetailResponse>(`/v1/tenants/${tenantId}/hq/customers/${customerId}`),
+
+  customerPurchases: (
+    tenantId: string,
+    customerId: string,
+    params: { page?: number; pageSize?: number },
+  ) => {
+    const q = new URLSearchParams()
+    if (params.page) q.set('page', String(params.page))
+    if (params.pageSize) q.set('page_size', String(params.pageSize))
+    const qs = q.toString()
+    return request<CustomerPurchasesResponse>(
+      `/v1/tenants/${tenantId}/hq/customers/${customerId}/purchases${qs ? `?${qs}` : ''}`,
+    )
+  },
+
+  customerLedger: (
+    tenantId: string,
+    customerId: string,
+    params: { page?: number; pageSize?: number },
+  ) => {
+    const q = new URLSearchParams()
+    if (params.page) q.set('page', String(params.page))
+    if (params.pageSize) q.set('page_size', String(params.pageSize))
+    const qs = q.toString()
+    return request<CustomerLedgerResponse>(
+      `/v1/tenants/${tenantId}/hq/customers/${customerId}/ledger${qs ? `?${qs}` : ''}`,
+    )
+  },
+
+  customerInsights: (
+    tenantId: string,
+    params: { branchId?: string; from?: string; to?: string },
+  ) => {
+    const q = new URLSearchParams()
+    if (params.branchId) q.set('branch_id', params.branchId)
+    if (params.from) q.set('from', params.from)
+    if (params.to) q.set('to', params.to)
+    const qs = q.toString()
+    return request<CustomerInsightsResponse>(
+      `/v1/tenants/${tenantId}/hq/customers/insights${qs ? `?${qs}` : ''}`,
+    )
+  },
+
+  createCustomer: (tenantId: string, input: NewCustomerInput) =>
+    request<NewCustomerResult>(`/v1/tenants/${tenantId}/hq/customers`, post(input)),
+
+  updateCustomer: (tenantId: string, customerId: string, input: CustomerEditInput) =>
+    request<UpdateCustomerResult>(`/v1/tenants/${tenantId}/hq/customers/${customerId}`, {
+      method: 'PUT',
+      body: JSON.stringify(input),
+    }),
+
+  bulkUpdateCustomers: (tenantId: string, input: BulkUpdateCustomersInput) =>
+    request<BulkUpdateCustomersResult>(`/v1/tenants/${tenantId}/hq/customers/bulk`, {
+      method: 'PUT',
+      body: JSON.stringify(input),
+    }),
+
+  // Blob/multipart — bypass the JSON `request` helper (see authedFetch).
+  exportCustomers: async (
+    tenantId: string,
+    params: {
+      search?: string
+      branchId?: string
+      groupId?: string
+      active?: boolean
+      debt?: CustomerDebtFilter
+    },
+  ): Promise<Blob> => {
+    const q = new URLSearchParams()
+    if (params.search) q.set('search', params.search)
+    if (params.branchId) q.set('branch_id', params.branchId)
+    if (params.groupId) q.set('group_id', params.groupId)
+    if (params.active !== undefined) q.set('active', String(params.active))
+    if (params.debt) q.set('debt', params.debt)
+    const qs = q.toString()
+    const res = await authedFetch(
+      `/v1/tenants/${tenantId}/hq/customers/export${qs ? `?${qs}` : ''}`,
+    )
+    if (!res.ok) throw new ApiError(res.status, await parseError(res))
+    return res.blob()
+  },
+
+  importCustomers: async (
+    tenantId: string,
+    file: File,
+    branchId: string,
+  ): Promise<ImportCustomersResult> => {
+    const form = new FormData()
+    form.set('file', file)
+    form.set('branch_id', branchId)
+    const res = await authedFetch(`/v1/tenants/${tenantId}/hq/customers/import`, {
+      method: 'POST',
+      body: form,
+    })
+    if (!res.ok) throw new ApiError(res.status, await parseError(res))
+    return (await res.json()) as ImportCustomersResult
   },
 
   // SSE stream URL. EventSource cannot set an Authorization header, so the

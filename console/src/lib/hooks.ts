@@ -4,9 +4,13 @@ import { api, session } from './api'
 import { qk } from './query'
 import type {
   AckConflictsInput,
+  BulkUpdateCustomersInput,
   Bundle,
   BranchStatus,
+  CustomerDebtFilter,
+  CustomerEditInput,
   InventoryStatusFilter,
+  NewCustomerInput,
   NewProductInput,
   PriceChangeInput,
   ReportSort,
@@ -262,6 +266,9 @@ export function useTenantEvents(tenantId: string | undefined) {
         // Report figures come from Bills the round just uploaded — same
         // moment, same mechanism.
         void qc.invalidateQueries({ queryKey: ['hq-reports', tenantId] })
+        // Customer balances/purchase stats/insights all derive from the same
+        // Bills/CustomerTransactions rows a sync round just uploaded.
+        void qc.invalidateQueries({ queryKey: ['hq-customers', tenantId] })
       })
       es.onerror = () => {
         es?.close()
@@ -428,6 +435,139 @@ export function useUpdateBranch(tenantId: string) {
     }) => api.updateBranch(tenantId, branchId, input),
     onSuccess: () => {
       void qc.invalidateQueries({ queryKey: qk.bundle(tenantId) })
+    },
+  })
+}
+
+// --- Customers (slice 7): read-mostly, branch-specific. Paged/list-shaped
+// hooks keep previous data (Catalog's pattern) so filter/page changes never
+// blank the view; the shared 'hq-customers' key prefix is SSE-invalidated. ---
+
+/** Every customer group for the Customers page's filter row / create form. */
+export function useCustomerGroups(tenantId: string | undefined) {
+  return useQuery({
+    queryKey: qk.customerGroups(tenantId ?? ''),
+    queryFn: () => api.customerGroups(tenantId as string),
+    enabled: !!tenantId,
+  })
+}
+
+export interface CustomersParams {
+  search?: string
+  branchId?: string
+  groupId?: string
+  active?: boolean
+  debt?: CustomerDebtFilter
+  page?: number
+  pageSize?: number
+}
+
+/** One page of the searchable/filterable customer list. */
+export function useCustomers(tenantId: string | undefined, params: CustomersParams) {
+  return useQuery({
+    queryKey: qk.customers(tenantId ?? '', params),
+    queryFn: () => api.customers(tenantId as string, params),
+    enabled: !!tenantId,
+    placeholderData: keepPreviousData,
+  })
+}
+
+/** One customer's full detail: basic info + recomputed balance + stats. */
+export function useCustomer(tenantId: string | undefined, customerId: string | undefined) {
+  return useQuery({
+    queryKey: qk.customer(tenantId ?? '', customerId ?? ''),
+    queryFn: () => api.customer(tenantId as string, customerId as string),
+    enabled: !!tenantId && !!customerId,
+  })
+}
+
+/** One page of a customer's purchase history. */
+export function useCustomerPurchases(
+  tenantId: string | undefined,
+  customerId: string | undefined,
+  params: { page?: number; pageSize?: number },
+) {
+  return useQuery({
+    queryKey: qk.customerPurchases(tenantId ?? '', customerId ?? '', params),
+    queryFn: () => api.customerPurchases(tenantId as string, customerId as string, params),
+    enabled: !!tenantId && !!customerId,
+    placeholderData: keepPreviousData,
+  })
+}
+
+/** One page of a customer's credit-history ledger (running balance, T52). */
+export function useCustomerLedger(
+  tenantId: string | undefined,
+  customerId: string | undefined,
+  params: { page?: number; pageSize?: number },
+) {
+  return useQuery({
+    queryKey: qk.customerLedger(tenantId ?? '', customerId ?? '', params),
+    queryFn: () => api.customerLedger(tenantId as string, customerId as string, params),
+    enabled: !!tenantId && !!customerId,
+    placeholderData: keepPreviousData,
+  })
+}
+
+/** Six-block customer insights (top/new/inactive/credit-warnings/highest/growth). */
+export function useCustomerInsights(
+  tenantId: string | undefined,
+  params: { branchId?: string; from?: string; to?: string },
+) {
+  return useQuery({
+    queryKey: qk.customerInsights(tenantId ?? '', params),
+    queryFn: () => api.customerInsights(tenantId as string, params),
+    enabled: !!tenantId,
+    placeholderData: keepPreviousData,
+  })
+}
+
+/**
+ * Create a customer (HQ's first write into a Tier-B table). On success,
+ * invalidates every `hq-customers` list/insights query for this tenant so
+ * the new row appears the moment the list is revisited.
+ */
+export function useCreateCustomer(tenantId: string) {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: (input: NewCustomerInput) => api.createCustomer(tenantId, input),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ['hq-customers', tenantId] })
+    },
+  })
+}
+
+/** Partial customer update, including deactivate (`is_active:false`). */
+export function useUpdateCustomer(tenantId: string) {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: ({ customerId, ...input }: CustomerEditInput & { customerId: string }) =>
+      api.updateCustomer(tenantId, customerId, input),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ['hq-customers', tenantId] })
+    },
+  })
+}
+
+/** Bulk group-assign and/or pricing-tier update over a set of customer ids. */
+export function useBulkUpdateCustomers(tenantId: string) {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: (input: BulkUpdateCustomersInput) => api.bulkUpdateCustomers(tenantId, input),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ['hq-customers', tenantId] })
+    },
+  })
+}
+
+/** Import customers from a CSV file, reusing the create path row-by-row. */
+export function useImportCustomers(tenantId: string) {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: ({ file, branchId }: { file: File; branchId: string }) =>
+      api.importCustomers(tenantId, file, branchId),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ['hq-customers', tenantId] })
     },
   })
 }
