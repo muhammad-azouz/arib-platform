@@ -744,16 +744,16 @@ Design notes (2026-07-16): ad hoc addition, not in the original spec note — re
 - [x] **T71: Console — Create/Edit/Import dialogs + bulk UI + nav wiring**
   - **Description:** Mirror T65 (including the CSV-import branch-`<select>` UX from the Phase 7 bugfix, not the older CSV-`branch_id`-column shape): new `CreateSupplierDialog.tsx`, `EditSupplierDialog.tsx`, `ImportSuppliersDialog.tsx`, `SupplierBulkActionsBar.tsx` (duplicated from `BulkActionsBar.tsx` rather than genericized — it's tightly coupled to `useBulkUpdateCustomers` + "عميل" strings, not worth destabilizing a working component for). Route wiring in `App.tsx` (`suppliers`, `suppliers/:supplierId`, right after the customer routes) and a nav entry in `AppShell.tsx` right after "العملاء" (`{ to: `${base}/suppliers`, label: 'الموردون', icon: SupplierIcon }`), with a new `SupplierIcon` (Solar's `Delivery` glyph) added to `icon.tsx` rather than reusing `UsersIcon` a second time.
   - Acceptance:
-    - [ ] Import is disabled until both a file and a branch are selected; per-row Arabic error table on partial failure (missing field, type mismatch) — same UX as Customers' fixed bug — *(code mirrors `ImportCustomersDialog.tsx`'s fixed behavior exactly, including the `disabled={!file || !branchId || ...}` guard; not yet click-through-verified)*
-    - [ ] Bulk group/price-tier mutation reflects immediately in the list; export honors active filters — *(code correct via query invalidation on `hq-suppliers`; not yet click-through-verified)*
+    - [x] Import is disabled until both a file and a branch are selected; per-row Arabic error table on partial failure (missing field, type mismatch) — same UX as Customers' fixed bug — *(2026-07-16, human-verified)*
+    - [x] Bulk group/price-tier mutation reflects immediately in the list; export honors active filters — *(2026-07-16, human-verified)*
     - [x] "الموردون" nav tab sits beside "العملاء" in both desktop sidebar and mobile nav, with its own distinguishable icon — confirmed by code: single `nav` array in `AppShell.tsx` drives both, `SupplierIcon` (`Delivery`) is a distinct glyph from `UsersIcon` (`UsersGroupRounded`)
   - Verify: `npx tsc --noEmit`; `npx eslint`; `pnpm build && pnpm lint` — all clean (2026-07-16). Manual click-through of create/edit/bulk/import/export pending — see Checkpoint 8.
   - Files: `console/src/components/{CreateSupplierDialog,EditSupplierDialog,ImportSuppliersDialog,SupplierBulkActionsBar}.tsx` (new), `console/src/{App,components/AppShell,components/icon}.tsx`
   - Dependencies: T70 · **Size: M**
 
 ### Checkpoint 8
-- [x] All gates green (api `go build ./... && go vet ./... && go test ./...`, gateway `dotnet build AribSyncGateway.csproj`, console `pnpm build && pnpm lint`) *(2026-07-16, machine-verified end-to-end; gateway and API dev processes both restarted onto the new binaries and route-table-smoke-tested — see T67. No minted HQ token or browser-automation tool was available in this session, so the data-level/manual items below are still open — same "living document" convention as every prior phase: only checked once actually verified, not just code-complete.)*
-- [ ] Manual regression: Customers list/profile/create/edit/bulk/import/export/insights all unchanged after the T66 parameterization
-- [ ] Manual e2e: Suppliers list/profile/create/edit/bulk/import/export/insights match the Customers UX exactly, verified against a real synced tenant
-- [ ] RTL/Arabic-numerals audit on the new Suppliers views
-- [ ] Human review before Phase 9 (Live tier)
+- [x] All gates green (api `go build ./... && go vet ./... && go test ./...`, gateway `dotnet build AribSyncGateway.csproj`, console `pnpm build && pnpm lint`) *(2026-07-16, machine-verified end-to-end; gateway and API dev processes both restarted onto the new binaries and route-table-smoke-tested — see T67.)*
+- [x] Manual regression: Customers list/profile/create/edit/bulk/import/export/insights all unchanged after the T66 parameterization *(2026-07-16, human-verified)*
+- [x] Manual e2e: Suppliers list/profile/create/edit/bulk/import/export/insights match the Customers UX exactly, verified against a real synced tenant *(2026-07-16, human-verified; found and fixed a ledger transaction-type label bug — "نوع 200" — commit 49db2aa)*
+- [x] RTL/Arabic-numerals audit on the new Suppliers views *(2026-07-16, human-verified)*
+- [x] Human review before Phase 9 (Live tier) *(2026-07-16)*

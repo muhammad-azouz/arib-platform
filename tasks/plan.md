@@ -214,10 +214,10 @@ Bugs found and fixed during this checkpoint's e2e pass (2026-07-15): desktop `Up
 
 ### Checkpoint 8 (Suppliers shipped)
 - [x] All gates green (api `go build ./... && go vet ./... && go test ./...`, gateway `dotnet build AribSyncGateway.csproj`, console `pnpm build && pnpm lint`) *(2026-07-16, machine-verified; manual/e2e items below are pending human click-through — no browser automation available in this session, see todo.md)*
-- [ ] Manual regression: Customers list/profile/create/edit/bulk/import/export/insights all unchanged after the T66 parameterization
-- [ ] Manual e2e: Suppliers list/profile/create/edit/bulk/import/export/insights match the Customers UX exactly, verified against a real synced tenant
-- [ ] RTL/Arabic-numerals audit on the new Suppliers views
-- [ ] Human review before Phase 9 (Live tier)
+- [x] Manual regression: Customers list/profile/create/edit/bulk/import/export/insights all unchanged after the T66 parameterization *(2026-07-16, human-verified)*
+- [x] Manual e2e: Suppliers list/profile/create/edit/bulk/import/export/insights match the Customers UX exactly, verified against a real synced tenant *(2026-07-16, human-verified; ledger transaction-type label bug found and fixed, see fix commit 49db2aa)*
+- [x] RTL/Arabic-numerals audit on the new Suppliers views *(2026-07-16, human-verified)*
+- [x] Human review before Phase 9 (Live tier) *(2026-07-16)*
 
 ### Later phases (outline only — broken down when reached)
 - **Phase 9 — Live tier (SignalR):** separate spec, per the main spec's slice 8.
