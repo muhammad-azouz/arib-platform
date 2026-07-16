@@ -53,6 +53,7 @@ import {
   Scanner,
   History,
   BellBing,
+  Delivery,
 } from '@solar-icons/react'
 
 /** Shared type for any icon component in this module (Solar forward-ref svg). */
@@ -78,6 +79,7 @@ export const UnitIcon = Scale
 export const BarcodeIcon = Scanner
 export const HistoryIcon = History
 export const BellIcon = BellBing
+export const SupplierIcon = Delivery
 
 // Actions
 export const AddIcon = AddCircle

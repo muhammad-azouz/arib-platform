@@ -17,6 +17,8 @@ import { ProductDetail } from '@/pages/console/ProductDetail'
 import { Inventory } from '@/pages/console/Inventory'
 import { Customers } from '@/pages/console/Customers'
 import { CustomerDetail } from '@/pages/console/CustomerDetail'
+import { Suppliers } from '@/pages/console/Suppliers'
+import { SupplierDetail } from '@/pages/console/SupplierDetail'
 import { Conflicts } from '@/pages/console/Conflicts'
 import { Reports } from '@/pages/console/Reports'
 import { Download } from '@/pages/console/Download'
@@ -64,6 +66,8 @@ export default function App() {
             <Route path="inventory" element={<Inventory />} />
             <Route path="customers" element={<Customers />} />
             <Route path="customers/:customerId" element={<CustomerDetail />} />
+            <Route path="suppliers" element={<Suppliers />} />
+            <Route path="suppliers/:supplierId" element={<SupplierDetail />} />
             <Route path="conflicts" element={<Conflicts />} />
             <Route path="reports" element={<Reports />} />
             <Route path="download" element={<Download />} />

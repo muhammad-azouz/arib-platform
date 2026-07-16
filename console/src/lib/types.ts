@@ -862,6 +862,200 @@ export interface ImportCustomersResult {
   errors: ImportCustomersError[]
 }
 
+// --- HQ suppliers (slice 8; hq/service.go's Supplier* methods) ---
+//
+// Mirrors the Customer types above field-for-field — same underlying
+// Customer table/entity on the gateway (Type == Supplier instead of
+// Customer). CustomerGroup/CustomerGroupsResponse above are reused as-is
+// for suppliers: groups aren't type-scoped in the schema, no
+// SupplierGroup type exists.
+
+// Debt/credit filter for the supplier list, profile insights, and export.
+export type SupplierDebtFilter = 'has_debt' | 'credit' | 'exceeding'
+
+// One row of the paged supplier list.
+export interface SupplierRow {
+  id: string
+  num: number
+  name: string
+  branch_id: string
+  branch_name: string
+  health: BranchHealth
+  group_id?: string | null
+  group_name?: string | null
+  phone1: string
+  is_active: boolean
+  balance: number
+  credit_limit: number
+  is_credit: boolean
+  last_purchase_at?: string | null
+}
+
+export interface SuppliersPage {
+  total: number
+  page: number
+  page_size: number
+  items: SupplierRow[]
+}
+
+// GET /v1/tenants/{id}/hq/suppliers
+export type SuppliersResponse = CatalogEnvelope<SuppliersPage>
+
+// One supplier's purchase performance (bills the business received from the
+// supplier), straight off the gateway's Bills aggregate.
+export interface SupplierStats {
+  number_of_orders: number
+  total_spent: number
+  average_order_value: number
+  last_purchase_date?: string | null
+}
+
+export interface SupplierDetail {
+  id: string
+  num: number
+  name: string
+  branch_id: string
+  branch_name: string
+  health: BranchHealth
+  group_id?: string | null
+  group_name?: string | null
+  phone1: string
+  phone2?: string | null
+  phone3?: string | null
+  address?: string | null
+  note?: string | null
+  credit_limit: number
+  is_credit: boolean
+  is_active: boolean
+  balance: number
+  stats: SupplierStats
+}
+
+// GET /v1/tenants/{id}/hq/suppliers/{supplierId}
+export type SupplierDetailResponse = CatalogEnvelope<SupplierDetail>
+
+// One purchase (a Bill the business received from the supplier), newest
+// first.
+export interface SupplierPurchaseRow {
+  id: string
+  num: string
+  issued_at: string
+  total: number
+  item_count: number
+  is_paid: boolean
+  type: number
+}
+
+export interface SupplierPurchasesPage {
+  total: number
+  page: number
+  page_size: number
+  items: SupplierPurchaseRow[]
+}
+
+// GET /v1/tenants/{id}/hq/suppliers/{supplierId}/purchases
+export type SupplierPurchasesResponse = CatalogEnvelope<SupplierPurchasesPage>
+
+// One ledger (CustomerTransaction) row, running balance already computed
+// server-side.
+export interface SupplierLedgerRow {
+  id: string
+  created_at: string
+  dealing: number
+  total: number
+  debit: number
+  credit: number
+  running_balance: number
+  note?: string | null
+  user_id: string
+}
+
+export interface SupplierLedgerPage {
+  total: number
+  page: number
+  page_size: number
+  items: SupplierLedgerRow[]
+}
+
+// GET /v1/tenants/{id}/hq/suppliers/{supplierId}/ledger
+export type SupplierLedgerResponse = CatalogEnvelope<SupplierLedgerPage>
+
+export interface SupplierInsights {
+  top_customers: CustomerInsightRow[]
+  new_this_month: CustomerRefList
+  inactive: CustomerRefList
+  credit_limit_warnings: CreditWarningRow[]
+  highest_spenders: CustomerInsightRow[]
+  growth_over_time: CustomerGrowthDay[]
+}
+
+// GET /v1/tenants/{id}/hq/suppliers/insights
+export type SupplierInsightsResponse = CatalogEnvelope<SupplierInsights>
+
+// POST /v1/tenants/{id}/hq/suppliers — bounded create, no opening balance in
+// v1 (mirrors NewCustomerInput).
+export interface NewSupplierInput {
+  name: string
+  phone1: string
+  phone2?: string
+  phone3?: string
+  address?: string
+  note?: string
+  group_id?: string
+  credit_limit?: number
+  branch_id: string
+}
+
+export interface NewSupplierResult {
+  id: string
+  num: number
+  written_at: string
+}
+
+// PUT /v1/tenants/{id}/hq/suppliers/{supplierId} — flat partial update;
+// every field optional, only provided fields are changed. "Deactivate" is
+// just is_active:false through this same call.
+export interface SupplierEditInput {
+  name?: string
+  phone1?: string
+  phone2?: string
+  phone3?: string
+  address?: string
+  note?: string
+  group_id?: string
+  credit_limit?: number
+  is_active?: boolean
+}
+
+export interface UpdateSupplierResult {
+  written_at: string
+}
+
+// PUT /v1/tenants/{id}/hq/suppliers/bulk — at least one of group_id/price_tier
+// is required.
+export interface BulkUpdateSuppliersInput {
+  ids: string[]
+  group_id?: string
+  price_tier?: number
+}
+
+export interface BulkUpdateSuppliersResult {
+  updated: number
+  written_at: string
+}
+
+// POST /v1/tenants/{id}/hq/suppliers/import — one bad row never aborts the
+// batch; each failure is reported here instead.
+export interface ImportSuppliersError {
+  row: number
+  message: string
+}
+
+export interface ImportSuppliersResult {
+  created: number
+  errors: ImportSuppliersError[]
+}
+
 // auth session (sessionResponse map in auth_handlers.go)
 export interface Session {
   access_token: string

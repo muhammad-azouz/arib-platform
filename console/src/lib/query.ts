@@ -107,4 +107,34 @@ export const qk = {
     id: string,
     params: { branchId?: string; from?: string; to?: string },
   ) => ['hq-customers', id, 'insights', params] as const,
+  // Shared 'hq-suppliers' prefix, mirroring 'hq-customers' above. No
+  // supplierGroups key — customerGroups above is reused for suppliers too,
+  // groups aren't type-scoped in the schema.
+  suppliers: (
+    id: string,
+    params: {
+      search?: string
+      branchId?: string
+      groupId?: string
+      active?: boolean
+      debt?: string
+      page?: number
+      pageSize?: number
+    },
+  ) => ['hq-suppliers', id, 'list', params] as const,
+  supplier: (id: string, supplierId: string) => ['hq-suppliers', id, 'detail', supplierId] as const,
+  supplierPurchases: (
+    id: string,
+    supplierId: string,
+    params: { page?: number; pageSize?: number },
+  ) => ['hq-suppliers', id, 'purchases', supplierId, params] as const,
+  supplierLedger: (
+    id: string,
+    supplierId: string,
+    params: { page?: number; pageSize?: number },
+  ) => ['hq-suppliers', id, 'ledger', supplierId, params] as const,
+  supplierInsights: (
+    id: string,
+    params: { branchId?: string; from?: string; to?: string },
+  ) => ['hq-suppliers', id, 'insights', params] as const,
 }

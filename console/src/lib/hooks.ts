@@ -5,6 +5,7 @@ import { qk } from './query'
 import type {
   AckConflictsInput,
   BulkUpdateCustomersInput,
+  BulkUpdateSuppliersInput,
   Bundle,
   BranchStatus,
   CustomerDebtFilter,
@@ -12,8 +13,11 @@ import type {
   InventoryStatusFilter,
   NewCustomerInput,
   NewProductInput,
+  NewSupplierInput,
   PriceChangeInput,
   ReportSort,
+  SupplierDebtFilter,
+  SupplierEditInput,
   Tenant,
 } from './types'
 
@@ -269,6 +273,9 @@ export function useTenantEvents(tenantId: string | undefined) {
         // Customer balances/purchase stats/insights all derive from the same
         // Bills/CustomerTransactions rows a sync round just uploaded.
         void qc.invalidateQueries({ queryKey: ['hq-customers', tenantId] })
+        // Suppliers share the same Bills/CustomerTransactions rows, just
+        // Type == Supplier — same invalidation trigger as customers above.
+        void qc.invalidateQueries({ queryKey: ['hq-suppliers', tenantId] })
       })
       es.onerror = () => {
         es?.close()
@@ -568,6 +575,131 @@ export function useImportCustomers(tenantId: string) {
       api.importCustomers(tenantId, file, branchId),
     onSuccess: () => {
       void qc.invalidateQueries({ queryKey: ['hq-customers', tenantId] })
+    },
+  })
+}
+
+// --- Suppliers (slice 8): mirrors the Customers hooks above verbatim, one
+// prefix over. useCustomerGroups above is reused for suppliers too — groups
+// aren't type-scoped in the schema, no useSupplierGroups hook. ---
+
+export interface SuppliersParams {
+  search?: string
+  branchId?: string
+  groupId?: string
+  active?: boolean
+  debt?: SupplierDebtFilter
+  page?: number
+  pageSize?: number
+}
+
+/** One page of the searchable/filterable supplier list. */
+export function useSuppliers(tenantId: string | undefined, params: SuppliersParams) {
+  return useQuery({
+    queryKey: qk.suppliers(tenantId ?? '', params),
+    queryFn: () => api.suppliers(tenantId as string, params),
+    enabled: !!tenantId,
+    placeholderData: keepPreviousData,
+  })
+}
+
+/** One supplier's full detail: basic info + recomputed balance + stats. */
+export function useSupplier(tenantId: string | undefined, supplierId: string | undefined) {
+  return useQuery({
+    queryKey: qk.supplier(tenantId ?? '', supplierId ?? ''),
+    queryFn: () => api.supplier(tenantId as string, supplierId as string),
+    enabled: !!tenantId && !!supplierId,
+  })
+}
+
+/** One page of a supplier's purchase history. */
+export function useSupplierPurchases(
+  tenantId: string | undefined,
+  supplierId: string | undefined,
+  params: { page?: number; pageSize?: number },
+) {
+  return useQuery({
+    queryKey: qk.supplierPurchases(tenantId ?? '', supplierId ?? '', params),
+    queryFn: () => api.supplierPurchases(tenantId as string, supplierId as string, params),
+    enabled: !!tenantId && !!supplierId,
+    placeholderData: keepPreviousData,
+  })
+}
+
+/** One page of a supplier's credit-history ledger (running balance). */
+export function useSupplierLedger(
+  tenantId: string | undefined,
+  supplierId: string | undefined,
+  params: { page?: number; pageSize?: number },
+) {
+  return useQuery({
+    queryKey: qk.supplierLedger(tenantId ?? '', supplierId ?? '', params),
+    queryFn: () => api.supplierLedger(tenantId as string, supplierId as string, params),
+    enabled: !!tenantId && !!supplierId,
+    placeholderData: keepPreviousData,
+  })
+}
+
+/** Six-block supplier insights (top/new/inactive/credit-warnings/highest/growth). */
+export function useSupplierInsights(
+  tenantId: string | undefined,
+  params: { branchId?: string; from?: string; to?: string },
+) {
+  return useQuery({
+    queryKey: qk.supplierInsights(tenantId ?? '', params),
+    queryFn: () => api.supplierInsights(tenantId as string, params),
+    enabled: !!tenantId,
+    placeholderData: keepPreviousData,
+  })
+}
+
+/**
+ * Create a supplier (writes the same Customer table as useCreateCustomer,
+ * Type == Supplier). On success, invalidates every `hq-suppliers` list/
+ * insights query for this tenant so the new row appears the moment the list
+ * is revisited.
+ */
+export function useCreateSupplier(tenantId: string) {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: (input: NewSupplierInput) => api.createSupplier(tenantId, input),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ['hq-suppliers', tenantId] })
+    },
+  })
+}
+
+/** Partial supplier update, including deactivate (`is_active:false`). */
+export function useUpdateSupplier(tenantId: string) {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: ({ supplierId, ...input }: SupplierEditInput & { supplierId: string }) =>
+      api.updateSupplier(tenantId, supplierId, input),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ['hq-suppliers', tenantId] })
+    },
+  })
+}
+
+/** Bulk group-assign and/or pricing-tier update over a set of supplier ids. */
+export function useBulkUpdateSuppliers(tenantId: string) {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: (input: BulkUpdateSuppliersInput) => api.bulkUpdateSuppliers(tenantId, input),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ['hq-suppliers', tenantId] })
+    },
+  })
+}
+
+/** Import suppliers from a CSV file, reusing the create path row-by-row. */
+export function useImportSuppliers(tenantId: string) {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: ({ file, branchId }: { file: File; branchId: string }) =>
+      api.importSuppliers(tenantId, file, branchId),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ['hq-suppliers', tenantId] })
     },
   })
 }

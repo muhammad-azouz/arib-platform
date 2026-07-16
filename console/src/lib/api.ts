@@ -8,6 +8,8 @@ import type {
   BranchesReportResponse,
   BulkUpdateCustomersInput,
   BulkUpdateCustomersResult,
+  BulkUpdateSuppliersInput,
+  BulkUpdateSuppliersResult,
   Bundle,
   CatalogGroupsResponse,
   CatalogProductsResponse,
@@ -23,6 +25,7 @@ import type {
   CustomersResponse,
   HqBranchesResponse,
   ImportCustomersResult,
+  ImportSuppliersResult,
   InventoryBranchesResponse,
   InventoryProductsResponse,
   InventoryStatusFilter,
@@ -32,6 +35,8 @@ import type {
   NewCustomerResult,
   NewProductInput,
   NewProductResult,
+  NewSupplierInput,
+  NewSupplierResult,
   PriceChangeInput,
   PriceChangeResult,
   ProductDetailResponse,
@@ -40,9 +45,17 @@ import type {
   SalesReportResponse,
   Session,
   StaffReportResponse,
+  SupplierDebtFilter,
+  SupplierDetailResponse,
+  SupplierEditInput,
+  SupplierInsightsResponse,
+  SupplierLedgerResponse,
+  SupplierPurchasesResponse,
+  SuppliersResponse,
   SyncToken,
   Tenant,
   UpdateCustomerResult,
+  UpdateSupplierResult,
 } from './types'
 
 const BASE = import.meta.env.VITE_API_BASE_URL ?? ''
@@ -609,6 +622,134 @@ export const api = {
     })
     if (!res.ok) throw new ApiError(res.status, await parseError(res))
     return (await res.json()) as ImportCustomersResult
+  },
+
+  // suppliers (slice 8): mirrors the customers block above verbatim, one
+  // prefix over. customerGroups above is reused for suppliers too — groups
+  // aren't type-scoped in the schema, no supplierGroups function.
+  suppliers: (
+    tenantId: string,
+    params: {
+      search?: string
+      branchId?: string
+      groupId?: string
+      active?: boolean
+      debt?: SupplierDebtFilter
+      page?: number
+      pageSize?: number
+    },
+  ) => {
+    const q = new URLSearchParams()
+    if (params.search) q.set('search', params.search)
+    if (params.branchId) q.set('branch_id', params.branchId)
+    if (params.groupId) q.set('group_id', params.groupId)
+    if (params.active !== undefined) q.set('active', String(params.active))
+    if (params.debt) q.set('debt', params.debt)
+    if (params.page) q.set('page', String(params.page))
+    if (params.pageSize) q.set('page_size', String(params.pageSize))
+    const qs = q.toString()
+    return request<SuppliersResponse>(`/v1/tenants/${tenantId}/hq/suppliers${qs ? `?${qs}` : ''}`)
+  },
+
+  supplier: (tenantId: string, supplierId: string) =>
+    request<SupplierDetailResponse>(`/v1/tenants/${tenantId}/hq/suppliers/${supplierId}`),
+
+  supplierPurchases: (
+    tenantId: string,
+    supplierId: string,
+    params: { page?: number; pageSize?: number },
+  ) => {
+    const q = new URLSearchParams()
+    if (params.page) q.set('page', String(params.page))
+    if (params.pageSize) q.set('page_size', String(params.pageSize))
+    const qs = q.toString()
+    return request<SupplierPurchasesResponse>(
+      `/v1/tenants/${tenantId}/hq/suppliers/${supplierId}/purchases${qs ? `?${qs}` : ''}`,
+    )
+  },
+
+  supplierLedger: (
+    tenantId: string,
+    supplierId: string,
+    params: { page?: number; pageSize?: number },
+  ) => {
+    const q = new URLSearchParams()
+    if (params.page) q.set('page', String(params.page))
+    if (params.pageSize) q.set('page_size', String(params.pageSize))
+    const qs = q.toString()
+    return request<SupplierLedgerResponse>(
+      `/v1/tenants/${tenantId}/hq/suppliers/${supplierId}/ledger${qs ? `?${qs}` : ''}`,
+    )
+  },
+
+  supplierInsights: (
+    tenantId: string,
+    params: { branchId?: string; from?: string; to?: string },
+  ) => {
+    const q = new URLSearchParams()
+    if (params.branchId) q.set('branch_id', params.branchId)
+    if (params.from) q.set('from', params.from)
+    if (params.to) q.set('to', params.to)
+    const qs = q.toString()
+    return request<SupplierInsightsResponse>(
+      `/v1/tenants/${tenantId}/hq/suppliers/insights${qs ? `?${qs}` : ''}`,
+    )
+  },
+
+  createSupplier: (tenantId: string, input: NewSupplierInput) =>
+    request<NewSupplierResult>(`/v1/tenants/${tenantId}/hq/suppliers`, post(input)),
+
+  updateSupplier: (tenantId: string, supplierId: string, input: SupplierEditInput) =>
+    request<UpdateSupplierResult>(`/v1/tenants/${tenantId}/hq/suppliers/${supplierId}`, {
+      method: 'PUT',
+      body: JSON.stringify(input),
+    }),
+
+  bulkUpdateSuppliers: (tenantId: string, input: BulkUpdateSuppliersInput) =>
+    request<BulkUpdateSuppliersResult>(`/v1/tenants/${tenantId}/hq/suppliers/bulk`, {
+      method: 'PUT',
+      body: JSON.stringify(input),
+    }),
+
+  // Blob/multipart — bypass the JSON `request` helper (see authedFetch).
+  exportSuppliers: async (
+    tenantId: string,
+    params: {
+      search?: string
+      branchId?: string
+      groupId?: string
+      active?: boolean
+      debt?: SupplierDebtFilter
+    },
+  ): Promise<Blob> => {
+    const q = new URLSearchParams()
+    if (params.search) q.set('search', params.search)
+    if (params.branchId) q.set('branch_id', params.branchId)
+    if (params.groupId) q.set('group_id', params.groupId)
+    if (params.active !== undefined) q.set('active', String(params.active))
+    if (params.debt) q.set('debt', params.debt)
+    const qs = q.toString()
+    const res = await authedFetch(
+      `/v1/tenants/${tenantId}/hq/suppliers/export${qs ? `?${qs}` : ''}`,
+    )
+    if (!res.ok) throw new ApiError(res.status, await parseError(res))
+    return res.blob()
+  },
+
+  importSuppliers: async (
+    tenantId: string,
+    file: File,
+    branchId: string,
+  ): Promise<ImportSuppliersResult> => {
+    const form = new FormData()
+    form.set('file', file)
+    form.set('branch_id', branchId)
+    const res = await authedFetch(`/v1/tenants/${tenantId}/hq/suppliers/import`, {
+      method: 'POST',
+      body: form,
+    })
+    if (!res.ok) throw new ApiError(res.status, await parseError(res))
+    return (await res.json()) as ImportSuppliersResult
   },
 
   // SSE stream URL. EventSource cannot set an Authorization header, so the
