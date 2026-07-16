@@ -201,9 +201,27 @@ Bugs found and fixed during this checkpoint's e2e pass (2026-07-15): desktop `Up
 - [x] RTL/Arabic-numerals audit
 - [x] Human review before Phase 8 (Live tier)
 
+### Phase 8 — Suppliers
+
+**Design notes (2026-07-16):** ad hoc addition (not in the original spec note), requested directly by the user as a sibling to Phase 7's Customers module — "works like customers, nothing change." `Customer` is a single TPH entity/table with a `Type` enum (`Customer`/`Supplier`/`All`, `AribONE.Data/Models/CustomerType.cs`); Phase 7 already filters everything by `Type == CustomerType.Customer`, so Suppliers is the same read/write/import/export/insights logic filtered by `Type == CustomerType.Supplier`. Three schema realities that are not optional design choices: **(1) groups are not type-scoped** — `CustomerGroup` (`Kind="Customer"` TPH discriminator, `AribContext.cs:206-209`) is the one group table already shared by customers and suppliers on the desktop, so Suppliers reuses T48's `/hq/customer-groups` endpoint and the console's `useCustomerGroups` verbatim, no `SupplierGroup` anything; **(2) the `Num` sequence is shared, not per-type** — `CreateCustomerAsync`'s `MaxAsync(c => c.Num)+1` (T55) is already unfiltered by `Type`, matching the desktop's own `CustomerService.GetCustomerNum`, and supplier creation must reuse that exact unfiltered query; **(3) the GL account operand key for suppliers is `Vendor`, not `Suppliers`** — seeded operands are `Customers` and `Vendor` (`SeedData.cs:177-178`), confirmed against the desktop's `UpsertCustomerViewModel.cs:135-211`, while `FromId` still resolves from `Capital` for both types. Gateway implementation parameterizes T48-T60's Customer-scoped methods with a `CustomerType type` argument (plus `BillTypesFor`/`AccountOperandKeyFor` helpers mapping `Sale`/`ReSale`→`Purchase`/`RePurchase` and `Customers`→`Vendor`) rather than duplicating the balance/credit-limit/ledger logic a second time — Customer behavior stays byte-identical, `/hq/customers/*` routes now pass `CustomerType.Customer` explicitly. API and console legs mirror Phase 7's per-resource methods/handlers/components 1:1 (no shared-resource abstraction exists in either codebase to parameterize against). **Renumbering note:** this insertion pushes the previously-outlined Live tier from Phase 8 to **Phase 9** and Loyalty from Phase 9 to **Phase 10** — same renumbering pattern used when Customers was inserted as Phase 7 on 2026-07-16. Full task detail in `todo.md`.
+
+- [x] T66: Gateway — parameterize T48-T60's Customer methods by `CustomerType` (`BillTypesFor`/`AccountOperandKeyFor` helpers; `CustomerGroupsAsync`/`BranchExistsAsync` untouched)
+- [x] T67: Gateway — mirrored `/hq/suppliers/*` routes (list/detail/purchases/ledger/insights/create/edit/bulk/export/import), same static-before-wildcard ordering as Customers
+- [x] T68: API — supplier read/write/bulk/export/import passthroughs + tests, mirroring T54/T57/T60; reuses `CustomerGroups`/`InvalidCustomerInputError`/`ErrMissingAccountOperand` as-is
+- [x] T69: Console — lib plumbing (Supplier types/api/query/hooks under `hq-suppliers` key prefix, SSE invalidation); reuses `useBundle`/`useCustomerGroups` unchanged
+- [x] T70: Console — Suppliers list page + profile page + Insights view, mirroring T62-T64
+- [x] T71: Console — Create/Edit/Import dialogs + bulk operations UI, mirroring T65; nav/route wiring beside "العملاء"
+
+### Checkpoint 8 (Suppliers shipped)
+- [x] All gates green (api `go build ./... && go vet ./... && go test ./...`, gateway `dotnet build AribSyncGateway.csproj`, console `pnpm build && pnpm lint`) *(2026-07-16, machine-verified; manual/e2e items below are pending human click-through — no browser automation available in this session, see todo.md)*
+- [ ] Manual regression: Customers list/profile/create/edit/bulk/import/export/insights all unchanged after the T66 parameterization
+- [ ] Manual e2e: Suppliers list/profile/create/edit/bulk/import/export/insights match the Customers UX exactly, verified against a real synced tenant
+- [ ] RTL/Arabic-numerals audit on the new Suppliers views
+- [ ] Human review before Phase 9 (Live tier)
+
 ### Later phases (outline only — broken down when reached)
-- **Phase 8 — Live tier (SignalR):** separate spec, per the main spec's slice 8.
-- **Phase 9 — Loyalty program:** separate spec, per the main spec's slice 9 (full auto-earning program, deferred out of the Customers slice — see spec-console.md).
+- **Phase 9 — Live tier (SignalR):** separate spec, per the main spec's slice 8.
+- **Phase 10 — Loyalty program:** separate spec, per the main spec's slice 9 (full auto-earning program, deferred out of the Customers slice — see spec-console.md).
 
 ## Risks and mitigations
 
