@@ -35,6 +35,8 @@ const BILL_TYPE_LABEL: Record<number, string> = {
 const DEALING_LABEL: Record<number, string> = {
   100: 'بيع',
   101: 'مرتجع بيع',
+  200: 'شراء',
+  201: 'مرتجع شراء',
   400: 'تحصيل نقدي',
   401: 'صرف نقدي',
   500: 'تحصيل محفظة',
