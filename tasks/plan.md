@@ -164,13 +164,46 @@ Bugs found and fixed during this checkpoint's e2e pass (2026-07-15): desktop `Up
 
 ### Checkpoint 6 (slice 6 shipped)
 - [x] All gates green (api `go build ./... && go vet ./... && go test ./...`, gateway `dotnet build AribSyncGateway.csproj`, console `pnpm build && pnpm lint` — all clean 2026-07-15)
-- [ ] Manual e2e: sales totals/tender, products revenue/profit, staff and branch rows all match the desktop's own screens for a real synced tenant + period
-- [ ] POS sale lands in today's report live via SSE, no refresh
-- [ ] RTL/Arabic-numerals audit across all five views
-- [ ] Human review before Phase 7
+- [x] Manual e2e: sales totals/tender, products revenue/profit, staff and branch rows all match the desktop's own screens for a real synced tenant + period
+- [x] POS sale lands in today's report live via SSE, no refresh
+- [x] RTL/Arabic-numerals audit across all five views
+- [x] Human review before Phase 7 *(approved 2026-07-15; renumbered 2026-07-16 — this gated the now-Phase-7 Customers work, see spec-console.md)*
+
+### Phase 7 — Customers (slice 7)
+
+**Design notes (2026-07-16):** scope decisions carried from `spec-console.md`'s "Customers module": branch-specific (no cross-branch identity), merge dropped to Future Features, loyalty promoted to its own Phase 9 follow-up spec. List/stats scope to `Customer.Type == Customer` (the table also holds `Supplier`/`All` rows). Customer groups are Tier-A via the `Groups` TPH discriminator (`Kind="Customer"`) but need their own gateway query — the existing `GroupsAsync` filters to `ProductGroup` only. **Balance/credit-limit is D10, same rule as `Accounts`:** every balance-derived read recomputes `SUM(CustomerTransaction.Debit − Credit)` server-side, never trusts the synced `Customer.Debit/Credit/Balance` columns. `CustomerTransaction.Balance` is itself unreliable (the desktop's own `AddNewCustomer`/`UpdateCustomer` never populate it meaningfully) — the ledger/credit-history view computes running balance server-side exactly like T29's movement running-qty (opening seed + page-accumulated `Debit-Credit`), never the stored column. Purchase stats/history reuse the Reports slice's Bills semantics verbatim (`Type IN (Sale, ReSale)`, `!IsDeleted`). Create is a bounded write with no opening balance in v1 (mirrors T26's product-create decision) — `AccountId` wired via `AccountOperands["Customers"]` (one lookup, always `CustomerType.Customer` here). Edit is a bounded field-update write (mirrors T23's price-change shape). Import reuses the create path row-by-row over a fixed CSV template (name, phone, branch, group?, credit-limit?) — not the desktop's dynamic column-mapping UI. Full task detail in `todo.md`.
+
+- [x] T48: Gateway — `GET /hq/customer-groups` (CustomerGroup TPH read)
+- [x] T49: Gateway — `GET /hq/customers` paged list (search name/phone/code; branch/group/active/debt filters; recomputed balance)
+- [x] T50: Gateway — `GET /hq/customers/{id}` detail + stats (recomputed balance, purchase stats from Bills)
+- [x] T51: Gateway — `GET /hq/customers/{id}/purchases` paged Bills history
+- [x] T52: Gateway — `GET /hq/customers/{id}/ledger` paged CustomerTransactions with server-computed running balance
+- [x] T53: Gateway — `GET /hq/customers/insights` (top customers, new this month, inactive, credit-limit warnings, highest spenders, growth over time)
+- [x] T54: API — customer read passthroughs (groups/list/detail/purchases/ledger/insights) + branch decoration + tests
+- [x] T55: Gateway — `POST /hq/customers` create (AccountOperand wiring, no opening balance in v1)
+- [x] T56: Gateway — `PUT /hq/customers/{id}` edit/deactivate (bounded field update)
+- [x] T57: API — create/edit passthroughs + validation + tests
+- [x] T58: Gateway — `PUT /hq/customers/bulk` (group-assign + pricing-tier update)
+- [x] T59: Gateway — `GET /hq/customers/export` (CSV) + `POST /hq/customers/import` (CSV, reuses create-path validation, per-row errors)
+- [x] T60: API — bulk/export/import passthroughs + tests
+- [x] T61: Console — lib plumbing (types/api/query/hooks under `hq-customers` key prefix, SSE invalidation)
+- [x] T62: Console — Customers list page (search/filters/table/create dialog) + nav/route wiring
+- [x] T63: Console — Customer profile page (info/stats/purchases/ledger/edit dialog/deactivate)
+- [x] T64: Console — Insights view (tiles + growth chart, reusing Reports' CSS-bar pattern)
+- [x] T65: Console — Bulk operations UI (multi-select, group-assign, price-tier, export, import dialog with per-row error display)
+
+### Checkpoint 7 (slice 7 shipped)
+- [x] All gates green (api `go build ./... && go vet ./... && go test ./...`, gateway `dotnet build AribSyncGateway.csproj`, console `pnpm build && pnpm lint`) *(2026-07-16, machine-verified; every manual e2e item below has since been human-verified against a real synced tenant — see todo.md's Checkpoint 7 for the two bugs found and fixed during that pass)*
+- [x] Manual e2e: list/profile numbers (balance, stats, purchase history) match the desktop's CustomerView/CustomerStatementView for a real synced tenant
+- [x] Manual e2e: HQ create/edit reaches the desktop on its next sync round — first HQ write into a Tier-B table; verify the BranchId filter propagates only to the target branch, not every branch
+- [x] Manual e2e: bulk group-assign/pricing-tier propagate the same way; export downloads a correct CSV; import creates customers with correct account wiring, verified against the desktop's own customer list
+- [x] Debt/credit-limit filters and insights match a manual ledger recomputation for a few spot-checked customers
+- [x] RTL/Arabic-numerals audit
+- [x] Human review before Phase 8 (Live tier)
 
 ### Later phases (outline only — broken down when reached)
-- **Phase 7 — Live tier (SignalR):** separate spec, per the main spec's slice 7.
+- **Phase 8 — Live tier (SignalR):** separate spec, per the main spec's slice 8.
+- **Phase 9 — Loyalty program:** separate spec, per the main spec's slice 9 (full auto-earning program, deferred out of the Customers slice — see spec-console.md).
 
 ## Risks and mitigations
 
@@ -184,4 +217,4 @@ Bugs found and fixed during this checkpoint's e2e pass (2026-07-15): desktop `Up
 
 ## Open questions
 
-Carried in the spec (§ Open questions): ~~master-edit gating (blocks Phase 3)~~ **resolved 2026-07-14: ServerWins + conflict alerts for v1**; report aggregate strategy (blocks Phase 6); Customers scope.
+Carried in the spec (§ Open questions): ~~master-edit gating (blocks Phase 3)~~ **resolved 2026-07-14: ServerWins + conflict alerts for v1**; ~~report aggregate strategy (blocks Phase 6)~~ **resolved: direct SQL aggregates for v1**; ~~Customers scope~~ **resolved 2026-07-16: in scope as Phase 7, branch-specific, merge dropped to Future Features, loyalty promoted to its own Phase 9 follow-up spec.** See `spec-console.md`'s "Customers module" for the resolved detail.
