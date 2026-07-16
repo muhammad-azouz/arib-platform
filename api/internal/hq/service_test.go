@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"strings"
 	"testing"
 	"time"
 
@@ -1021,5 +1022,455 @@ func TestReportSales_Ownership(t *testing.T) {
 	s := New(testStore("http://127.0.0.1:1"), &fakeTokens{}, nil)
 	if _, err := s.ReportSales(context.Background(), "acc_intruder", "tnt_1", url.Values{}); !errors.Is(err, ErrForbidden) {
 		t.Fatalf("expected ErrForbidden, got %v", err)
+	}
+}
+
+// --- Customers (slice 7) ---
+
+func TestCustomerGroups(t *testing.T) {
+	gw := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/hq/customer-groups" {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"groups":[{"id":"g1","parent_id":"00000000-0000-0000-0000-000000000000","name":"جملة","is_active":true,"num":1}]}`))
+	}))
+	defer gw.Close()
+
+	fresh := time.Now().UTC().Add(-3 * time.Minute)
+	st := testStore(gw.URL)
+	st.branches = []model.Branch{{ID: "b1", TenantID: "tnt_1", Name: "وسط البلد", Status: model.BranchActive, LastSyncAt: &fresh}}
+	s := New(st, &fakeTokens{}, nil)
+	env, err := s.CustomerGroups(context.Background(), "acc_owner", "tnt_1")
+	if err != nil {
+		t.Fatalf("customer groups: %v", err)
+	}
+	if env.Source != "synced" || len(env.Data) != 1 || env.Data[0].Name != "جملة" {
+		t.Fatalf("customer groups envelope wrong: %+v", env)
+	}
+
+	if _, err := s.CustomerGroups(context.Background(), "acc_intruder", "tnt_1"); !errors.Is(err, ErrForbidden) {
+		t.Fatalf("expected ErrForbidden, got %v", err)
+	}
+}
+
+func TestCustomers_PassesParamsAndDecoratesBranch(t *testing.T) {
+	var gotQuery url.Values
+	gw := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotQuery = r.URL.Query()
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"total":1,"page":1,"page_size":50,"items":[` +
+			`{"id":"c1","num":1,"name":"محمد","branch_id":"b1","phone1":"0100","is_active":true,"balance":150.5,"credit_limit":500,"is_credit":false}]}`))
+	}))
+	defer gw.Close()
+
+	fresh := time.Now().UTC().Add(-3 * time.Minute)
+	st := testStore(gw.URL)
+	st.branches = []model.Branch{{ID: "b1", TenantID: "tnt_1", Name: "وسط البلد", Status: model.BranchActive, LastSyncAt: &fresh}}
+	s := New(st, &fakeTokens{}, nil)
+	params := url.Values{"search": {"محمد"}, "debt": {"has_debt"}}
+	env, err := s.Customers(context.Background(), "acc_owner", "tnt_1", params)
+	if err != nil {
+		t.Fatalf("customers: %v", err)
+	}
+	if gotQuery.Get("search") != "محمد" || gotQuery.Get("debt") != "has_debt" {
+		t.Fatalf("gateway did not see passed-through params: %v", gotQuery)
+	}
+	if env.Source != "synced" || env.Data.Total != 1 || len(env.Data.Items) != 1 {
+		t.Fatalf("customers envelope wrong: %+v", env)
+	}
+	row := env.Data.Items[0]
+	if row.Balance != 150.5 || row.BranchName != "وسط البلد" || row.Health != "ok" {
+		t.Fatalf("customer row not decorated with branch name/health: %+v", row)
+	}
+
+	t.Run("row for an unregistered branch degrades to never/empty name", func(t *testing.T) {
+		gw2 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"total":1,"page":1,"page_size":50,"items":[` +
+				`{"id":"c2","num":2,"name":"سارة","branch_id":"ghost","phone1":"0101","is_active":true,"balance":0,"credit_limit":0,"is_credit":false}]}`))
+		}))
+		defer gw2.Close()
+		st2 := testStore(gw2.URL)
+		st2.branches = st.branches
+		s2 := New(st2, &fakeTokens{}, nil)
+		env2, err := s2.Customers(context.Background(), "acc_owner", "tnt_1", url.Values{})
+		if err != nil {
+			t.Fatalf("customers: %v", err)
+		}
+		if env2.Data.Items[0].Health != "never" || env2.Data.Items[0].BranchName != "" {
+			t.Fatalf("ghost-branch row should degrade cleanly: %+v", env2.Data.Items[0])
+		}
+	})
+}
+
+func TestCustomerDetail_DecoratesBranchAndNotFound(t *testing.T) {
+	fresh := time.Now().UTC().Add(-2 * time.Minute)
+	gw := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/hq/customers/c1":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"id":"c1","num":1,"name":"محمد","branch_id":"b1","phone1":"0100",` +
+				`"credit_limit":500,"is_credit":false,"is_active":true,"balance":150.5,` +
+				`"stats":{"number_of_orders":3,"total_spent":900,"average_order_value":300,"last_purchase_date":"2026-07-01T00:00:00Z"}}`))
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer gw.Close()
+
+	st := testStore(gw.URL)
+	st.branches = []model.Branch{{ID: "b1", TenantID: "tnt_1", Name: "وسط البلد", Status: model.BranchActive, LastSyncAt: &fresh}}
+	s := New(st, &fakeTokens{}, nil)
+
+	env, err := s.CustomerDetail(context.Background(), "acc_owner", "tnt_1", "c1")
+	if err != nil {
+		t.Fatalf("customer detail: %v", err)
+	}
+	if env.Data.BranchName != "وسط البلد" || env.Data.Health != "ok" || env.Data.Stats.NumberOfOrders != 3 || env.Data.Stats.TotalSpent != 900 {
+		t.Fatalf("customer detail wrong: %+v", env.Data)
+	}
+
+	if _, err := s.CustomerDetail(context.Background(), "acc_owner", "tnt_1", "does-not-exist"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("expected ErrNotFound, got %v", err)
+	}
+}
+
+func TestCustomerPurchases_ParamsAndNotFound(t *testing.T) {
+	var gotQuery url.Values
+	gw := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/hq/customers/c1/purchases":
+			gotQuery = r.URL.Query()
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"total":1,"page":1,"page_size":50,"items":[` +
+				`{"id":"bl1","num":"S-1","issued_at":"2026-07-01T00:00:00Z","total":300,"item_count":2,"is_paid":true,"type":100}]}`))
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer gw.Close()
+
+	s := New(testStore(gw.URL), &fakeTokens{}, nil)
+	env, err := s.CustomerPurchases(context.Background(), "acc_owner", "tnt_1", "c1", url.Values{"page": {"1"}})
+	if err != nil {
+		t.Fatalf("customer purchases: %v", err)
+	}
+	if gotQuery.Get("page") != "1" || len(env.Data.Items) != 1 || env.Data.Items[0].Total != 300 {
+		t.Fatalf("customer purchases wrong: %+v", env.Data)
+	}
+
+	if _, err := s.CustomerPurchases(context.Background(), "acc_owner", "tnt_1", "ghost", url.Values{}); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("expected ErrNotFound, got %v", err)
+	}
+}
+
+func TestCustomerLedger_RunningBalancePassesThroughAndNotFound(t *testing.T) {
+	gw := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/hq/customers/c1/ledger":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"total":2,"page":1,"page_size":50,"items":[` +
+				`{"id":"t1","created_at":"2026-07-01T00:00:00Z","dealing":100,"total":300,"debit":300,"credit":0,"running_balance":300,"user_id":"u1"},` +
+				`{"id":"t2","created_at":"2026-07-02T00:00:00Z","dealing":400,"total":100,"debit":0,"credit":100,"running_balance":200,"user_id":"u1"}]}`))
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer gw.Close()
+
+	s := New(testStore(gw.URL), &fakeTokens{}, nil)
+	env, err := s.CustomerLedger(context.Background(), "acc_owner", "tnt_1", "c1", url.Values{})
+	if err != nil {
+		t.Fatalf("customer ledger: %v", err)
+	}
+	if len(env.Data.Items) != 2 || env.Data.Items[0].RunningBalance != 300 || env.Data.Items[1].RunningBalance != 200 {
+		t.Fatalf("ledger running balance not passed through verbatim: %+v", env.Data.Items)
+	}
+
+	if _, err := s.CustomerLedger(context.Background(), "acc_owner", "tnt_1", "ghost", url.Values{}); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("expected ErrNotFound, got %v", err)
+	}
+}
+
+func TestCustomerInsights_EnvelopeAndEmptyDegrade(t *testing.T) {
+	gw := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/hq/customers/insights" {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"top_customers":[{"id":"c1","num":1,"name":"محمد","branch_id":"b1","amount":900}],` +
+			`"new_this_month":{"count":2,"items":[{"id":"c2","num":2,"name":"سارة","branch_id":"b1"}]},` +
+			`"inactive":{"count":0,"items":[]},` +
+			`"credit_limit_warnings":[{"id":"c3","num":3,"name":"علي","branch_id":"b1","balance":480,"credit_limit":500,"level":"approaching"}],` +
+			`"highest_spenders":[{"id":"c1","num":1,"name":"محمد","branch_id":"b1","amount":900}],` +
+			`"growth_over_time":[{"day":"2026-07-01","new_customers":1}]}`))
+	}))
+	defer gw.Close()
+
+	s := New(testStore(gw.URL), &fakeTokens{}, nil)
+	env, err := s.CustomerInsights(context.Background(), "acc_owner", "tnt_1", url.Values{})
+	if err != nil {
+		t.Fatalf("customer insights: %v", err)
+	}
+	if len(env.Data.TopCustomers) != 1 || env.Data.NewThisMonth.Count != 2 || len(env.Data.CreditLimitWarnings) != 1 ||
+		env.Data.CreditLimitWarnings[0].Level != "approaching" || len(env.Data.GrowthOverTime) != 1 {
+		t.Fatalf("customer insights envelope wrong: %+v", env.Data)
+	}
+
+	t.Run("empty/never-synced tenant degrades to empty slices, not nil", func(t *testing.T) {
+		empty := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"top_customers":null,"new_this_month":{"count":0,"items":null},"inactive":{"count":0,"items":null},` +
+				`"credit_limit_warnings":null,"highest_spenders":null,"growth_over_time":null}`))
+		}))
+		defer empty.Close()
+		s2 := New(testStore(empty.URL), &fakeTokens{}, nil)
+		env2, err := s2.CustomerInsights(context.Background(), "acc_owner", "tnt_1", url.Values{})
+		if err != nil {
+			t.Fatalf("customer insights (empty): %v", err)
+		}
+		if env2.Data.TopCustomers == nil || env2.Data.NewThisMonth.Items == nil || env2.Data.Inactive.Items == nil ||
+			env2.Data.CreditLimitWarnings == nil || env2.Data.HighestSpenders == nil || env2.Data.GrowthOverTime == nil {
+			t.Fatalf("customer insights should degrade to empty slices, got %+v", env2.Data)
+		}
+	})
+}
+
+func TestCreateCustomer_ForwardsAndReturnsResult(t *testing.T) {
+	var gotMethod string
+	var gotBody NewCustomer
+	gw := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotMethod = r.Method
+		if r.URL.Path != "/hq/customers" {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		_ = json.NewDecoder(r.Body).Decode(&gotBody)
+		w.WriteHeader(http.StatusCreated)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"c1","num":42,"written_at":"2026-07-16T12:00:00Z"}`))
+	}))
+	defer gw.Close()
+
+	s := New(testStore(gw.URL), &fakeTokens{}, nil)
+	input := NewCustomer{Name: "محمد", Phone1: "0100", BranchID: "b1"}
+	result, err := s.CreateCustomer(context.Background(), "acc_owner", "tnt_1", input)
+	if err != nil {
+		t.Fatalf("create customer: %v", err)
+	}
+	if gotMethod != http.MethodPost {
+		t.Fatalf("expected POST, gateway saw %s", gotMethod)
+	}
+	if gotBody.Name != "محمد" || gotBody.BranchID != "b1" {
+		t.Fatalf("gateway did not receive the forwarded customer: %+v", gotBody)
+	}
+	if result.ID != "c1" || result.Num != 42 {
+		t.Fatalf("create customer result wrong: %+v", result)
+	}
+
+	if _, err := s.CreateCustomer(context.Background(), "acc_intruder", "tnt_1", input); !errors.Is(err, ErrForbidden) {
+		t.Fatalf("expected ErrForbidden, got %v", err)
+	}
+}
+
+func TestCreateCustomer_InvalidInputForwardsGatewayMessage(t *testing.T) {
+	gw := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusBadRequest)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"error":"branch not found"}`))
+	}))
+	defer gw.Close()
+
+	s := New(testStore(gw.URL), &fakeTokens{}, nil)
+	_, err := s.CreateCustomer(context.Background(), "acc_owner", "tnt_1", NewCustomer{Name: "محمد", Phone1: "0100", BranchID: "ghost"})
+	var badInput *InvalidCustomerInputError
+	if !errors.As(err, &badInput) || badInput.Error() != "branch not found" {
+		t.Fatalf("expected InvalidCustomerInputError(\"branch not found\"), got %v", err)
+	}
+}
+
+func TestCreateCustomer_MissingAccountOperand(t *testing.T) {
+	gw := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer gw.Close()
+
+	s := New(testStore(gw.URL), &fakeTokens{}, nil)
+	_, err := s.CreateCustomer(context.Background(), "acc_owner", "tnt_1", NewCustomer{Name: "محمد", Phone1: "0100", BranchID: "b1"})
+	if !errors.Is(err, ErrMissingAccountOperand) {
+		t.Fatalf("expected ErrMissingAccountOperand, got %v", err)
+	}
+}
+
+func TestUpdateCustomer_ForwardsPartialBodyAndNotFound(t *testing.T) {
+	var gotMethod, gotPath string
+	var gotBody CustomerEdit
+	gw := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotMethod, gotPath = r.Method, r.URL.Path
+		if r.URL.Path != "/hq/customers/c1" {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		_ = json.NewDecoder(r.Body).Decode(&gotBody)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"written_at":"2026-07-16T12:00:00Z"}`))
+	}))
+	defer gw.Close()
+
+	s := New(testStore(gw.URL), &fakeTokens{}, nil)
+	active := false
+	result, err := s.UpdateCustomer(context.Background(), "acc_owner", "tnt_1", "c1", CustomerEdit{IsActive: &active})
+	if err != nil {
+		t.Fatalf("update customer: %v", err)
+	}
+	if gotMethod != http.MethodPut || gotPath != "/hq/customers/c1" {
+		t.Fatalf("expected PUT /hq/customers/c1, gateway saw %s %s", gotMethod, gotPath)
+	}
+	if gotBody.Name != nil || gotBody.IsActive == nil || *gotBody.IsActive != false {
+		t.Fatalf("gateway did not receive the partial body verbatim: %+v", gotBody)
+	}
+	want := time.Date(2026, 7, 16, 12, 0, 0, 0, time.UTC)
+	if !result.WrittenAt.Equal(want) {
+		t.Fatalf("written_at = %v, want %v", result.WrittenAt, want)
+	}
+
+	if _, err := s.UpdateCustomer(context.Background(), "acc_owner", "tnt_1", "ghost", CustomerEdit{}); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("expected ErrNotFound, got %v", err)
+	}
+}
+
+func TestUpdateCustomer_InvalidInputForwardsGatewayMessage(t *testing.T) {
+	gw := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusBadRequest)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"error":"invalid field value"}`))
+	}))
+	defer gw.Close()
+
+	s := New(testStore(gw.URL), &fakeTokens{}, nil)
+	neg := -5.0
+	_, err := s.UpdateCustomer(context.Background(), "acc_owner", "tnt_1", "c1", CustomerEdit{CreditLimit: &neg})
+	var badInput *InvalidCustomerInputError
+	if !errors.As(err, &badInput) || badInput.Error() != "invalid field value" {
+		t.Fatalf("expected InvalidCustomerInputError(\"invalid field value\"), got %v", err)
+	}
+}
+
+func TestBulkUpdateCustomers_ForwardsBodyAndInvalidInput(t *testing.T) {
+	var gotMethod string
+	var gotBody map[string]any
+	gw := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotMethod = r.Method
+		if r.URL.Path != "/hq/customers/bulk" {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		_ = json.NewDecoder(r.Body).Decode(&gotBody)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"updated":2,"written_at":"2026-07-16T12:00:00Z"}`))
+	}))
+	defer gw.Close()
+
+	s := New(testStore(gw.URL), &fakeTokens{}, nil)
+	group := "g1"
+	result, err := s.BulkUpdateCustomers(context.Background(), "acc_owner", "tnt_1", []string{"c1", "c2"}, &group, nil)
+	if err != nil {
+		t.Fatalf("bulk update customers: %v", err)
+	}
+	if gotMethod != http.MethodPut {
+		t.Fatalf("expected PUT, gateway saw %s", gotMethod)
+	}
+	if gotBody["group_id"] != "g1" {
+		t.Fatalf("gateway did not receive group_id: %+v", gotBody)
+	}
+	if result.Updated != 2 {
+		t.Fatalf("bulk update result wrong: %+v", result)
+	}
+
+	badGW := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusBadRequest)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"error":"one or more ids do not belong to this tenant, or group_id not found"}`))
+	}))
+	defer badGW.Close()
+	s2 := New(testStore(badGW.URL), &fakeTokens{}, nil)
+	_, err = s2.BulkUpdateCustomers(context.Background(), "acc_owner", "tnt_1", []string{"ghost"}, &group, nil)
+	var badInput *InvalidCustomerInputError
+	if !errors.As(err, &badInput) {
+		t.Fatalf("expected InvalidCustomerInputError, got %v", err)
+	}
+}
+
+func TestExportCustomers_StreamsCsvWithHeaders(t *testing.T) {
+	var gotQuery url.Values
+	gw := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotQuery = r.URL.Query()
+		if r.URL.Path != "/hq/customers/export" {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		w.Header().Set("Content-Type", "text/csv; charset=utf-8")
+		_, _ = w.Write([]byte("code,name\n1,\xd9\x85\xd8\xad\xd9\x85\xd8\xaf\n"))
+	}))
+	defer gw.Close()
+
+	s := New(testStore(gw.URL), &fakeTokens{}, nil)
+	rec := httptest.NewRecorder()
+	err := s.ExportCustomers(context.Background(), "acc_owner", "tnt_1", url.Values{"debt": {"has_debt"}}, rec)
+	if err != nil {
+		t.Fatalf("export customers: %v", err)
+	}
+	if gotQuery.Get("debt") != "has_debt" {
+		t.Fatalf("gateway did not see passed-through params: %v", gotQuery)
+	}
+	if ct := rec.Header().Get("Content-Type"); ct != "text/csv; charset=utf-8" {
+		t.Fatalf("content-type = %q, want text/csv", ct)
+	}
+	if cd := rec.Header().Get("Content-Disposition"); cd == "" {
+		t.Fatalf("expected a Content-Disposition header, got none")
+	}
+	if !strings.Contains(rec.Body.String(), "code,name") {
+		t.Fatalf("csv body not streamed through: %q", rec.Body.String())
+	}
+}
+
+func TestExportCustomers_GatewayErrorWritesNothing(t *testing.T) {
+	s := New(testStore("http://127.0.0.1:1"), &fakeTokens{}, &http.Client{Timeout: 300 * time.Millisecond})
+	rec := httptest.NewRecorder()
+	err := s.ExportCustomers(context.Background(), "acc_owner", "tnt_1", url.Values{}, rec)
+	if !errors.Is(err, ErrGatewayUnreachable) {
+		t.Fatalf("expected ErrGatewayUnreachable, got %v", err)
+	}
+	if rec.Code != 200 || rec.Body.Len() != 0 {
+		t.Fatalf("expected nothing written to the recorder on a setup failure, got code=%d body=%q", rec.Code, rec.Body.String())
+	}
+}
+
+func TestImportCustomers_ForwardsBodyAndDecodesResult(t *testing.T) {
+	var gotContentType, gotBody string
+	gw := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotContentType = r.Header.Get("Content-Type")
+		buf := make([]byte, 1024)
+		n, _ := r.Body.Read(buf)
+		gotBody = string(buf[:n])
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"created":1,"errors":[{"row":3,"message":"branch not found"}]}`))
+	}))
+	defer gw.Close()
+
+	s := New(testStore(gw.URL), &fakeTokens{}, nil)
+	result, err := s.ImportCustomers(context.Background(), "acc_owner", "tnt_1",
+		`multipart/form-data; boundary=X`, strings.NewReader("--X--"))
+	if err != nil {
+		t.Fatalf("import customers: %v", err)
+	}
+	if gotContentType != "multipart/form-data; boundary=X" || !strings.Contains(gotBody, "--X--") {
+		t.Fatalf("gateway did not see the forwarded multipart body: ct=%q body=%q", gotContentType, gotBody)
+	}
+	if result.Created != 1 || len(result.Errors) != 1 || result.Errors[0].Message != "branch not found" {
+		t.Fatalf("import result wrong: %+v", result)
 	}
 }
