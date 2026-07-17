@@ -15,6 +15,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/aribpos/license-api/internal/billing"
 	"github.com/aribpos/license-api/internal/idgen"
 	"github.com/aribpos/license-api/internal/model"
 	mongostore "github.com/aribpos/license-api/internal/store/mongo"
@@ -24,15 +25,16 @@ import (
 
 // Service errors surfaced to clients.
 var (
-	ErrForbidden       = errors.New("resource does not belong to this account")
-	ErrTenantSuspended = errors.New("tenant is suspended")
-	ErrBranchInactive  = errors.New("branch is deactivated")
-	ErrSeatLimit       = errors.New("branch seat limit reached")
-	ErrNotBound        = errors.New("no such device binding")
-	ErrNotSubscribed   = errors.New("tenant has no sync subscription (no central DB provisioned)")
-	ErrCompanyExists   = errors.New("tenant already has a company (one company per tenant)")
-	ErrNoCompany       = errors.New("tenant has no company yet")
-	ErrNotFound        = mongostore.ErrNotFound
+	ErrForbidden           = errors.New("resource does not belong to this account")
+	ErrTenantSuspended     = errors.New("tenant is suspended")
+	ErrBranchInactive      = errors.New("branch is deactivated")
+	ErrSeatLimit           = errors.New("branch seat limit reached")
+	ErrNotBound            = errors.New("no such device binding")
+	ErrNotSubscribed       = errors.New("tenant has no sync subscription (no central DB provisioned)")
+	ErrSubscriptionExpired = errors.New("tenant's sync subscription has lapsed past its grace period")
+	ErrCompanyExists       = errors.New("tenant already has a company (one company per tenant)")
+	ErrNoCompany           = errors.New("tenant has no company yet")
+	ErrNotFound            = mongostore.ErrNotFound
 )
 
 // Service coordinates the registry store and the sync-token signer.
@@ -390,17 +392,20 @@ func (s *Service) ReleaseDevice(ctx context.Context, accountID, tenantID, device
 // --- sync tokens ---
 
 // IssuedSyncToken is the result of IssueSyncToken: the signed JWT, its
-// claims, and the gateway the device must sync against.
+// claims, the gateway the device must sync against, and the tenant's
+// subscription summary as of issuance (additive info for the desktop client).
 type IssuedSyncToken struct {
-	Token      string
-	Claims     *SyncClaims
-	GatewayURL string
+	Token        string
+	Claims       *SyncClaims
+	GatewayURL   string
+	Subscription billing.Summary
 }
 
 // IssueSyncToken mints the JWT a bound device presents to the DMS gateway
 // (RS256; the gateway verifies with the public key only). Requires an active
-// tenant with a provisioned central DB, an active branch, and an active device
-// binding owned by the caller.
+// tenant with a provisioned central DB and paid billing coverage (active,
+// expiring, or within the post-expiry grace week — see package billing), an
+// active branch, and an active device binding owned by the caller.
 func (s *Service) IssueSyncToken(ctx context.Context, accountID, tenantID, deviceID string) (*IssuedSyncToken, error) {
 	t, err := s.activeTenant(ctx, accountID, tenantID)
 	if err != nil {
@@ -408,6 +413,14 @@ func (s *Service) IssueSyncToken(ctx context.Context, accountID, tenantID, devic
 	}
 	if t.DBName == "" {
 		return nil, ErrNotSubscribed
+	}
+	bills, err := s.store.BillsByTenant(ctx, tenantID)
+	if err != nil {
+		return nil, err
+	}
+	summary := billing.Derive(bills, time.Now().UTC())
+	if !billing.SyncAllowed(summary) {
+		return nil, ErrSubscriptionExpired
 	}
 	d, err := s.store.BranchDeviceByID(ctx, deviceID)
 	if errors.Is(err, mongostore.ErrNotFound) {
@@ -455,7 +468,21 @@ func (s *Service) IssueSyncToken(ctx context.Context, accountID, tenantID, devic
 		return nil, err
 	}
 	_ = s.store.TouchBranchDeviceSeen(ctx, d.ID, now)
-	return &IssuedSyncToken{Token: tok, Claims: claims, GatewayURL: shard.GatewayURL}, nil
+	return &IssuedSyncToken{Token: tok, Claims: claims, GatewayURL: shard.GatewayURL, Subscription: summary}, nil
+}
+
+// Subscription returns a tenant's bills (newest period first) and its
+// derived subscription Summary. Uses owned, not activeTenant — a suspended
+// tenant must still be able to read its own billing state in the console.
+func (s *Service) Subscription(ctx context.Context, accountID, tenantID string) ([]model.Bill, billing.Summary, error) {
+	if _, err := s.owned(ctx, accountID, tenantID); err != nil {
+		return nil, billing.Summary{}, err
+	}
+	bills, err := s.store.BillsByTenant(ctx, tenantID)
+	if err != nil {
+		return nil, billing.Summary{}, err
+	}
+	return bills, billing.Derive(bills, time.Now().UTC()), nil
 }
 
 // OpsClaims is the JWT the fleet-rollout orchestrator presents to the gateway's

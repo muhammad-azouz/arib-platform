@@ -52,21 +52,21 @@ type Account struct {
 
 // License is a single-device seat owned by an account.
 type License struct {
-	ID         string        `bson:"_id"`
-	Key        string        `bson:"key"`
-	AccountID  string        `bson:"account_id"`
-	Type       LicenseType   `bson:"type"`
-	Features   string        `bson:"features"`
-	Modules    []string      `bson:"modules,omitempty"`
-	Status     LicenseStatus `bson:"status"`
-	ExpiresAt  *time.Time    `bson:"expires_at,omitempty"` // nil = perpetual
+	ID        string        `bson:"_id"`
+	Key       string        `bson:"key"`
+	AccountID string        `bson:"account_id"`
+	Type      LicenseType   `bson:"type"`
+	Features  string        `bson:"features"`
+	Modules   []string      `bson:"modules,omitempty"`
+	Status    LicenseStatus `bson:"status"`
+	ExpiresAt *time.Time    `bson:"expires_at,omitempty"` // nil = perpetual
 	// UpdatesUntil ends the update-entitlement window (maintenance model,
 	// desktop/tasks/spec-app-updates.md): releases published before it stay
 	// installable forever; later ones need a paid extension. nil = unlimited
 	// (grandfathered pre-entitlement licenses). Independent of ExpiresAt.
 	UpdatesUntil *time.Time `bson:"updates_until,omitempty"`
 	AssignedBy   string     `bson:"assigned_by,omitempty"` // admin email, empty for trial
-	Notes      string        `bson:"notes,omitempty"`
+	Notes        string     `bson:"notes,omitempty"`
 	// Source/ExternalRef are a forward seam for Phase-2 billing issuance
 	// (provider webhooks); Phase 1 only writes signup_trial/manual_admin and
 	// leaves ExternalRef empty.
@@ -215,6 +215,38 @@ type Tenant struct {
 	RolloutError    string        `bson:"rollout_error,omitempty"`    // last failure detail
 	RolloutAttempts int           `bson:"rollout_attempts,omitempty"` // failed-migrate counter
 	RolloutAt       time.Time     `bson:"rollout_at,omitempty"`       // last rollout touch
+}
+
+// BillStatus is the lifecycle of a recorded subscription payment.
+type BillStatus string
+
+const (
+	BillPaid BillStatus = "paid"
+	BillVoid BillStatus = "void"
+)
+
+// Bill is one recorded subscription payment covering a period on a tenant.
+// Created already-paid — the owner records money actually received (manual
+// today; Source/ExternalRef are a forward seam for a future payment-gateway
+// webhook, mirroring License's same seam). Never deleted; mistakes are voided
+// (Status flips to BillVoid, VoidReason recorded) so the audit trail is
+// append-only. Subscription state is derived from paid bills at read time
+// (see package billing) — Bill itself carries no state field.
+type Bill struct {
+	ID          string     `bson:"_id"` // bil_...
+	TenantID    string     `bson:"tenant_id"`
+	Amount      int64      `bson:"amount"`   // minor units (e.g. piasters)
+	Currency    string     `bson:"currency"` // ISO code, e.g. "EGP"
+	StartsAt    time.Time  `bson:"starts_at"`
+	EndsAt      time.Time  `bson:"ends_at"`
+	Status      BillStatus `bson:"status"`
+	VoidReason  string     `bson:"void_reason,omitempty"`
+	Notes       string     `bson:"notes,omitempty"`
+	CreatedBy   string     `bson:"created_by"`             // admin email
+	Source      string     `bson:"source"`                 // "manual_admin" today; gateway ids later
+	ExternalRef string     `bson:"external_ref,omitempty"` // gateway txn id, future
+	CreatedAt   time.Time  `bson:"created_at"`
+	UpdatedAt   time.Time  `bson:"updated_at"`
 }
 
 // Company is cloud-authoritative company info, pulled by the app at

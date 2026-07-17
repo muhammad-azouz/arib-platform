@@ -13,6 +13,7 @@ import (
 
 	"github.com/aribpos/license-api/internal/admin"
 	"github.com/aribpos/license-api/internal/auth"
+	"github.com/aribpos/license-api/internal/billing"
 	"github.com/aribpos/license-api/internal/config"
 	"github.com/aribpos/license-api/internal/device"
 	"github.com/aribpos/license-api/internal/hq"
@@ -98,6 +99,7 @@ func main() {
 	}
 
 	tenantSvc := tenant.New(store, syncKey, cfg.SyncTokenTTL, nil)
+	billingSvc := billing.New(store, tenantSvc)
 	rolloutSvc := rollout.New(store, tenantSvc, nil)
 	hqSvc := hq.New(store, tenantSvc, nil)
 
@@ -117,7 +119,7 @@ func main() {
 		OTPTTL: cfg.OTPTTL, OTPMaxAttempts: cfg.OTPMaxAttempts,
 	})
 
-	srv := httpapi.New(authSvc, deviceSvc, adminSvc, tenantSvc, rolloutSvc, hqSvc, cfg.DashboardOrigins, log, cfg.UpdatesDir, cfg.UpdatesAuth, signer)
+	srv := httpapi.New(authSvc, deviceSvc, adminSvc, tenantSvc, billingSvc, rolloutSvc, hqSvc, cfg.DashboardOrigins, log, cfg.UpdatesDir, cfg.UpdatesAuth, signer)
 
 	httpServer := &http.Server{
 		Addr:              cfg.HTTPAddr,

@@ -10,6 +10,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/aribpos/license-api/internal/billing"
+	"github.com/aribpos/license-api/internal/idgen"
 	"github.com/aribpos/license-api/internal/model"
 	mongostore "github.com/aribpos/license-api/internal/store/mongo"
 	"github.com/golang-jwt/jwt/v5"
@@ -57,6 +59,24 @@ func testService(t *testing.T) (*Service, context.Context) {
 }
 
 const owner = "acc_owner"
+
+// seedBill records a paid bill covering [startsAt, endsAt) for a tenant,
+// bypassing package billing's own service so these tests exercise only the
+// IssueSyncToken gate, not bill creation.
+func seedBill(t *testing.T, s *Service, ctx context.Context, tenantID string, startsAt, endsAt time.Time) {
+	t.Helper()
+	now := time.Now().UTC()
+	b := &model.Bill{
+		ID: idgen.New("bil"), TenantID: tenantID,
+		Amount: 100000, Currency: "EGP",
+		StartsAt: startsAt, EndsAt: endsAt,
+		Status: model.BillPaid, CreatedBy: "owner@arib.com", Source: "manual_admin",
+		CreatedAt: now, UpdatedAt: now,
+	}
+	if err := s.store.InsertBill(ctx, b); err != nil {
+		t.Fatalf("seed bill: %v", err)
+	}
+}
 
 // setupTenant registers a tenant with one company and one 2-seat branch.
 func setupTenant(t *testing.T, s *Service, ctx context.Context) (tenantID, companyID, branchID string) {
@@ -220,9 +240,20 @@ func TestSyncTokenIssuance(t *testing.T) {
 		t.Fatalf("placement: %+v", placed)
 	}
 
+	// Provisioned but with no paid bill yet → still refused, distinctly from
+	// ErrNotSubscribed (T86: sync requires billing coverage, not just a DB).
+	if _, err := s.IssueSyncToken(ctx, owner, tenantID, d.ID); !errors.Is(err, ErrSubscriptionExpired) {
+		t.Fatalf("token with no bills: want ErrSubscriptionExpired, got %v", err)
+	}
+	now := time.Now().UTC()
+	seedBill(t, s, ctx, tenantID, now.AddDate(0, -1, 0), now.AddDate(0, 1, 0))
+
 	issued, err := s.IssueSyncToken(ctx, owner, tenantID, d.ID)
 	if err != nil {
 		t.Fatalf("issue: %v", err)
+	}
+	if issued.Subscription.State != billing.StateActive {
+		t.Fatalf("subscription state = %s, want %s", issued.Subscription.State, billing.StateActive)
 	}
 	if issued.GatewayURL != "https://sync.aribpos.test" {
 		t.Fatalf("gateway url: %q", issued.GatewayURL)
@@ -250,6 +281,68 @@ func TestSyncTokenIssuance(t *testing.T) {
 	// Tampered token must not parse.
 	if _, err := s.ParseSyncToken(issued.Token + "x"); err == nil {
 		t.Fatal("tampered token parsed")
+	}
+}
+
+func TestIssueSyncToken_SubscriptionGate(t *testing.T) {
+	s, ctx := testService(t)
+	tenantID, _, branchID := setupTenant(t, s, ctx)
+	d, err := s.BindDevice(ctx, owner, tenantID, branchID, "machine-1", "POS-1", "windows")
+	if err != nil {
+		t.Fatalf("bind: %v", err)
+	}
+	if _, err := s.ProvisionSync(ctx, tenantID); err != nil {
+		t.Fatalf("provision sync: %v", err)
+	}
+	now := time.Now().UTC()
+
+	// Coverage ended one second into the grace week — sync must still work.
+	seedBill(t, s, ctx, tenantID, now.AddDate(0, -1, 0), now.Add(-time.Second))
+	issued, err := s.IssueSyncToken(ctx, owner, tenantID, d.ID)
+	if err != nil {
+		t.Fatalf("issue during grace: %v", err)
+	}
+	if issued.Subscription.State != billing.StateGrace {
+		t.Fatalf("subscription state = %s, want %s", issued.Subscription.State, billing.StateGrace)
+	}
+
+	// Void that bill and seed one that expired eight days ago — past grace,
+	// must be refused.
+	bills, err := s.store.BillsByTenant(ctx, tenantID)
+	if err != nil || len(bills) != 1 {
+		t.Fatalf("bills: %+v err=%v", bills, err)
+	}
+	if err := s.store.VoidBill(ctx, bills[0].ID, "test cleanup", now); err != nil {
+		t.Fatalf("void: %v", err)
+	}
+	seedBill(t, s, ctx, tenantID, now.AddDate(0, -2, 0), now.AddDate(0, 0, -8))
+	if _, err := s.IssueSyncToken(ctx, owner, tenantID, d.ID); !errors.Is(err, ErrSubscriptionExpired) {
+		t.Fatalf("token past grace: want ErrSubscriptionExpired, got %v", err)
+	}
+}
+
+func TestSubscription_ReadableEvenWhenSuspendedAndOwnershipEnforced(t *testing.T) {
+	s, ctx := testService(t)
+	tenantID, _, _ := setupTenant(t, s, ctx)
+	now := time.Now().UTC()
+	seedBill(t, s, ctx, tenantID, now.AddDate(0, -1, 0), now.AddDate(0, 1, 0))
+
+	if err := s.store.UpdateTenantStatus(ctx, tenantID, model.TenantSuspended, now); err != nil {
+		t.Fatalf("suspend: %v", err)
+	}
+
+	// A suspended tenant must still be able to read its own billing state
+	// (Subscription uses owned, not activeTenant).
+	bills, summary, err := s.Subscription(ctx, owner, tenantID)
+	if err != nil {
+		t.Fatalf("subscription for suspended owner: %v", err)
+	}
+	if len(bills) != 1 || summary.State != billing.StateActive {
+		t.Fatalf("bills=%+v summary=%+v", bills, summary)
+	}
+
+	if _, _, err := s.Subscription(ctx, "acc_intruder", tenantID); !errors.Is(err, ErrForbidden) {
+		t.Fatalf("non-owner: want ErrForbidden, got %v", err)
 	}
 }
 

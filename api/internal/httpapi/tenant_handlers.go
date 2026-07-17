@@ -277,11 +277,24 @@ func (s *Server) handleSyncToken(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"token":       issued.Token,
-		"expires_at":  issued.Claims.ExpiresAt.Time,
-		"db_name":     issued.Claims.DBName,
-		"gateway_url": issued.GatewayURL,
+		"token":        issued.Token,
+		"expires_at":   issued.Claims.ExpiresAt.Time,
+		"db_name":      issued.Claims.DBName,
+		"gateway_url":  issued.GatewayURL,
+		"subscription": issued.Subscription,
 	})
+}
+
+// handleTenantSubscription returns a tenant's bills and derived subscription
+// state for the console billing page and Overview banner/bell.
+func (s *Server) handleTenantSubscription(w http.ResponseWriter, r *http.Request) {
+	c := claimsFrom(r.Context())
+	bills, summary, err := s.tenant.Subscription(r.Context(), c.Subject, chi.URLParam(r, "id"))
+	if err != nil {
+		s.writeTenantError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"bills": bills, "summary": summary})
 }
 
 // --- admin: sync provisioning ---
@@ -342,6 +355,11 @@ func (s *Server) writeTenantError(w http.ResponseWriter, err error) {
 		writeErr(w, http.StatusNotFound, "no such device binding")
 	case errors.Is(err, tenant.ErrNotSubscribed):
 		writeErr(w, http.StatusPaymentRequired, "tenant has no sync subscription")
+	case errors.Is(err, tenant.ErrSubscriptionExpired):
+		writeJSON(w, http.StatusForbidden, map[string]string{
+			"code":  "subscription_expired",
+			"error": "tenant's sync subscription has lapsed past its grace period",
+		})
 	case errors.Is(err, tenant.ErrCompanyExists):
 		writeErr(w, http.StatusConflict, "tenant already has a company (one company per tenant)")
 	case errors.Is(err, tenant.ErrNoCompany):

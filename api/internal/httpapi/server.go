@@ -9,6 +9,7 @@ import (
 
 	"github.com/aribpos/license-api/internal/admin"
 	"github.com/aribpos/license-api/internal/auth"
+	"github.com/aribpos/license-api/internal/billing"
 	"github.com/aribpos/license-api/internal/device"
 	"github.com/aribpos/license-api/internal/hq"
 	"github.com/aribpos/license-api/internal/rollout"
@@ -25,6 +26,7 @@ type Server struct {
 	device  *device.Service
 	admin   *admin.Service
 	tenant  *tenant.Service
+	billing *billing.Service
 	rollout *rollout.Service
 	hq      *hq.Service
 	events  *hq.EventBus // in-memory: single API instance (see hq.EventBus)
@@ -43,12 +45,13 @@ type Server struct {
 // root of the Velopack update feed served at /updates/*; empty disables it.
 // updatesAuth turns on the feed entitlement gate, verifying license tokens
 // with tokenVerifier (the same RSA keypair that signs them).
-func New(authSvc *auth.Service, deviceSvc *device.Service, adminSvc *admin.Service, tenantSvc *tenant.Service, rolloutSvc *rollout.Service, hqSvc *hq.Service, corsOrigins []string, log *slog.Logger, updatesDir string, updatesAuth bool, tokenVerifier *licensetoken.Signer) *Server {
+func New(authSvc *auth.Service, deviceSvc *device.Service, adminSvc *admin.Service, tenantSvc *tenant.Service, billingSvc *billing.Service, rolloutSvc *rollout.Service, hqSvc *hq.Service, corsOrigins []string, log *slog.Logger, updatesDir string, updatesAuth bool, tokenVerifier *licensetoken.Signer) *Server {
 	return &Server{
 		auth:          authSvc,
 		device:        deviceSvc,
 		admin:         adminSvc,
 		tenant:        tenantSvc,
+		billing:       billingSvc,
 		rollout:       rolloutSvc,
 		hq:            hqSvc,
 		events:        hq.NewEventBus(),
@@ -141,6 +144,7 @@ func (s *Server) Router() http.Handler {
 					r.Post("/branches/{branchId}/bind", s.handleBranchBind)
 					r.Post("/devices/{deviceId}/release", s.handleBranchDeviceRelease)
 					r.Post("/sync-token", s.handleSyncToken)
+					r.Get("/subscription", s.handleTenantSubscription)
 
 					// HQ reads: business data from the tenant's central DB,
 					// proxied via the sync gateway (freshness-enveloped).
@@ -209,6 +213,12 @@ func (s *Server) Router() http.Handler {
 			r.Post("/tenants/{id}/provision-sync", s.handleAdminProvisionSync)
 			r.Delete("/tenants/{id}", s.handleAdminDeleteTenant)
 			r.Post("/branches/{id}/seats", s.handleAdminBranchSeats)
+
+			// Bills (Phase 10 billing): amount + period recorded against a
+			// tenant; a paid bill auto-provisions sync if not already.
+			r.Post("/tenants/{id}/bills", s.handleAdminCreateBill)
+			r.Get("/tenants/{id}/bills", s.handleAdminListBills)
+			r.Post("/bills/{id}/void", s.handleAdminVoidBill)
 
 			// Fleet schema rollout (E3): migrate sync tenant DBs to the
 			// gateway's version; report mixed-version state.
