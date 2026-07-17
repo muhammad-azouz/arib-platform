@@ -44,6 +44,8 @@ import {
   Bill,
   Wallet,
   Download,
+  CodeSquare,
+  ArrowRightUp,
   TagPrice,
   BoxMinimalistic,
   ChartSquare,
@@ -111,6 +113,8 @@ export const BillingIcon = Bill
 export const ReceiptIcon = Bill
 export const WalletIcon = Wallet
 export const DownloadIcon = Download
+export const RuntimeIcon = CodeSquare
+export const ExternalLinkIcon = ArrowRightUp
 
 // Directional — in RTL the "forward / next" arrow points left. Components that
 // mean a literal physical direction import these explicitly.
