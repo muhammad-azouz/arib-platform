@@ -15,4 +15,5 @@ export const qk = {
   audit: ['audit'] as const,
   clients: (q: string) => ['clients', q] as const,
   client: (id: string) => ['client', id] as const,
+  bills: (tenantId: string) => ['bills', tenantId] as const,
 }

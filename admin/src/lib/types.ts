@@ -77,6 +77,46 @@ export interface Tenant {
   UpdatedAt: string
 }
 
+export type BillStatus = 'paid' | 'void'
+export type SubscriptionState = 'none' | 'active' | 'expiring' | 'grace' | 'expired'
+
+export interface Bill {
+  ID: string
+  TenantID: string
+  Amount: number // minor units (e.g. piasters)
+  Currency: string
+  StartsAt: string
+  EndsAt: string
+  Status: BillStatus
+  VoidReason?: string
+  Notes?: string
+  CreatedBy: string
+  Source: string
+  CreatedAt: string
+  UpdatedAt: string
+}
+
+// Summary carries json tags -> snake_case keys (api/internal/billing.Summary).
+export interface SubscriptionSummary {
+  state: SubscriptionState
+  ends_at: string
+  grace_until: string
+  days_left: number
+}
+
+// CreateBillResult carries json tags -> snake_case keys.
+export interface CreateBillResult {
+  bill: Bill
+  provisioned: boolean
+  provision_err: string
+  summary: SubscriptionSummary
+}
+
+export interface TenantBills {
+  bills: Bill[] | null
+  summary: SubscriptionSummary
+}
+
 // ClientView carries json tags -> lowercase keys.
 export interface ClientView {
   account: Account

@@ -35,6 +35,7 @@ import type { Device, License, LicenseStatus, Tenant } from '@/lib/types'
 import { PageHeader } from '@/components/PageHeader'
 import { CopyId } from '@/components/CopyId'
 import { ConfirmDialog } from '@/components/ConfirmDialog'
+import { TenantBillingCard } from '@/components/TenantBillingCard'
 import { AssignLicenseDialog } from '@/components/dialogs/AssignLicenseDialog'
 import { ExtendUpdatesDialog } from '@/components/dialogs/ExtendUpdatesDialog'
 import { SignOfflineDialog } from '@/components/dialogs/SignOfflineDialog'
@@ -273,6 +274,11 @@ export function ClientDetail() {
           )}
         </CardContent>
       </Card>
+
+      {/* Billing — one card per tenant (T87) */}
+      {tenants.map((t) => (
+        <TenantBillingCard key={t.ID} tenant={t} accountId={account.ID} />
+      ))}
 
       {/* Licenses */}
       <Card className="mb-6 overflow-hidden">

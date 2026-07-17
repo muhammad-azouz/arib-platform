@@ -2,11 +2,13 @@ import type {
   Account,
   AuditLog,
   ClientView,
+  CreateBillResult,
   License,
   LicenseStatus,
   Session,
   Stats,
   Tenant,
+  TenantBills,
   TenantDeletionResult,
 } from './types'
 
@@ -210,6 +212,26 @@ export const adminApi = {
     request<TenantDeletionResult>(`/v1/admin/tenants/${tenantId}`, {
       method: 'DELETE',
     }),
+
+  createBill: (
+    tenantId: string,
+    input: {
+      amount: number // minor units
+      currency: string
+      starts_at: string
+      ends_at: string
+      notes: string
+    },
+  ) => request<CreateBillResult>(`/v1/admin/tenants/${tenantId}/bills`, body(input)),
+
+  listBills: (tenantId: string) =>
+    request<TenantBills>(`/v1/admin/tenants/${tenantId}/bills`),
+
+  voidBill: (billId: string, reason: string) =>
+    request<{ status: string }>(
+      `/v1/admin/bills/${billId}/void`,
+      body({ reason }),
+    ),
 
   audit: () =>
     request<{ audit: AuditLog[] | null }>('/v1/admin/audit').then(

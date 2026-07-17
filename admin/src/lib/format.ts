@@ -4,6 +4,7 @@ import type {
   DeviceStatus,
   LicenseStatus,
   LicenseType,
+  SubscriptionState,
   TenantStatus,
 } from './types'
 
@@ -54,6 +55,39 @@ export function deviceStatusTone(s: DeviceStatus): Tone {
 
 export function tenantStatusTone(s: TenantStatus): Tone {
   return s === 'active' ? 'success' : 'danger'
+}
+
+/** amount is minor units (e.g. piasters); one currency unit = 100 minor units. */
+export function fmtMoney(amountMinor: number, currency: string): string {
+  return new Intl.NumberFormat('en', { style: 'currency', currency }).format(
+    amountMinor / 100,
+  )
+}
+
+const SUBSCRIPTION_LABELS: Record<SubscriptionState, string> = {
+  none: 'No subscription',
+  active: 'Active',
+  expiring: 'Expiring soon',
+  grace: 'Grace period',
+  expired: 'Expired',
+}
+
+export function subscriptionStateLabel(s: SubscriptionState): string {
+  return SUBSCRIPTION_LABELS[s]
+}
+
+export function subscriptionStateTone(s: SubscriptionState): Tone {
+  switch (s) {
+    case 'active':
+      return 'success'
+    case 'expiring':
+      return 'warning'
+    case 'grace':
+    case 'expired':
+      return 'danger'
+    default:
+      return 'neutral'
+  }
 }
 
 const ACTION_LABELS: Record<string, string> = {
