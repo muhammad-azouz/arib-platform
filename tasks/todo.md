@@ -757,3 +757,241 @@ Design notes (2026-07-16): ad hoc addition, not in the original spec note — re
 - [x] Manual e2e: Suppliers list/profile/create/edit/bulk/import/export/insights match the Customers UX exactly, verified against a real synced tenant *(2026-07-16, human-verified; found and fixed a ledger transaction-type label bug — "نوع 200" — commit 49db2aa)*
 - [x] RTL/Arabic-numerals audit on the new Suppliers views *(2026-07-16, human-verified)*
 - [x] Human review before Phase 9 (Live tier) *(2026-07-16)*
+
+## Phase 9 — Live tier (SignalR)
+
+> **Deferred (user decision 2026-07-17):** Phase 9 ships after publish, based on client reaction. Phase 10 (Billing, `tasks/spec-billing.md`) executes first — it removes the manual-provisioning and no-billing publish blockers.
+
+Plan: `tasks/plan.md` §Phase 9 · Spec: `tasks/spec-console.md` §Realtime chain + slice 8
+
+Scope (user decision 2026-07-16): **presence + sync-now nudge + manual per-branch nudge button; live queries deferred to Phase 9b.** Envelopes stay `synced`/`offline`; `source:"live"` stays reserved. First phase to touch the `desktop` repo.
+
+**Contracts every task codes against:**
+- Hub at `{gateway_url}/hub`; auth = **sync token** (richest claims: tenant_id/branch_id/db_name/device_id), read from `Authorization: Bearer` else `access_token` query string, validated manually in `OnConnectedAsync` (gateway has no auth middleware); same shard-mismatch rejection as `/sync`. Groups: `t:{db_name}`, `b:{db_name}:{branch_id}` (branch id lowercase `"D"` format; db_name is fleet-unique so groups can't collide).
+- Server→client message `"sync-now"` with one string arg `reason` ∈ {`"write"`, `"manual"`}. Desktop stagger: `write` → random 0–15 s, `manual` → random 0–3 s.
+- Timings: SignalR defaults (15 s keepalive / 30 s client timeout) + **45 s** offline grace (env `PRESENCE_GRACE_SECONDS`) → worst-case dead-connection→offline ≈ 75 s. After-write nudge coalesce **2.5 s** per db_name; manual nudges immediate.
+- Gateway→API callback: `POST /v1/internal/branch-presence`, Bearer = stored branch sync token, body `{"online": bool, "device_count": int}` (identity from token claims, mirroring `/v1/internal/sync-completed`).
+- Snapshot: `GET /admin/presence` (OpsToken) → `{"branches":[{"tenant_id","db_name","branch_id","device_count","connected_since"}]}` — only currently-connected branches.
+- SSE wire: `hq.Event` grows `Online *bool json:"online,omitempty"` → `event: branch-presence` / `data: {"type":"branch-presence","branch_id":…,"at":…,"online":true}`. `handleTenantEvents` unchanged (it already writes `event: <Type>`).
+- Three-valued presence invariant: **no store entry = unknown** (never connected since API start — old desktop). `Set(online:false)` for a nonexistent entry is a no-op, so old-version branches can never render "offline". `BranchView` gains `online *bool,omitempty`; `healthTier`/`syncFreshness`/envelopes untouched.
+- Failure modes (decided): expired stored token at offline callback → 401 logged, reconcile flips ≤ ~60 s; API down during callback → lost, reconcile repopulates; gateway restart → tracker empty, desktops auto-reconnect, reconcile marks stragglers offline once `/admin/presence` answers; API restart → store empty (all unknown), startup reconcile repopulates within seconds; a shard that fails to answer the poll is **skipped for mark-offline** (never mass-flip on an API⇄gateway blip); SSE drop → existing console reconnect path.
+- Test strategy: gateway = `dotnet build` + checkpoint e2e (no test infra; keep `PresenceTracker`/`SyncNudger` plain classes with injectable clock/notifier so tests can come later); api = table-driven tests incl. fake gateway (`httptest.Server`); console = build/lint; desktop = `dotnet build` + checkpoint e2e.
+- Rollout order: **gateway → API → console → desktop last** (presence unknown everywhere until desktops upgrade = zero behavior change).
+
+- [ ] **T72: Gateway — `BranchHub` + connection auth + groups**
+  - **Description:** `builder.Services.AddSignalR()` in the services block (`Program.cs:59-74`, before `Build()` at `:76`); register a `BranchHubAuth` singleton record `(RSA PublicKey, string? OwnShardId)` from the existing `publicKey` (`:39-40`) and `SHARD_ID` (`:53`); `app.MapHub<BranchHub>("/hub")` beside the other route maps. New `BranchHub.cs`: `OnConnectedAsync` pulls the token (header else `access_token` query), `SyncToken.TryValidate`, rejects (`Context.Abort()`) on invalid/expired/shard-mismatch **before joining any group**; stashes `SyncTokenClaims` + raw token in `Context.Items`; joins `t:{db}` + `b:{db}:{branch}`; calls `tracker.OnConnected(claims, ConnectionId, rawToken)`. `OnDisconnectedAsync` → `tracker.OnDisconnected(ConnectionId)`. `PresenceTracker` may start as a two-method stub (fleshed out in T73) so this builds standalone. No new PackageReference — SignalR ships in the `Sdk.Web` shared framework.
+  - Acceptance:
+    - [ ] Missing/garbage/expired/shard-mismatched token → connection aborted, no group joined
+    - [ ] Valid connection joins exactly `t:{db}` and `b:{db}:{branch}`; claims + raw token in `Context.Items`
+    - [ ] `AribSyncGateway.csproj` diff shows zero new packages
+  - Verify: `dotnet build AribSyncGateway.csproj`
+  - Files: `sync-gateway/BranchHub.cs` (new), `sync-gateway/Program.cs`
+  - Dependencies: none · **Size: S**
+
+- [ ] **T73: Gateway — `PresenceTracker` + grace + callback + `/admin/presence`**
+  - **Description:** New `Presence.cs`. `PresenceNotifier(licenseApiUrl, HttpClient)` — clone of `SyncCompletedNotifier` (`SyncActivity.cs:60-83`): fire-and-forget `POST {LICENSE_API_URL}/v1/internal/branch-presence`, Bearer = stored token, body `{"online","device_count"}`, log-only on failure. `PresenceTracker(notifier, offlineGrace)` — `ConcurrentDictionary<(string db, Guid branch), Entry>` where `Entry { HashSet<string> Connections; string LastToken; string TenantId; DateTimeOffset ConnectedSince; CancellationTokenSource? OfflineTimer }`: `OnConnected` cancels any pending offline timer, refreshes `LastToken`, adds the connection; 0→1 → notify `online:true` immediately. `OnDisconnected` removes; →0 → start 45 s timer (`PRESENCE_GRACE_SECONDS`, default 45), cancelled by reconnect, else remove entry + notify `online:false`. `RefreshToken(claims, token)` called with one line from the `/sync` path (`OnSessionEnd` interceptor area, `Program.cs:183-201`) so every 5-min round keeps the stored token fresh — minimizes expired-token 401s on the offline callback. `Snapshot()` for T73's endpoint. Wire in Program.cs (`AddSingleton` for hub DI); map `GET /admin/presence` beside the other `/admin/*` routes: `TryOpsAuth` (`:105-111`) → `{branches:[…]}` snake_case.
+  - Acceptance:
+    - [ ] First connection per branch → exactly one immediate `online:true`; N seats never re-fire it
+    - [ ] Last disconnect → callback only after grace; reconnect within grace cancels (no offline ever sent)
+    - [ ] `/admin/presence` 401s without ops token; lists only connected branches with correct device counts
+    - [ ] Token refreshed on reconnects and `/sync` rounds; callback failure logged, never thrown
+  - Verify: `dotnet build AribSyncGateway.csproj`
+  - Files: `sync-gateway/Presence.cs` (new), `sync-gateway/Program.cs`, `sync-gateway/BranchHub.cs`
+  - Dependencies: T72 · **Size: M**
+
+- [ ] **T74: Gateway — `SyncNudger` + `POST /hq/nudge` + after-write hooks**
+  - **Description:** New `SyncNudger.cs` built after `app.Build()` from `app.Services.GetRequiredService<IHubContext<BranchHub>>()`. `NudgeTenant(dbName)`: per-db_name coalesce — `ConcurrentDictionary<string,byte>` pending; `TryAdd` → `Task.Run(Delay 2.5 s; TryRemove; Clients.Group($"t:{db}").SendAsync("sync-now","write"))`; duplicates inside the window are no-ops. `NudgeBranch(dbName, branchId)`: immediate `Clients.Group($"b:{db}:{branch}").SendAsync("sync-now","manual")`. Both fire-and-forget, log-only. Hook `NudgeTenant` into the six HQ write success sites (each already holds `dbName` from `TryHqAuth`): `PUT /hq/products/{id}/prices` (~`Program.cs:690`), `POST /hq/products` (~`:737`), and inside `MapCustomerTypeRoutes` (closure sees the nudger — covers customers **and** suppliers via the two invocations at `:1671-1672`): create/edit/bulk/import success branches. Map `POST /hq/nudge`: `TryHqAuth` → body `{"branch_id"}` (400 on bad) → `NudgeBranch` → `200 {"nudged":true,"devices":tracker.DeviceCount(db,branch)}` (0 devices is not an error).
+  - Acceptance:
+    - [ ] All six write success sites nudge; error/4xx branches never do; nudge failure can never fail the write response
+    - [ ] Two writes within 2.5 s → one tenant-group broadcast
+    - [ ] `/hq/nudge`: 401 without HqToken, 400 on bad body, targets only the one branch group, returns device count
+  - Verify: `dotnet build AribSyncGateway.csproj`
+  - Files: `sync-gateway/SyncNudger.cs` (new), `sync-gateway/Program.cs`
+  - Dependencies: T72, T73 · **Size: S**
+
+- [ ] **T75: API — `PresenceStore` + `Event.Online` + internal `branch-presence` handler**
+  - **Description:** `events.go`: add `Online *bool json:"online,omitempty"` to `Event` (`:12-16`). New `hq/presence.go`: `PresenceStore` (mutex map `tenantID → branchID → {Online, Since, DeviceCount}`) with `Set(...) (changed bool)` — changed = created-online or flag flipped; **`Set(online:false)` for a nonexistent entry creates nothing and reports unchanged** (the old-version invariant); `Lookup`, `All`. Same single-instance caveat comment as `EventBus`. `hq.New` gains the store param (nil tolerated — `Branches()` skips decoration); update `main.go` + existing constructor calls in tests. `tenant.Service`: extract the branch-ownership check from `RecordSyncCompleted` (`service.go:537-550`) into `VerifyBranch(ctx, tenantID, branchID)` and reuse from both. Route `POST /internal/branch-presence` beside `/internal/sync-completed` (`server.go:122`); handler mirrors `handleInternalSyncCompleted` (`tenant_handlers.go:81-99`): Bearer → `VerifySyncToken` → decode body → `VerifyBranch` → `hq.RecordPresence(...)` (thin wrapper on `presence.Set` with `time.Now().UTC()`) → if changed, `events.Publish(tenantID, Event{Type:"branch-presence", BranchID, At, Online:&online})` → `200 {"status":"recorded"}`.
+  - Acceptance:
+    - [ ] Table-driven `presence_test.go`: unknown→online = changed; online→online = unchanged; online→offline = changed; **offline-for-unknown = no-op**; device count updates
+    - [ ] Handler tests: bad token → 401; other tenant's branch → error; happy path stores + publishes
+    - [ ] `branch-synced` events carry no `online` key (omitempty verified)
+  - Verify: `go build ./... && go vet ./... && go test ./...`
+  - Files: `api/internal/hq/{events,presence,presence_test}.go`, `api/internal/hq/service.go`, `api/internal/tenant/service.go`, `api/internal/httpapi/{server,tenant_handlers}.go`, `api/cmd/api/main.go`
+  - Dependencies: none (contract-first; T73 targets this endpoint) · **Size: M**
+
+- [ ] **T76: API — presence reconcile poller**
+  - **Description:** New `hq/reconcile.go`: `PresenceReconciler` (deps: shard lister, ops-token issuer — reuse the rollout service's mint, store, event bus, `*http.Client`, logger) with `Run(ctx, interval)`: one reconcile immediately, then `time.NewTicker(60 s)` until ctx cancels — **the API's first background job** (plain goroutine, consistent with the bus's single-instance caveat). One cycle: list active shards; per shard, ops-token `GET {GatewayURL}/admin/presence` (~10 s timeout, rollout client pattern); union entries. Diff as a **pure function** `diffPresence(current, snapshot, allShardsOK) []change`: snapshot entries absent-or-offline in store → online; store-online entries absent from the union → offline **only if every shard answered** (an unreachable shard must never mass-flip its branches). Apply via `Store.Set`, publish `branch-presence` per actual change (snapshot carries tenant_id — no registry lookup). Wiring: `httpapi.Server` gets a one-line `Events() *hq.EventBus` accessor; `main.go` starts `go reconciler.Run(ctx, time.Minute)` with shutdown-cancelled ctx.
+  - Acceptance:
+    - [ ] `diffPresence` table-driven: fresh store+snapshot → all online; store-online absent → offline iff `allShardsOK`; converged → no-op; never fabricates offline for never-seen branches
+    - [ ] Fake-gateway (`httptest.Server`) test: startup run populates + publishes; identical second run publishes nothing; ops-token auth header asserted
+    - [ ] Unreachable gateway → logged, cycle continues with remaining shards; graceful shutdown stops the goroutine
+  - Verify: `go build ./... && go vet ./... && go test ./...`
+  - Files: `api/internal/hq/{reconcile,reconcile_test}.go`, `api/internal/httpapi/server.go`, `api/cmd/api/main.go`
+  - Dependencies: T75 · **Size: M**
+
+- [ ] **T77: API — `BranchView.online` decoration**
+  - **Description:** `BranchView` (`hq/service.go:176-187`) gains `Online *bool json:"online,omitempty"`; `Branches()` (`:267`) decorates from `presence.Lookup` when the store is non-nil. `healthTier`, `syncFreshness`, envelopes, `BranchActivity`, `InventoryBranchView` all untouched. Doc comment states the three-valued semantics (nil = never connected / old app; display-only, never a freshness source).
+  - Acceptance:
+    - [ ] Table-driven: store-online → `"online":true`; store-offline → `false`; no entry → key **absent**; `health` identical in all three cases
+  - Verify: `go build ./... && go vet ./... && go test ./...`
+  - Files: `api/internal/hq/{service,service_test}.go`
+  - Dependencies: T75 · **Size: S**
+
+- [ ] **T78: API — manual nudge passthrough**
+  - **Description:** `hq.Service.NudgeBranch(ctx, accountID, tenantID, branchID)`: `resolveGateway` (`:108`) → branch ownership via `store.BranchesByTenant` (`ErrNotFound` otherwise) → HQ-token `POST {gateway}/hq/nudge` body `{"branch_id"}` (inline-POST pattern of `CreateProduct`, no generic refactor) → decode `{"nudged","devices"}`. Route `POST /hq/branches/{branchId}/nudge` in the HQ group; handler = standard session-auth + `writeHqError` shape.
+  - Acceptance:
+    - [ ] Tests: non-owned tenant → forbidden; unknown branch → not found; gateway down → 503; happy path forwards branch_id and returns device count (fake gateway asserts HqToken + body)
+  - Verify: `go build ./... && go vet ./... && go test ./...`
+  - Files: `api/internal/hq/service.go` + tests, `api/internal/httpapi/{hq_handlers,server}.go`
+  - Dependencies: T74 (contract; buildable on fakes) · **Size: S**
+
+- [ ] **T79: Console — presence types + SSE listener + «متصل» badge + propagation copy**
+  - **Description:** `types.ts`: `online?: boolean` on `BranchView`. `hooks.ts` `useTenantEvents` (`:247`): add `es.addEventListener('branch-presence', …)` invalidating **only** `qk.hqBranches` + `qk.branchActivity` (presence rides `BranchView` — a connect/disconnect must not refetch inventory/reports). New `components/PresenceBadge.tsx`: pulsing green dot + «متصل», renders `null` unless `online === true` (reuse `Freshness.tsx`'s live-dot styling `:25-35`). Render on `Branches.tsx` cards (beside `HealthDot`), `BranchDetail.tsx` header, and `BranchStatusIndicator.tsx` popover rows (worst-tier reduce untouched). `PropagationPanel.tsx` (`:31`): pending copy becomes «في الانتظار — يصل خلال ثوانٍ» when `b.online === true`, else the existing «~٥ دقائق» copy.
+  - Acceptance:
+    - [ ] `online` absent/false → pixel-identical rendering to today (old-desktop degradation)
+    - [ ] `branch-presence` SSE flips the badge without refresh; `branch-synced` behavior unchanged
+    - [ ] Seconds-copy only for online branches
+  - Verify: `pnpm build && pnpm lint`
+  - Files: `console/src/lib/{types,hooks}.ts`, `console/src/components/{PresenceBadge (new),PropagationPanel,BranchStatusIndicator}.tsx`, `console/src/pages/console/{Branches,BranchDetail}.tsx`
+  - Dependencies: T75, T77 (wire shape) · **Size: S**
+
+- [ ] **T80: Console — manual «مزامنة الآن» button**
+  - **Description:** `api.ts`: `nudgeBranch(tenantId, branchId)` → `POST /v1/tenants/{id}/hq/branches/{branchId}/nudge`. `hooks.ts`: `useNudgeBranch` mutation — **no invalidation needed** (the resulting sync round emits `branch-synced`, which already invalidates everything). `BranchDetail.tsx` sync-activity section: «مزامنة الآن» button, enabled only when `online === true`; disabled tooltip «الفرع غير متصل — سيُزامن تلقائيًا خلال ~٥ دقائق»; success toast «تم إرسال طلب المزامنة»; brief pending state. Optionally icon-only on `Branches.tsx` cards if it doesn't crowd them.
+  - Acceptance:
+    - [ ] Disabled with tooltip when `online !== true` (every old-desktop branch)
+    - [ ] Click → 200 → `last_sync_at` flips within seconds via existing `branch-synced` SSE
+    - [ ] API error surfaces as toast, no crash
+  - Verify: `pnpm build && pnpm lint`
+  - Files: `console/src/lib/{api,hooks}.ts`, `console/src/pages/console/BranchDetail.tsx` (+optionally `Branches.tsx`)
+  - Dependencies: T78, T79 · **Size: S**
+
+- [ ] **T81: Desktop — SignalR client + `LiveLinkService`** ⚠ new dependency — **ask first before landing**
+  - **Description:** `AribONE.csproj`: add `Microsoft.AspNetCore.SignalR.Client` (the phase's only new package; gateway needs none). `SyncService.cs`: expose `internal Task<SyncTokenResult?> MintSyncTokenAsync()` delegating to the private `GetTokenAsync` (`:318-325`) so LiveLink shares the in-memory token cache (never double-mints). New `Services/Sync/LiveLinkService.cs` — static-singleton `ObservableObject` (house pattern, `SyncService.cs:34`): `[ObservableProperty] bool _isConnected`; idempotent `Start()` no-op unless `SyncService.Instance.IsEnabled`. Supervisor loop: mint token result → `HubConnection` via `WithUrl($"{result.GatewayUrl}/hub", AccessTokenProvider = fresh mint)` + custom **infinite** `IRetryPolicy` (`min(60 s, 5 s × attempt)` + jitter — SignalR's default gives up after 4 tries). Handler registered before `StartAsync`: `conn.On<string>("sync-now", reason => { if (UpdateRequired) return; await Delay(random 0–15 s for "write" / 0–3 s for "manual"); trigger the SyncNow path; })` — the `_gate.WaitAsync(0)` no-op (`:208`) absorbs overlaps; 5-min timer untouched. `Closed` handler: wait 30–60 s, rebuild from a fresh token result (picks up a changed `gateway_url` after a shard move); loop re-checks `IsEnabled` so entitlement loss tears down. Start from `App.axaml.cs` `EnterLauncher` (`:744`) beside `SyncService.Instance.Start()`. UI: extend the existing launcher sync icon tooltip (`LauncherView.axaml:97-116`) with «متصل مباشرة» via `x:Static` binding — no new surface.
+  - Acceptance:
+    - [ ] Entitled app start → hub connected within seconds; gateway lists the branch online
+    - [ ] `sync-now("write")` → round within ≤15 s; `("manual")` ≤3 s; mid-round nudge = no-op; 5-min timer still fires
+    - [ ] Gateway kill → infinite backoff reconnect; `IsConnected` truthful; no UI-thread blocking; long-lived connection outliving the ~1 h token reconnects with a fresh mint
+    - [ ] Not entitled / `UpdateRequired` → no connection attempts / nudges ignored
+  - Verify: `dotnet build AribONE.csproj`
+  - Files: `desktop/AribONE.csproj`, `desktop/Services/Sync/LiveLinkService.cs` (new), `desktop/Services/Sync/SyncService.cs`, `desktop/App.axaml.cs`, `desktop/Views/LauncherView.axaml`
+  - Dependencies: T72–T74 (a live gateway to test against; buildable on contract alone) · **Size: M**
+
+### Checkpoint 9
+Deploy order first: **gateway → API → console** with zero upgraded desktops (must render exactly as Phase 8 — no `online` key anywhere), desktop last.
+- [ ] All gates green (api `go build ./... && go vet ./... && go test ./...`, gateway `dotnet build AribSyncGateway.csproj`, console `pnpm build && pnpm lint`, desktop `dotnet build AribONE.csproj`)
+- [ ] Old-version invariant: a branch on the pre-Phase-9 desktop shows normal health tiers, no «متصل» badge, never "offline", nudge button disabled with tooltip; `/admin/presence` never lists it
+- [ ] Basic presence: upgraded desktop start → badge within ~2 s (SSE); `/admin/presence` lists device_count 1
+- [ ] Flap debounce: network cut <45 s → no offline ever reaches the console; cut >45 s → badge drops (~75 s worst case) and returns on reconnect; gateway logs exactly one offline/online pair
+- [ ] Multi-seat: N seats → device_count N, one «متصل»; closing N−1 seats emits nothing; last close → offline after grace
+- [ ] After-write nudge: HQ price change → online branch's chip shows «يصل خلال ثوانٍ», flips «وصل ✓» within ~20 s (2.5 s coalesce + ≤15 s stagger + round); rapid successive writes → one broadcast (gateway log); offline/old branches keep the ~5-min path
+- [ ] Manual nudge: console button → that POS's sync icon animates within ~3 s, `last_sync_at` flips via `branch-synced`; nudge during a running round → no error, no second round
+- [ ] Gateway restart: desktop auto-reconnects (watch backoff); no stuck-online branch after ~2 min
+- [ ] API restart: badges repopulate within seconds of startup (first reconcile run); console SSE reconnects on its own
+- [ ] Expired-token offline callback: branch connected >1 h with sync stopped, then killed → gateway logs a 401 presence callback; console still flips offline ≤ ~60 s (reconcile)
+- [ ] Transport check: production `gateway_url`'s TLS terminator passes the WebSocket `Upgrade` for `/hub` (SignalR falls back to SSE/long-poll if not — presence still works; note and fix infra at leisure)
+- [ ] RTL/Arabic-numerals audit (badge, button, toasts, tooltips)
+- [ ] **Human review before Phase 10**
+
+## Phase 10 — Billing (executes before Phase 9 — see deferral note above)
+
+Plan: `tasks/plan-billing.md` · Spec: `tasks/spec-billing.md` (approved 2026-07-17)
+
+Decisions locked with owner (2026-07-17): backfill bills for existing tenants (no grandfather path) · enforcement = refuse `IssueSyncToken` only, never auto-suspend · bills are amount+period, no plan catalog, `Tenant.Plan` stays unused · warnings in console **and** desktop POS (via sync-token response). Derived-state constants: warn = 30 d before `ends_at`, grace = 7 d after; state ∈ none/active/expiring/grace/expired = f(paid bills, now) — never stored.
+
+- [x] **T82: Bill model + mongo store**
+  - **Description:** `Bill` + `BillStatus` (`paid`|`void`) in `model.go` per spec §Data Model (minor-units `Amount`, `Currency`, period, `VoidReason`, `CreatedBy`, `Source`/`ExternalRef` seam — mirror the `License` field comments). New `store/mongo/bills.go`: `InsertBill`, `BillByID`, `BillsByTenant` (newest first), `VoidBill(id, reason, at)` (paid→void only). Index `{tenant_id: 1, ends_at: -1}` added in `EnsureIndexes` (`store.go:79`), collection wired in `store.go:62`'s collection block.
+  - Acceptance:
+    - [ ] Void of an already-void bill errors; bills are never deleted
+    - [ ] `BillsByTenant` returns newest-first and includes void bills
+  - Verify: `cd api && make test` — store test beside `registry_test.go`
+  - Files: `api/internal/model/model.go`, `api/internal/store/mongo/bills.go` (new), `api/internal/store/mongo/store.go`, store test
+  - Dependencies: none · **Size: S**
+
+- [x] **T83: `billing.Derive` — pure subscription-state function**
+  - **Description:** New package `api/internal/billing`: `State` (none/active/expiring/grace/expired), `Summary{State, EndsAt, GraceUntil, DaysLeft}`, `Derive(bills, now)`. Coverage end = max `ends_at` over **paid** bills; `warnBefore = 30*24h`, `graceAfter = 7*24h` as package constants. Table-driven tests on the boundaries: exactly end−30d, exactly end, end+7d, end+7d+1s, no bills, only-void bills, overlapping bills, future-dated bill (early renewal extends coverage).
+  - Acceptance:
+    - [ ] All boundary rows pass; voided covering bill downgrades state
+    - [ ] Function is pure (no store/context dependency)
+  - Verify: `cd api && make test`
+  - Files: `api/internal/billing/billing.go` (new), `api/internal/billing/billing_test.go` (new)
+  - Dependencies: T82 · **Size: S**
+
+- [x] **T84: billing service — create/void/list + auto-provision**
+  - **Description:** `api/internal/billing/service.go`: `Create` (validate `amount > 0`, `ends_at > starts_at`, currency defaults `"EGP"`; insert `paid`; if tenant `DBName == ""` call a small `provisioner` interface satisfied by `tenant.Service.ProvisionSync` — provision failure does **not** roll back the bill, response carries `provisioned bool` + detail), `Void(id, actor, reason)`, `ListWithSummary(tenantID)` (bills + `Derive` output). Audit via existing `InsertAudit` (`store/mongo/auth.go:126`): actions `bill.create` / `bill.void` with amount/period/reason meta.
+  - Acceptance:
+    - [ ] Bill on unprovisioned tenant provisions it; on provisioned tenant provisioning is skipped
+    - [ ] Provision failure still persists the bill and reports `provisioned: false`
+    - [ ] Every create/void writes an audit row
+  - Verify: `cd api && make test` — table-driven service test
+  - Files: `api/internal/billing/service.go` (new) + test, `api/internal/tenant/service.go` (only if the provisioner seam needs a method tweak)
+  - Dependencies: T82, T83 · **Size: M**
+
+- [x] **T85: admin bill endpoints**
+  - **Description:** `POST /v1/admin/tenants/{id}/bills` (create, body per spec §API), `GET /v1/admin/tenants/{id}/bills` (list + summary), `POST /v1/admin/bills/{id}/void` (`{reason}` required). Wire beside `handleAdminProvisionSync` (`server.go` admin block, `tenant_handlers.go:289`); same admin auth. Amounts cross the wire in **minor units**; handler does no currency math.
+  - Acceptance:
+    - [ ] Validation errors → 400 with message; unknown tenant/bill → 404; void without reason → 400
+    - [ ] Create response includes the bill, `provisioned` flag, and fresh summary
+  - Verify: `cd api && make test` — handler tests in the existing httpapi test style
+  - Files: `api/internal/httpapi/billing_handlers.go` (new), `api/internal/httpapi/server.go`
+  - Dependencies: T84 · **Size: S**
+
+- [x] **T86: sync-token gate + client subscription endpoint + desktop seam**
+  - **Description:** `IssueSyncToken` (`tenant/service.go:404`) loads the tenant's bills, derives state, and returns new sentinel `ErrSubscriptionExpired` when `expired`/`none` (beside the `ErrTenantSuspended` check). `handleSyncToken` (`tenant_handlers.go:265`) maps it to **403** `{"code":"subscription_expired"}` and, on success, adds `"subscription": {"state", "ends_at"}` to the response (additive — old desktops ignore it). New client route `GET /v1/tenants/{id}/subscription` (ownership check via `owned`, **not** `activeTenant` — a suspended tenant may still read billing) returning `{state, ends_at, grace_until, days_left, bills:[…]}`.
+  - Acceptance:
+    - [ ] `expired` and no-bills tenants get 403 `subscription_expired`; `grace` still gets tokens + subscription payload
+    - [ ] Subscription endpoint works for suspended tenants, 403s for non-owners
+  - Verify: `cd api && make test`
+  - Files: `api/internal/tenant/service.go` + `service_test.go`, `api/internal/httpapi/tenant_handlers.go`, `api/internal/httpapi/server.go`
+  - Dependencies: T83 · **Size: M**
+
+- [x] **Checkpoint 10a — API complete** *(verified 2026-07-17 against an isolated throwaway Mongo — not the compose `platform_mongo_data` volume)*
+  - [x] `cd api && make test` green
+  - [x] Local curl E2E: unprovisioned tenant → sync-token 402 (`ErrNotSubscribed`, unchanged) → create bill (auto-provisions) → sync-token 200 with `subscription.state=active` → void the bill → sync-token 403 `subscription_expired`
+  - [ ] Human review before UI legs
+
+- [x] **T87: admin UI — bills on ClientDetail**
+  - **Description:** `adminApi` + types for the three endpoints; per-tenant section in `ClientDetail.tsx` (beside the existing provision button, which stays as ops fallback): state chip (active/expiring/grace/expired/none), bills table (amount rendered from minor units, period, status, created-by), **Add bill** dialog — amount input in EGP major units converted once at the API call, suggested `starts_at` = current coverage end (or today), suggested period 1 year — void action with required reason prompt, toast on `provisioned: false` pointing at the manual button.
+  - Acceptance:
+    - [ ] Recording a bill on an unprovisioned tenant shows the provision result without a manual click
+    - [ ] Void updates the state chip in place (query invalidation)
+  - Verify: `cd admin && pnpm build && pnpm lint`; manual pass against local API
+  - Files: `admin/src/lib/api.ts`, `admin/src/lib/types.ts`, `admin/src/pages/ClientDetail.tsx`
+  - Dependencies: T85 · **Size: M**
+
+- [x] **T88: console — subscription hook + real billing page**
+  - **Description:** `api.subscription` + `useSubscription(tenantId)` in `console/src/lib`; new `pages/console/Billing.tsx` replacing the `/billing` placeholder route in `App.tsx`: state card (نشط حتى… / ينتهي خلال… / فترة سماح / منتهي / لا يوجد اشتراك), bill history table (Arabic digits + `money` formatter, period, status), and a "طريقة الدفع" instructions card (placeholder copy clearly marked — owner supplies content, plan-billing.md open question 2). Note: `/billing` is account-level in the route tree but the API is tenant-scoped — page needs tenant selection when the account has >1 tenant (reuse the tenant-picker pattern from the console shell) or move the route under `/tenants/:tenantId/billing`; prefer the latter, keeping a redirect on the old path.
+  - Acceptance:
+    - [ ] All five states render correct Arabic copy; bill rows match admin-entered data
+    - [ ] RTL + Arabic numerals audit on the page
+  - Verify: `cd console && pnpm build && pnpm lint`; manual against local API with dates tweaked per state
+  - Files: `console/src/lib/api.ts`, `console/src/lib/hooks.ts`, `console/src/pages/console/Billing.tsx` (new), `console/src/App.tsx`
+  - Dependencies: T86 · **Size: M**
+
+- [x] **T89: console — Overview banner/card + alert bell**
+  - **Description:** `Overview.tsx`: delete the `!t.Plan` banner (line 67) and the «الباقة» dead-field card (line 200); replace with subscription-state banner (only when state ≠ active: expiring = info, grace/expired = danger, wording per spec) and an «الاشتراك» card (state + end date), both from `useSubscription`. `deriveAlerts` (`lib/alerts.ts`) gains a subscription input producing one alert row while expiring/grace/expired deep-linking to the billing page; both callers (`Overview.tsx`, `NotificationsBell.tsx`) pass it.
+  - Acceptance:
+    - [ ] Provisioned+paid tenant shows no «بدون اشتراك» anywhere (retires the 2026-07-16 dead-field bug)
+    - [ ] Bell and Overview alerts panel show the identical subscription row (shared `deriveAlerts`)
+  - Verify: `cd console && pnpm build && pnpm lint`; manual pass across states
+  - Files: `console/src/pages/console/Overview.tsx`, `console/src/lib/alerts.ts`, `console/src/components/NotificationsBell.tsx`, `console/src/lib/hooks.ts`
+  - Dependencies: T88 · **Size: S**
+
+- [x] **Checkpoint 10b — consoles** *(desktop leg T90 also done — see note below)*
+  - [x] Both consoles build + lint clean
+  - [x] Manual: bill created in admin UI appears in tenant console within one refetch; five states verified by tweaking bill dates in Mongo *(human-verified 2026-07-17)*
+  - [x] Human review before desktop leg *(approved 2026-07-17)*
+
+- [x] **T90: desktop — subscription warning + paused-sync state**
+  - **Description:** (desktop repo) `SyncTokenResult` gains nullable `Subscription(State, EndsAt)` (`LicenseApiClient.cs:415`); `SyncService` (`Services/Sync/SyncService.cs`): on token response with state expiring/grace, raise a dismissible in-app warning at most once per 7 days (persist last-shown timestamp in the app's existing local settings store); on 403 with code `subscription_expired`, set a distinct "المزامنة متوقفة — يرجى تجديد الاشتراك" sync status instead of the generic failure, retry cadence unchanged. Local selling never blocked.
+  - Acceptance:
+    - [ ] Warning shows at most weekly; paused state shows the renewal message and clears on the first successful token after a new bill
+    - [ ] Old-version invariant: pre-T90 desktops keep working (field ignored; 403 = ordinary failed round)
+  - Verify: `cd ../desktop && dotnet build AribONE.csproj`; manual round against local API in grace + expired states
+  - Files: `desktop/Services/LicenseApiClient.cs`, `desktop/Services/Sync/SyncService.cs`, warning UI surface + settings persistence (~2 more files)
+  - Dependencies: T86 · **Size: M**
+
+- [x] **Checkpoint 10c — E2E + deploy order (spec §Success Criteria)**
+  - [x] Full flow on scratch tenant (`test`, tnt_3UGU4ADISUQMK5QDREALH3EU4Q): bill → auto-provision → desktop syncs → dates shifted to expiring (warning toast, correct day count, weekly gate confirmed) → grace (sync still works, correct renewal-date toast) → expired (403, distinct paused status "المزامنة متوقفة — يرجى تجديد الاشتراك", local selling unaffected, retry cadence unchanged by code — `UpdateRequired` never set on this path) → new bill via admin UI → sync resumes *(human-verified 2026-07-17, live desktop against dev stack; console banner at the expiring state confirmed live — grace/expired console views share the same `useSubscription` render path, not independently re-clicked at each state)*
+  - [ ] Deploy order: API + admin UI first → **backfill real tenants' bills immediately** (inside the ~1 h token TTL, before their cached tokens expire) → console → desktop release last
+  - [x] Audit log shows every bill action with actor *(confirmed during checkpoint 10a's E2E — `bill.create`/`bill.void` rows written with actor on every call)*
+  - [x] **Human review — Phase 10 complete; revisit Phase 9 scheduling** *(approved 2026-07-17)*
