@@ -219,8 +219,42 @@ Bugs found and fixed during this checkpoint's e2e pass (2026-07-15): desktop `Up
 - [x] RTL/Arabic-numerals audit on the new Suppliers views *(2026-07-16, human-verified)*
 - [x] Human review before Phase 9 (Live tier) *(2026-07-16)*
 
+### Phase 9 — Live tier (SignalR)
+
+**Design notes (2026-07-16):** first phase to touch the desktop repo. Scope decided by the user: **presence + sync-now nudge + a manual per-branch «مزامنة الآن» button; live queries deferred to a future Phase 9b** — envelopes stay `synced`/`offline`, `source:"live"` stays reserved (the console's `Freshness.tsx` already renders it; no Go code emits it this phase either — presence is branch *status*, never a data source). Architecture is the spec's "Realtime chain" (decided 2026-07-14): desktop ⇄ SignalR hub on the gateway (presence source of truth) → signed HTTP callback → Go API (presence aggregator) → existing SSE → console. Grounded realities from exploring all three repos + desktop:
+- **No new gateway package**: `net10.0`/`Sdk.Web` ships SignalR in the shared framework. The gateway has **no auth middleware**, so `BranchHub.OnConnectedAsync` validates the desktop's **sync token** manually (header or `access_token` query) via the existing `SyncToken.TryValidate` + shared public key — its claims already carry `tenant_id`/`branch_id`/`db_name`/`device_id`, and the same shard-mismatch rule as `/sync` applies. Groups: `t:{db_name}` (tenant-wide) and `b:{db_name}:{branch_id}`.
+- **Every activated seat runs its own sync loop** (no leader/main-device concept in the desktop) → a branch with N seats = N hub connections; **branch online = ≥1 connection**. Nudges are received per device; each draws its own random stagger (0–15 s for `write`, 0–3 s for `manual`) and `SyncService`'s `SemaphoreSlim(1,1)` non-blocking gate (`_gate.WaitAsync(0)`, confirmed in `SyncService.cs:208`) makes mid-round nudges silent no-ops. The 5-min timer stays as unconditional fallback.
+- **Presence is three-valued and degrades safely**: online / offline / **unknown** (no store entry — branch never connected since API start, i.e. old desktop version or pre-rollout). An offline callback or reconcile pass can only flip entries that already exist, so an un-upgraded branch can never render "offline" for merely not connecting — it keeps today's last-sync health tiers pixel-identically. `healthTier`/`syncFreshness` are untouched; `BranchView` gains `online *bool,omitempty` as an additive display signal.
+- **Callbacks + snapshot reconcile**: gateway `PresenceTracker` (in-memory; 45 s offline grace, env `PRESENCE_GRACE_SECONDS`; stored per-branch sync token refreshed on every hub connect *and* every `/sync` round) fires `POST /v1/internal/branch-presence` cloning the `SyncCompletedNotifier` fire-and-forget pattern. Truth is `GET /admin/presence` (OpsToken snapshot); the API runs its **first-ever background job** — a 60 s reconcile poller (startup + ticker) that diffs snapshots against the in-memory `PresenceStore` and never mass-flips a shard offline when that shard merely failed to answer. Same single-API-instance caveat as the event bus. SSE grows `event: branch-presence` (`Event` gets `Online *bool,omitempty`); `handleTenantEvents` needs zero changes.
+- **Nudge is gateway-side**: a `SyncNudger` (per-db_name 2.5 s coalesce for after-write; immediate for manual) is called from the six HQ write success sites (prices, product create, and the customer/supplier create/edit/bulk/import family — which all already hold `dbName` from `TryHqAuth`), plus new `POST /hq/nudge` (HqToken + branch_id body) for the console button. The API write path doesn't change for the after-write nudge.
+- **Desktop leg**: new `Microsoft.AspNetCore.SignalR.Client` package — **the phase's only new dependency (ask-first honored at T81)**. `LiveLinkService` static singleton (house pattern), started from `EnterLauncher` beside `SyncService.Start()`, hub URL derived from the sync-token response's `gateway_url` (the desktop only learns the gateway host from that response), token via `AccessTokenProvider` sharing SyncService's cached mint, infinite custom retry policy (SignalR's default gives up after 4 tries). Minimal UI: connection state folds into the existing launcher sync icon tooltip.
+- **No nginx/docker changes**: desktop⇄gateway WebSockets hit the gateway's own listener and never touch the console nginx; the SSE location already has buffering off. One checkpoint item verifies whatever TLS terminator fronts the production `gateway_url` passes the `Upgrade` header (SignalR transport fallback keeps presence working even if not).
+- **Rollout order is part of the design**: gateway → API → console ship first (no upgraded desktop anywhere = presence unknown everywhere = zero behavior change), desktop last, branches upgrade gradually. Full task detail in `todo.md`.
+
+- [ ] T72: Gateway — `BranchHub` + manual sync-token connection auth + `t:`/`b:` groups
+- [ ] T73: Gateway — `PresenceTracker` (45 s grace, token refresh) + `PresenceNotifier` callback + `GET /admin/presence` snapshot
+- [ ] T74: Gateway — `SyncNudger` (2.5 s coalesce) + `POST /hq/nudge` + hooks in all six HQ write success sites
+- [ ] T75: API — `PresenceStore` + `Event.Online` + `POST /v1/internal/branch-presence` (mirrors sync-completed)
+- [ ] T76: API — presence reconcile poller (startup + 60 s ticker, ops-token snapshot per shard, pure-function diff)
+- [ ] T77: API — `BranchView.online` decoration (three-valued, health untouched)
+- [ ] T78: API — manual nudge passthrough `POST /v1/tenants/{id}/hq/branches/{branchId}/nudge`
+- [ ] T79: Console — presence types + `branch-presence` SSE listener + «متصل» badge + propagation seconds-copy
+- [ ] T80: Console — manual «مزامنة الآن» button on branch detail
+- [ ] T81: Desktop — SignalR client + `LiveLinkService` (+ new package — **ask first**)
+
+### Checkpoint 9 (Live tier shipped)
+- [ ] All gates green (api `go build ./... && go vet ./... && go test ./...`, gateway `dotnet build AribSyncGateway.csproj`, console `pnpm build && pnpm lint`, desktop `dotnet build AribONE.csproj`)
+- [ ] Pre-desktop deploy regression: gateway+API+console live with zero upgraded desktops → every branch renders exactly as Phase 8 (no `online` key anywhere, nudge button disabled)
+- [ ] Manual e2e: upgraded desktop start → «متصل» within ~2 s via SSE; flap <45 s never reaches the console; >45 s flips offline (~75 s worst case) and back; N-seat branch stays online until the last seat closes
+- [ ] Manual e2e: HQ price change → online branch's propagation chip shows «يصل خلال ثوانٍ» and flips «وصل ✓» within ~20 s; rapid successive writes coalesce to one broadcast; offline/old branches keep the ~5-min path
+- [ ] Manual e2e: console «مزامنة الآن» → that POS syncs within ~3 s; nudge during a running round is a silent no-op
+- [ ] Restart reconcile: gateway restart (desktop auto-reconnects, no stuck-online after ~2 min) and API restart (badges repopulate within seconds of the startup reconcile)
+- [ ] Old-version invariant + expired-token offline callback (401 logged, reconcile flips offline ≤ ~60 s); production `gateway_url` WebSocket upgrade check
+- [ ] RTL/Arabic-numerals audit on the new badge/button/toasts
+- [ ] Human review before Phase 10
+
 ### Later phases (outline only — broken down when reached)
-- **Phase 9 — Live tier (SignalR):** separate spec, per the main spec's slice 8.
+- **Phase 9b — Live queries:** deferred remainder of the spec's slice 8 (current shift / live inventory answered by the branch over the hub, lighting up `source:"live"`) — scoped out of Phase 9 by user decision 2026-07-16.
 - **Phase 10 — Loyalty program:** separate spec, per the main spec's slice 9 (full auto-earning program, deferred out of the Customers slice — see spec-console.md).
 
 ## Risks and mitigations
