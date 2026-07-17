@@ -1,5 +1,5 @@
 import { Link, useParams } from 'react-router-dom'
-import { useConflicts, useHqBranches, useInventoryAttention } from '@/lib/hooks'
+import { useConflicts, useHqBranches, useInventoryAttention, useSubscription } from '@/lib/hooks'
 import { deriveAlerts } from '@/lib/alerts'
 import { toArabicDigits } from '@/lib/format'
 import { BellIcon, DangerIcon, InfoIcon, SuccessIcon } from '@/components/icon'
@@ -24,6 +24,7 @@ export function NotificationsBell() {
   const { data: hq } = useHqBranches(tenantId)
   const { data: attention } = useInventoryAttention(tenantId, {})
   const { data: conflicts } = useConflicts(tenantId, {})
+  const { data: subscription } = useSubscription(tenantId)
 
   if (!tenantId || !hq) return null
 
@@ -31,6 +32,7 @@ export function NotificationsBell() {
     branches: hq.branches,
     attention: attention?.data.counts,
     conflictsUnacked: conflicts?.data.unacked,
+    subscription: subscription?.summary,
   })
   const hasConflictAlert = alerts.some((a) => a.key === 'conflicts')
   const badgeLabel = alerts.length > 9 ? '٩+' : toArabicDigits(alerts.length)

@@ -45,6 +45,7 @@ import type {
   SalesReportResponse,
   Session,
   StaffReportResponse,
+  SubscriptionResponse,
   SupplierDebtFilter,
   SupplierDetailResponse,
   SupplierEditInput,
@@ -304,6 +305,11 @@ export const api = {
   // sync token for connecting a desktop install
   syncToken: (tenantId: string, deviceId: string) =>
     request<SyncToken>(`/v1/tenants/${tenantId}/sync-token`, post({ device_id: deviceId })),
+
+  // billing (Phase 10): bills + derived subscription state, read-only here —
+  // recording/voiding bills is an admin-only action (admin app).
+  subscription: (tenantId: string) =>
+    request<SubscriptionResponse>(`/v1/tenants/${tenantId}/subscription`),
 
   // HQ reads (freshness-enveloped, via the sync gateway)
   branchActivity: (tenantId: string) =>

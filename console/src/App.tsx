@@ -7,6 +7,7 @@ import { Login } from '@/pages/Login'
 import { Home } from '@/pages/Home'
 import { Tenants } from '@/pages/Tenants'
 import { Placeholder } from '@/pages/Placeholder'
+import { Billing } from '@/pages/Billing'
 import { SetupWizard } from '@/pages/setup/SetupWizard'
 import { Overview } from '@/pages/console/Overview'
 import { Company } from '@/pages/console/Company'
@@ -23,7 +24,7 @@ import { Conflicts } from '@/pages/console/Conflicts'
 import { Reports } from '@/pages/console/Reports'
 import { Download } from '@/pages/console/Download'
 import { Settings } from '@/pages/console/Settings'
-import { AccountIcon, BillingIcon, HelpIcon } from '@/components/icon'
+import { AccountIcon, HelpIcon } from '@/components/icon'
 
 export default function App() {
   const { status } = useAuth()
@@ -86,16 +87,7 @@ export default function App() {
             />
           }
         />
-        <Route
-          path="billing"
-          element={
-            <Placeholder
-              icon={BillingIcon}
-              title="الفوترة"
-              description="تفاصيل الاشتراك والفواتير ستتوفر قريبًا."
-            />
-          }
-        />
+        <Route path="billing" element={<Billing />} />
         <Route
           path="help"
           element={

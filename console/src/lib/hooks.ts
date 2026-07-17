@@ -40,6 +40,20 @@ export function useBundle(tenantId: string | undefined) {
 }
 
 /**
+ * Bills + derived subscription state (Phase 10 billing). Powers the billing
+ * page, the Overview banner/card, and the alert bell — all via this one
+ * shared query key so a bill change (recorded in the admin app) shows up
+ * everywhere on the next refetch.
+ */
+export function useSubscription(tenantId: string | undefined) {
+  return useQuery({
+    queryKey: qk.subscription(tenantId ?? ''),
+    queryFn: () => api.subscription(tenantId as string),
+    enabled: !!tenantId,
+  })
+}
+
+/**
  * Per-branch sync freshness (HQ read chain: API → gateway → central DB).
  * Refetches on a short interval so "synced X ago" stays honest between the
  * branch's ~5-minute sync rounds; the SSE hook invalidates it the moment a

@@ -1,7 +1,20 @@
 import type { ReactNode } from 'react'
 import { Link, useParams } from 'react-router-dom'
-import { useBundle, useConflicts, useHqBranches, useInventoryAttention } from '@/lib/hooks'
-import { tenantStatusLabel, tenantStatusTone, toArabicDigits } from '@/lib/format'
+import {
+  useBundle,
+  useConflicts,
+  useHqBranches,
+  useInventoryAttention,
+  useSubscription,
+} from '@/lib/hooks'
+import {
+  fmtDate,
+  isZeroTime,
+  subscriptionStateLabel,
+  tenantStatusLabel,
+  tenantStatusTone,
+  toArabicDigits,
+} from '@/lib/format'
 import { deriveAlerts, type Alert } from '@/lib/alerts'
 import { cn } from '@/lib/utils'
 import { PageHeader } from '@/components/PageHeader'
@@ -37,11 +50,13 @@ export function Overview() {
   // (T38) exactly — same shared deriveAlerts, same inputs.
   const { data: attention } = useInventoryAttention(tenantId, {})
   const { data: conflicts } = useConflicts(tenantId, {})
+  const { data: subscription } = useSubscription(tenantId)
 
   // The gate guarantees a complete bundle before this renders; guard anyway.
   if (!bundle) return <LoadingState />
 
   const { Tenant: t, Company: company, Branches } = bundle
+  const summary = subscription?.summary
   const branches = Branches ?? []
   const activeBranches = branches.filter((b) => b.Status === 'active').length
   const deviceCount = branches.reduce((sum, b) => sum + (b.ActiveDevices ?? 0), 0)
@@ -64,12 +79,25 @@ export function Overview() {
         />
       )}
 
-      {!t.Plan && (
+      {summary && summary.state !== 'active' && (
         <Banner
-          tone="info"
-          icon={InfoIcon}
-          title="لا يوجد اشتراك مزامنة"
-          message="فعّل اشتراك المزامنة لربط أجهزة الفروع ومزامنة بياناتها."
+          tone={
+            summary.state === 'grace' || summary.state === 'expired'
+              ? 'danger'
+              : 'info'
+          }
+          icon={summary.state === 'grace' || summary.state === 'expired' ? DangerIcon : InfoIcon}
+          title={subscriptionStateLabel(summary.state)}
+          message={
+            summary.state === 'none'
+              ? 'فعّل اشتراك المزامنة لربط أجهزة الفروع ومزامنة بياناتها.'
+              : summary.state === 'expiring'
+                ? `ينتهي اشتراك المزامنة خلال ${toArabicDigits(summary.days_left)} يوم، بتاريخ ${fmtDate(summary.ends_at)}.`
+                : summary.state === 'grace'
+                  ? `انتهى الاشتراك، والمزامنة تعمل ضمن فترة سماح حتى ${fmtDate(summary.grace_until)}.`
+                  : 'توقفت المزامنة — انتهى الاشتراك ولم يُجدَّد خلال فترة السماح.'
+          }
+          to="/billing"
         />
       )}
 
@@ -147,6 +175,7 @@ export function Overview() {
                     branches: hq.branches,
                     attention: attention?.data.counts,
                     conflictsUnacked: conflicts?.data.unacked,
+                    subscription: summary,
                   })
                 : undefined
             }
@@ -199,8 +228,14 @@ export function Overview() {
 
         <StatCard
           icon={WalletIcon}
-          label="الباقة"
-          value={t.Plan || 'بدون اشتراك'}
+          label="الاشتراك"
+          value={summary ? subscriptionStateLabel(summary.state) : '—'}
+          hint={
+            summary && !isZeroTime(summary.ends_at) && summary.state !== 'expired'
+              ? `حتى ${fmtDate(summary.ends_at)}`
+              : undefined
+          }
+          to="/billing"
         />
 
         <StatCard
@@ -352,19 +387,23 @@ function Banner({
   icon: IconCmp,
   title,
   message,
+  to,
 }: {
   tone: 'danger' | 'info'
   icon: IconComponent
   title: string
   message: string
+  to?: string
 }) {
-  return (
+  const body = (
     <div
       className={cn(
         'mb-4 flex items-start gap-3 rounded-xl border px-4 py-3',
         tone === 'danger'
           ? 'border-danger/30 bg-danger/5 text-danger'
           : 'border-info/30 bg-info/5 text-info',
+        to && tone === 'danger' && 'transition-colors hover:bg-danger/10',
+        to && tone === 'info' && 'transition-colors hover:bg-info/10',
       )}
       role={tone === 'danger' ? 'alert' : 'status'}
     >
@@ -375,4 +414,5 @@ function Banner({
       </div>
     </div>
   )
+  return to ? <Link to={to}>{body}</Link> : body
 }

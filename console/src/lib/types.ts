@@ -38,6 +38,41 @@ export interface Company {
   UpdatedAt: string
 }
 
+export type BillStatus = 'paid' | 'void'
+export type SubscriptionState = 'none' | 'active' | 'expiring' | 'grace' | 'expired'
+
+export interface Bill {
+  ID: string
+  TenantID: string
+  Amount: number // minor units (e.g. piasters)
+  Currency: string
+  StartsAt: string
+  EndsAt: string
+  Status: BillStatus
+  VoidReason?: string
+  Notes?: string
+  CreatedBy: string
+  Source: string
+  CreatedAt: string
+  UpdatedAt: string
+}
+
+// SubscriptionSummary carries json tags -> snake_case keys
+// (api/internal/billing.Summary).
+export interface SubscriptionSummary {
+  state: SubscriptionState
+  ends_at: string
+  grace_until: string
+  days_left: number
+}
+
+// SubscriptionResponse carries json tags -> snake_case keys
+// (GET /v1/tenants/{id}/subscription).
+export interface SubscriptionResponse {
+  bills: Bill[] | null
+  summary: SubscriptionSummary
+}
+
 export interface Branch {
   ID: string
   TenantID: string

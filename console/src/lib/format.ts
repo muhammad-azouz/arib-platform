@@ -1,6 +1,6 @@
 import { format, formatDistanceToNowStrict, isPast } from 'date-fns'
 import { ar } from 'date-fns/locale'
-import type { BranchStatus, DeviceStatus, TenantStatus } from './types'
+import type { BranchStatus, DeviceStatus, SubscriptionState, TenantStatus } from './types'
 
 const ZERO = '0001-01-01T00:00:00Z'
 
@@ -51,6 +51,36 @@ export function deviceStatusLabel(s: DeviceStatus): string {
 }
 export function deviceStatusTone(s: DeviceStatus): Tone {
   return s === 'active' ? 'success' : 'neutral'
+}
+
+const SUBSCRIPTION_LABELS: Record<SubscriptionState, string> = {
+  none: 'بدون اشتراك',
+  active: 'نشط',
+  expiring: 'ينتهي قريبًا',
+  grace: 'فترة سماح',
+  expired: 'منتهي',
+}
+export function subscriptionStateLabel(s: SubscriptionState): string {
+  return SUBSCRIPTION_LABELS[s]
+}
+export function subscriptionStateTone(s: SubscriptionState): Tone {
+  switch (s) {
+    case 'active':
+      return 'success'
+    case 'expiring':
+      return 'warning'
+    case 'grace':
+    case 'expired':
+      return 'danger'
+    default:
+      return 'neutral'
+  }
+}
+
+/** amount is minor units (e.g. piasters); one currency unit = 100 minor units. */
+export function fmtMoneyMinor(amountMinor: number, currency: string): string {
+  const digits = toArabicDigits((amountMinor / 100).toLocaleString('en', { maximumFractionDigits: 2 }))
+  return `${digits} ${currency}`
 }
 
 /** Convert western digits to Arabic-Indic for display where appropriate. */

@@ -1,5 +1,5 @@
 import { relative, toArabicDigits } from './format'
-import type { AttentionCounts, BranchView } from './types'
+import type { AttentionCounts, BranchView, SubscriptionSummary } from './types'
 
 // One derived alert. The spec's rule: an alert with no destination doesn't
 // ship — `to` is mandatory. Shared by the Overview panel and the
@@ -13,11 +13,12 @@ export interface Alert {
 
 export interface DeriveAlertsInput {
   branches: BranchView[]
-  // Undefined while the attention/conflicts queries haven't resolved yet —
-  // callers that mount cheaply (the bell) may omit them entirely rather than
-  // block on two extra requests.
+  // Undefined while the attention/conflicts/subscription queries haven't
+  // resolved yet — callers that mount cheaply (the bell) may omit them
+  // entirely rather than block on extra requests.
   attention?: AttentionCounts
   conflictsUnacked?: number
+  subscription?: SubscriptionSummary
 }
 
 /**
@@ -35,6 +36,18 @@ export function deriveAlerts(tenantId: string, input: DeriveAlertsInput): Alert[
       tone: 'danger',
       text: `${toArabicDigits(input.conflictsUnacked)} تعارض مزامنة بحاجة إلى مراجعة`,
       to: `/tenants/${tenantId}/conflicts`,
+    })
+  }
+
+  if (input.subscription?.state === 'grace' || input.subscription?.state === 'expired') {
+    alerts.push({
+      key: 'subscription',
+      tone: 'danger',
+      text:
+        input.subscription.state === 'grace'
+          ? 'اشتراك المزامنة في فترة سماح — جدّد الآن لتفادي توقف المزامنة'
+          : 'توقفت المزامنة — انتهى اشتراكك ولم يُجدَّد',
+      to: '/billing',
     })
   }
 
@@ -67,6 +80,15 @@ export function deriveAlerts(tenantId: string, input: DeriveAlertsInput): Alert[
       tone: 'info',
       text: `${toArabicDigits(input.attention.low)} صنف اقترب من حد إعادة الطلب`,
       to: `/tenants/${tenantId}/inventory?view=attention`,
+    })
+  }
+
+  if (input.subscription?.state === 'expiring') {
+    alerts.push({
+      key: 'subscription',
+      tone: 'info',
+      text: `ينتهي اشتراك المزامنة خلال ${toArabicDigits(input.subscription.days_left)} يوم`,
+      to: '/billing',
     })
   }
 
