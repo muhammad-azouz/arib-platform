@@ -19,7 +19,7 @@ export function Placeholder({
   return (
     <div className="min-h-screen">
       <header className="flex h-16 items-center justify-between px-5 sm:px-8">
-        <Brand />
+        <Brand w-25 h-10 />
         <Link
           to="/"
           className="flex items-center gap-1.5 text-sm text-muted-foreground transition-colors hover:text-foreground"

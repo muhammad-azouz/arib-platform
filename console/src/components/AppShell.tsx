@@ -65,7 +65,7 @@ export function AppShell() {
     <div className="flex min-h-screen">
       {/* Sidebar (right side in RTL) */}
       <aside className="sticky top-0 hidden h-screen w-64 shrink-0 flex-col border-e border-border bg-card/50 p-4 md:flex">
-        <Brand className="px-2 py-3" />
+        <Brand className="px-2 py-3 w-25 h-10" />
 
         <nav className="mt-6 flex flex-col gap-1">
           {nav.map(({ to, label, icon: IconCmp, end }) => (

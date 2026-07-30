@@ -70,7 +70,7 @@ export function Login() {
     <div className="grid min-h-screen place-items-center px-4 py-10">
       <div className="w-full max-w-sm animate-rise">
         <div className="mb-8 flex justify-center">
-          <Brand subtitle="لوحة تحكم التاجر" />
+          <Brand subtitle="لوحة تحكم التاجر" className='w-50' />
         </div>
 
         <div className="rounded-2xl border border-border bg-card p-6 shadow-sm sm:p-8">

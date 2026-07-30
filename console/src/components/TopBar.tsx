@@ -7,7 +7,7 @@ export function TopBar({ subtitle }: { subtitle?: string }) {
   return (
     <header className="flex h-16 items-center justify-between px-5 sm:px-8">
       <Link to="/" aria-label="الرئيسية">
-        <Brand subtitle={subtitle} />
+        <Brand subtitle={subtitle} className='w-25' />
       </Link>
       <AccountMenu />
     </header>
