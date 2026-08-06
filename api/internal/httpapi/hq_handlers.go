@@ -1040,6 +1040,170 @@ func (s *Server) handleHqSuppliersImport(w http.ResponseWriter, r *http.Request)
 	writeJSON(w, http.StatusOK, result)
 }
 
+// --- Orders (T19): the six HQ order endpoints (T16 create, T17
+// availability, T18 list/detail/cancel/transfer). Validation here mirrors
+// the console form the way handleHqCustomerCreate does — the gateway is
+// the only place that can check branch/partner/product existence or the
+// D16 stock gate, so this stays shallow (presence/shape only). ---
+
+func (s *Server) handleHqOrders(w http.ResponseWriter, r *http.Request) {
+	c := claimsFrom(r.Context())
+	params := url.Values{}
+	for _, k := range []string{"status", "branch_id", "search", "page", "page_size"} {
+		if v := r.URL.Query().Get(k); v != "" {
+			params.Set(k, v)
+		}
+	}
+	env, err := s.hq.Orders(r.Context(), c.Subject, chi.URLParam(r, "id"), params)
+	if err != nil {
+		s.writeHqError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, env)
+}
+
+func (s *Server) handleHqOrderDetail(w http.ResponseWriter, r *http.Request) {
+	c := claimsFrom(r.Context())
+	env, err := s.hq.OrderDetail(r.Context(), c.Subject, chi.URLParam(r, "id"), chi.URLParam(r, "orderId"))
+	if err != nil {
+		s.writeHqError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, env)
+}
+
+func (s *Server) handleHqOrderAvailability(w http.ResponseWriter, r *http.Request) {
+	branchID := r.URL.Query().Get("branch_id")
+	if branchID == "" {
+		writeErr(w, http.StatusBadRequest, "branch_id is required")
+		return
+	}
+	c := claimsFrom(r.Context())
+	productIDs := r.URL.Query()["product_id"]
+	env, err := s.hq.OrderAvailability(r.Context(), c.Subject, chi.URLParam(r, "id"), branchID, productIDs)
+	if err != nil {
+		s.writeHqError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, env)
+}
+
+// handleHqOrderCreate is HQ's only write path into a tenant's orders (T16,
+// D9). CreatedByName is the console operator's own name, a plain string
+// carried on the row — no user FK, unlike the gateway's own anchor Users
+// row for Order.UserId (T15).
+func (s *Server) handleHqOrderCreate(w http.ResponseWriter, r *http.Request) {
+	c := claimsFrom(r.Context())
+	var req struct {
+		BranchID       string              `json:"branch_id"`
+		PartnerID      string              `json:"partner_id"`
+		CreatedByName  string              `json:"created_by_name"`
+		Mode           int                 `json:"mode"`
+		ContactAddress *string             `json:"contact_address"`
+		DeliveryFee    *float64            `json:"delivery_fee"`
+		DueAt          *time.Time          `json:"due_at"`
+		Note           *string             `json:"note"`
+		Lines          []hq.OrderLineInput `json:"lines"`
+	}
+	if err := decode(r, &req); err != nil {
+		writeErr(w, http.StatusBadRequest, "invalid body")
+		return
+	}
+	name := strings.TrimSpace(req.CreatedByName)
+	if name == "" || len(name) > 100 {
+		writeErr(w, http.StatusBadRequest, "created_by_name is required and must be at most 100 characters")
+		return
+	}
+	if strings.TrimSpace(req.BranchID) == "" || strings.TrimSpace(req.PartnerID) == "" {
+		writeErr(w, http.StatusBadRequest, "branch_id and partner_id are required")
+		return
+	}
+	if req.Mode != 1 && req.Mode != 2 {
+		writeErr(w, http.StatusBadRequest, "mode must be 1 (pickup) or 2 (delivery)")
+		return
+	}
+	if req.Mode == 2 && (req.ContactAddress == nil || strings.TrimSpace(*req.ContactAddress) == "") {
+		writeErr(w, http.StatusBadRequest, "contact_address is required for delivery orders")
+		return
+	}
+	if len(req.Lines) == 0 {
+		writeErr(w, http.StatusBadRequest, "at least one line is required")
+		return
+	}
+
+	tenantID := chi.URLParam(r, "id")
+	result, err := s.hq.CreateOrder(r.Context(), c.Subject, tenantID, hq.NewOrder{
+		BranchID: req.BranchID, PartnerID: req.PartnerID, CreatedByName: name, Mode: req.Mode,
+		ContactAddress: req.ContactAddress, DeliveryFee: req.DeliveryFee, DueAt: req.DueAt,
+		Note: req.Note, Lines: req.Lines,
+	})
+	if err != nil {
+		var unavailable *hq.OrderUnavailableError
+		if errors.As(err, &unavailable) {
+			writeJSON(w, http.StatusConflict, map[string]any{
+				"error":      unavailable.Error(),
+				"shortfalls": unavailable.Shortfalls,
+			})
+			return
+		}
+		s.writeHqError(w, err)
+		return
+	}
+	s.log.Info("hq.orders_create",
+		"tenant_id", tenantID, "order_id", result.ID, "account_id", c.Subject, "email", c.Email)
+	writeJSON(w, http.StatusCreated, result)
+}
+
+func (s *Server) handleHqOrderCancel(w http.ResponseWriter, r *http.Request) {
+	c := claimsFrom(r.Context())
+	var req struct {
+		Reason *string `json:"reason"`
+	}
+	// A cancel with no body at all is valid — reason is optional free text.
+	if r.ContentLength > 0 {
+		if err := decode(r, &req); err != nil {
+			writeErr(w, http.StatusBadRequest, "invalid body")
+			return
+		}
+	}
+
+	tenantID, orderID := chi.URLParam(r, "id"), chi.URLParam(r, "orderId")
+	result, err := s.hq.CancelOrder(r.Context(), c.Subject, tenantID, orderID, req.Reason)
+	if err != nil {
+		s.writeHqError(w, err)
+		return
+	}
+	s.log.Info("hq.orders_cancel",
+		"tenant_id", tenantID, "order_id", orderID, "account_id", c.Subject, "email", c.Email)
+	writeJSON(w, http.StatusOK, result)
+}
+
+func (s *Server) handleHqOrderTransfer(w http.ResponseWriter, r *http.Request) {
+	c := claimsFrom(r.Context())
+	var req struct {
+		ToBranchID string `json:"to_branch_id"`
+	}
+	if err := decode(r, &req); err != nil {
+		writeErr(w, http.StatusBadRequest, "invalid body")
+		return
+	}
+	if strings.TrimSpace(req.ToBranchID) == "" {
+		writeErr(w, http.StatusBadRequest, "to_branch_id is required")
+		return
+	}
+
+	tenantID, orderID := chi.URLParam(r, "id"), chi.URLParam(r, "orderId")
+	result, err := s.hq.TransferOrder(r.Context(), c.Subject, tenantID, orderID, req.ToBranchID)
+	if err != nil {
+		s.writeHqError(w, err)
+		return
+	}
+	s.log.Info("hq.orders_transfer",
+		"tenant_id", tenantID, "order_id", orderID, "to_branch_id", req.ToBranchID,
+		"account_id", c.Subject, "email", c.Email)
+	writeJSON(w, http.StatusOK, result)
+}
+
 func (s *Server) handleTenantEvents(w http.ResponseWriter, r *http.Request) {
 	token := bearer(r)
 	if token == "" {
@@ -1105,6 +1269,16 @@ func (s *Server) writeHqError(w http.ResponseWriter, err error) {
 	var badInput *hq.InvalidCustomerInputError
 	if errors.As(err, &badInput) {
 		writeErr(w, http.StatusBadRequest, badInput.Error())
+		return
+	}
+	var notCancellable *hq.OrderNotCancellableError
+	if errors.As(err, &notCancellable) {
+		writeErr(w, http.StatusConflict, notCancellable.Error())
+		return
+	}
+	var notTransferable *hq.OrderNotTransferableError
+	if errors.As(err, &notTransferable) {
+		writeErr(w, http.StatusConflict, notTransferable.Error())
 		return
 	}
 	switch {

@@ -189,6 +189,19 @@ func (s *Server) Router() http.Handler {
 					r.Put("/hq/suppliers/{supplierId}", s.handleHqSupplierUpdate)
 					r.Get("/hq/suppliers/{supplierId}/purchases", s.handleHqSupplierPurchases)
 					r.Get("/hq/suppliers/{supplierId}/ledger", s.handleHqSupplierLedger)
+
+					// Orders (T19): the six HQ order endpoints (T16 create, T17
+					// availability, T18 list/detail/cancel/transfer).
+					// /hq/orders/availability is listed ahead of
+					// /hq/orders/{orderId} for readability, matching
+					// /hq/customers/insights above it — chi already prefers a
+					// literal segment over a param at the same depth.
+					r.Get("/hq/orders", s.handleHqOrders)
+					r.Post("/hq/orders", s.handleHqOrderCreate)
+					r.Get("/hq/orders/availability", s.handleHqOrderAvailability)
+					r.Get("/hq/orders/{orderId}", s.handleHqOrderDetail)
+					r.Post("/hq/orders/{orderId}/cancel", s.handleHqOrderCancel)
+					r.Post("/hq/orders/{orderId}/transfer", s.handleHqOrderTransfer)
 				})
 			})
 		})
