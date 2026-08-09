@@ -209,7 +209,10 @@ type Tenant struct {
 	// --- Schema-version registry (roadmap E3) ---
 	// SchemaVersion is the last version the gateway verified applied to this
 	// tenant's central DB; 0 = never provisioned. The fleet rollout updates
-	// these via the gateway's ops API.
+	// these via the gateway's ops API. It is on the SyncScope.SchemaVersion
+	// scale — the same one /healthz advertises, which is the only thing it is
+	// ever compared against. Rows written before 2026-08-08 instead hold an EF
+	// migration count (~37) and self-correct on the next rollout.
 	SchemaVersion   int           `bson:"schema_version,omitempty"`
 	RolloutStatus   RolloutStatus `bson:"rollout_status,omitempty"`
 	RolloutError    string        `bson:"rollout_error,omitempty"`    // last failure detail

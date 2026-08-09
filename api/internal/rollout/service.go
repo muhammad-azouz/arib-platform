@@ -111,7 +111,15 @@ func (s *Service) Rollout(ctx context.Context) (*Report, error) {
 			overallTarget = target
 		}
 		for _, t := range byShardID[shard.ID] {
-			if t.SchemaVersion >= target && t.RolloutStatus != model.RolloutFailed {
+			// Deliberately != and not >=. A tenant recorded ABOVE its shard's
+			// target is not "ahead", it is wrong: the gateway binary is the
+			// fleet's ceiling, so a higher number means either a rolled-back
+			// gateway or a stale registry value written on the wrong scale
+			// (every tenant migrated before 2026-08-08 holds an EF migration
+			// count, ~37, from the old applied_version field). Both cases want a
+			// migrate — it is idempotent — and re-running it is what corrects the
+			// stored value. With >= those tenants were skipped forever.
+			if t.SchemaVersion == target && t.RolloutStatus != model.RolloutFailed {
 				continue
 			}
 			s.migrateTenant(ctx, shard.GatewayURL, t, target)
@@ -238,8 +246,15 @@ func (s *Service) gatewayVersion(ctx context.Context, gateway string) (int, erro
 	return body.SchemaVersion, nil
 }
 
-// migrate asks the gateway to create+migrate one tenant DB and returns the
-// version it stamped.
+// migrate asks the gateway to create+migrate one tenant DB and returns the sync
+// schema version the gateway brought it to — the same scale gatewayVersion reads
+// from /healthz, so the two are comparable.
+//
+// The gateway also reports applied_migrations (its __EFMigrationsHistory count).
+// That is a DDL diagnostic on an unrelated scale and must never be recorded as
+// the tenant's version: it is what this function used to read, back when the
+// field was called applied_version, which made the "is this tenant behind?" test
+// in Rollout always false once a tenant had been migrated once.
 func (s *Service) migrate(ctx context.Context, gateway, dbName string) (int, error) {
 	tok, err := s.tokens.IssueOpsToken()
 	if err != nil {
@@ -258,9 +273,9 @@ func (s *Service) migrate(ctx context.Context, gateway, dbName string) (int, err
 	}
 	defer resp.Body.Close()
 	var body struct {
-		OK             bool   `json:"ok"`
-		AppliedVersion int    `json:"applied_version"`
-		Error          string `json:"error"`
+		OK            bool   `json:"ok"`
+		SchemaVersion int    `json:"schema_version"`
+		Error         string `json:"error"`
 	}
 	_ = json.NewDecoder(resp.Body).Decode(&body)
 	if resp.StatusCode != http.StatusOK || !body.OK {
@@ -269,5 +284,12 @@ func (s *Service) migrate(ctx context.Context, gateway, dbName string) (int, err
 		}
 		return 0, fmt.Errorf("gateway status %d", resp.StatusCode)
 	}
-	return body.AppliedVersion, nil
+	if body.SchemaVersion < 1 {
+		// A gateway too old to report schema_version (pre-2026-08-08) would decode
+		// as 0 here. Recording 0 would look like "behind" and re-migrate it on every
+		// rollout forever, silently; fail loudly instead so the mismatch is visible
+		// as a rollout error and the gateway gets upgraded.
+		return 0, fmt.Errorf("gateway did not report schema_version (upgrade the gateway)")
+	}
+	return body.SchemaVersion, nil
 }
