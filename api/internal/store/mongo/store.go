@@ -36,6 +36,7 @@ type Store struct {
 	BranchDevices *mongo.Collection
 	Shards        *mongo.Collection
 	Bills         *mongo.Collection
+	TenantMembers *mongo.Collection
 }
 
 // Connect dials MongoDB, pings it, and returns a Store with collection handles.
@@ -68,6 +69,7 @@ func Connect(ctx context.Context, uri, dbName string) (*Store, error) {
 		BranchDevices: db.Collection("branch_devices"),
 		Shards:        db.Collection("shards"),
 		Bills:         db.Collection("bills"),
+		TenantMembers: db.Collection("tenant_members"),
 	}, nil
 }
 
@@ -142,6 +144,12 @@ func (s *Store) EnsureIndexes(ctx context.Context) error {
 		}},
 		// Coverage lookups: latest-ending bill per tenant.
 		{s.Bills, mongo.IndexModel{Keys: bson.D{{Key: "tenant_id", Value: 1}, {Key: "ends_at", Value: -1}}}},
+		// One membership row per (tenant, account) — T13; also the lookup
+		// path every /tenants/{id}/** authorization check hits.
+		{s.TenantMembers, mongo.IndexModel{
+			Keys:    bson.D{{Key: "tenant_id", Value: 1}, {Key: "account_id", Value: 1}},
+			Options: options.Index().SetName("tenant_account_unique").SetUnique(true),
+		}},
 	}
 	for _, sp := range specs {
 		if _, err := sp.coll.Indexes().CreateOne(ctx, sp.model); err != nil {

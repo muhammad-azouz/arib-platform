@@ -18,6 +18,7 @@ import (
 	"net/url"
 	"time"
 
+	"github.com/aribpos/license-api/internal/membership"
 	"github.com/aribpos/license-api/internal/model"
 )
 
@@ -62,6 +63,7 @@ type Store interface {
 	TenantByID(ctx context.Context, id string) (*model.Tenant, error)
 	ShardByID(ctx context.Context, id string) (*model.Shard, error)
 	BranchesByTenant(ctx context.Context, tenantID string) ([]model.Branch, error)
+	MemberRole(ctx context.Context, tenantID, accountID string) (model.MemberRole, error)
 }
 
 // TokenIssuer mints the HQ token the gateway's /hq endpoints require.
@@ -110,8 +112,11 @@ func (s *Service) resolveGateway(ctx context.Context, accountID, tenantID string
 	if err != nil {
 		return nil, nil, err
 	}
-	if t.AccountID != accountID {
-		return nil, nil, ErrForbidden
+	if _, err := membership.Require(ctx, s.store, tenantID, accountID); err != nil {
+		if errors.Is(err, membership.ErrForbidden) {
+			return nil, nil, ErrForbidden
+		}
+		return nil, nil, err
 	}
 	if t.DBName == "" || t.ShardID == "" {
 		return nil, nil, ErrNotSubscribed
@@ -269,8 +274,11 @@ func (s *Service) Branches(ctx context.Context, accountID, tenantID string) (*Br
 	if err != nil {
 		return nil, err
 	}
-	if t.AccountID != accountID {
-		return nil, ErrForbidden
+	if _, err := membership.Require(ctx, s.store, tenantID, accountID); err != nil {
+		if errors.Is(err, membership.ErrForbidden) {
+			return nil, ErrForbidden
+		}
+		return nil, err
 	}
 	branches, err := s.store.BranchesByTenant(ctx, tenantID)
 	if err != nil {
@@ -340,12 +348,14 @@ func (s *Service) Branches(ctx context.Context, accountID, tenantID string) (*Br
 // CheckOwnership verifies the tenant belongs to the account (the SSE endpoint
 // authorises once at subscribe time, so it needs the bare check).
 func (s *Service) CheckOwnership(ctx context.Context, accountID, tenantID string) error {
-	t, err := s.store.TenantByID(ctx, tenantID)
-	if err != nil {
+	if _, err := s.store.TenantByID(ctx, tenantID); err != nil {
 		return err
 	}
-	if t.AccountID != accountID {
-		return ErrForbidden
+	if _, err := membership.Require(ctx, s.store, tenantID, accountID); err != nil {
+		if errors.Is(err, membership.ErrForbidden) {
+			return ErrForbidden
+		}
+		return err
 	}
 	return nil
 }

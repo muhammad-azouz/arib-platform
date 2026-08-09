@@ -46,8 +46,15 @@ type Account struct {
 	Providers   []Provider        `bson:"providers"`
 	ProviderIDs map[string]string `bson:"provider_ids,omitempty"` // provider -> external subject id
 	Notes       string            `bson:"notes,omitempty"`        // admin notes (replaces ad-hoc notes)
-	CreatedAt   time.Time         `bson:"created_at"`
-	UpdatedAt   time.Time         `bson:"updated_at"`
+	// HasBeenMember durably marks that this account was invited as a
+	// non-owner member of some tenant at least once. Set in
+	// tenant.Service.InviteMember and never cleared — TenantMember rows are
+	// hard-deleted on revoke, so this is the only surviving signal that
+	// stops a (possibly since-revoked) member from self-serve creating
+	// their own tenant via Register, a path meant only for owner signups.
+	HasBeenMember bool      `bson:"has_been_member,omitempty"`
+	CreatedAt     time.Time `bson:"created_at"`
+	UpdatedAt     time.Time `bson:"updated_at"`
 }
 
 // License is a single-device seat owned by an account.
@@ -218,6 +225,30 @@ type Tenant struct {
 	RolloutError    string        `bson:"rollout_error,omitempty"`    // last failure detail
 	RolloutAttempts int           `bson:"rollout_attempts,omitempty"` // failed-migrate counter
 	RolloutAt       time.Time     `bson:"rollout_at,omitempty"`       // last rollout touch
+}
+
+// MemberRole is a TenantMember's permission level within a tenant.
+type MemberRole string
+
+const (
+	RoleOwner  MemberRole = "owner"  // the tenant's original creator; can't be revoked (T13)
+	RoleMember MemberRole = "member" // invited (T14); scope of what a member can do is still just "console access"
+)
+
+// TenantMember grants an Account access to a Tenant, replacing a direct
+// Tenant.AccountID comparison as the authorization source for every
+// /tenants/{id}/** route (T13, roadmap Phase D). One row per (tenant,
+// account) — see the unique index in store.EnsureIndexes. Every tenant has
+// exactly one RoleOwner row, created alongside the Tenant itself
+// (tenant.Service.Register) or, for tenants that predate this model,
+// backfilled once from Tenant.AccountID (tenant.Service.BackfillOwnerMembers).
+type TenantMember struct {
+	ID        string     `bson:"_id"` // mem_...
+	TenantID  string     `bson:"tenant_id"`
+	AccountID string     `bson:"account_id"`
+	Role      MemberRole `bson:"role"`
+	InvitedBy string     `bson:"invited_by,omitempty"` // account id of the inviting owner; empty for the owner row itself
+	CreatedAt time.Time  `bson:"created_at"`
 }
 
 // BillStatus is the lifecycle of a recorded subscription payment.

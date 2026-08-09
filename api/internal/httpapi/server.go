@@ -146,6 +146,12 @@ func (s *Server) Router() http.Handler {
 					r.Post("/sync-token", s.handleSyncToken)
 					r.Get("/subscription", s.handleTenantSubscription)
 
+					// Members (T14): who besides the owner can reach this
+					// tenant's console. Invite/revoke are owner-only.
+					r.Get("/members", s.handleMemberList)
+					r.Post("/members", s.handleMemberInvite)
+					r.Delete("/members/{memberId}", s.handleMemberRevoke)
+
 					// HQ reads: business data from the tenant's central DB,
 					// proxied via the sync gateway (freshness-enveloped).
 					r.Get("/hq/branch-activity", s.handleHqBranchActivity)

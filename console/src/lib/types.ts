@@ -120,6 +120,22 @@ export interface SyncToken {
   gateway_url: string
 }
 
+// Members (T14): GET/POST/DELETE /v1/tenants/{id}/members[/{memberId}].
+// tenant.MemberView on the API side — hand-written JSON tags, unlike the raw
+// bson-tagged Tenant/Branch/Bundle types above.
+export type MemberRole = 'owner' | 'member'
+
+export interface Member {
+  id: string
+  account_id: string
+  email: string
+  first_name?: string
+  last_name?: string
+  role: MemberRole
+  invited_by?: string
+  created_at: string
+}
+
 // --- HQ reads (freshness envelope; hq/service.go + hq_handlers.go) ---
 
 // How fresh branch-derived data is: "synced" while the branch's sync cadence
@@ -981,6 +997,185 @@ export interface SupplierPurchaseRow {
   type: number
 }
 
+// --- HQ orders (T19; hq/service_orders.go + Program.cs's /hq/orders*
+// routes) ---
+//
+// Status/channel travel as the same numeric values as the desktop's
+// OrderStatus/OrderChannel enums (AribONE.Data/Models) — neither side
+// applies a string enum converter.
+
+export const ORDER_STATUS = {
+  New: 0,
+  Preparing: 1,
+  Ready: 2,
+  OutForDelivery: 3,
+  Delivered: 4,
+  Cancelled: 5,
+  Transferred: 6,
+} as const
+export type OrderStatusValue = (typeof ORDER_STATUS)[keyof typeof ORDER_STATUS]
+
+export const ORDER_CHANNEL = {
+  CallCenter: 1,
+  Branch: 2,
+  Sales: 3,
+} as const
+export type OrderChannelValue = (typeof ORDER_CHANNEL)[keyof typeof ORDER_CHANNEL]
+
+// One row of the paged order list.
+export interface OrderRow {
+  id: string
+  ref: string
+  customer_name: string
+  phone: string
+  branch_id: string
+  branch_name: string
+  total: number
+  delivery_fee: number
+  status: OrderStatusValue
+  channel: OrderChannelValue
+  created_at: string
+}
+
+export interface OrdersPage {
+  total: number
+  page: number
+  page_size: number
+  items: OrderRow[]
+}
+
+// GET /v1/tenants/{id}/hq/orders
+export type OrdersResponse = CatalogEnvelope<OrdersPage>
+
+// T21: new-order workspace (pages/console/NewOrder.tsx).
+
+export const ORDER_MODE = {
+  Pickup: 1,
+  Delivery: 2,
+} as const
+export type OrderModeValue = (typeof ORDER_MODE)[keyof typeof ORDER_MODE]
+
+// GET /v1/tenants/{id}/hq/orders/availability (T17) — one branch's on-hand/
+// committed/available read for a whole cart in a single call. Never hides
+// or zeroes numbers when the branch's sync is stale — is_fresh/last_sync_at
+// say so instead, and it's on the caller (this page) to warn, not block.
+export interface OrderAvailabilityLine {
+  product_id: string
+  product_name: string
+  on_hand: number
+  committed: number
+  available: number
+}
+
+export interface OrderAvailability {
+  last_sync_at?: string | null
+  is_fresh: boolean
+  lines: OrderAvailabilityLine[]
+}
+
+export type OrderAvailabilityResponse = CatalogEnvelope<OrderAvailability>
+
+// POST /v1/tenants/{id}/hq/orders (T16) — HQ's only write path into a
+// tenant's orders (D9). No discount field anywhere: D2's Order schema
+// carries none, unlike Invoice's ~30 money columns.
+export interface NewOrderLineInput {
+  product_id: string
+  unit_id: string
+  qty: number
+  price: number
+}
+
+export interface NewOrderInput {
+  branch_id: string
+  partner_id: string
+  created_by_name: string
+  mode: OrderModeValue
+  contact_address?: string
+  delivery_fee?: number
+  due_at?: string
+  note?: string
+  lines: NewOrderLineInput[]
+}
+
+export interface NewOrderResult {
+  id: string
+  ref: string
+  written_at: string
+}
+
+// One line whose requested qty exceeds what D16's gate allows at the chosen
+// branch — the gateway's 409 refusal body (api.ts's OrderUnavailableError
+// carries this verbatim rather than just a message, so the cart can
+// highlight the exact short lines with no second round trip).
+export interface OrderShortfall {
+  product_id: string
+  product_name: string
+  requested: number
+  available: number
+}
+
+// T22: order detail (pages/console/OrderDetail.tsx).
+
+export interface OrderLine {
+  product_id: string
+  product_name: string
+  unit_id: string
+  unit_name: string
+  qty: number
+  price: number
+  total: number
+}
+
+// One link in the D7 transfer chain, including the requested order itself —
+// the gateway walks the whole chain by matching Ref, not PreviousOrderId, so
+// this list is already in chain order and needs no client-side sorting.
+export interface OrderChainEntry {
+  id: string
+  branch_id: string
+  branch_name: string
+  status: OrderStatusValue
+  previous_order_id?: string | null
+  created_at: string
+  status_changed_at?: string | null
+}
+
+export interface OrderDetail {
+  id: string
+  ref: string
+  status: OrderStatusValue
+  channel: OrderChannelValue
+  branch_id: string
+  branch_name: string
+  partner_id: string
+  customer_name: string
+  phone?: string | null
+  address?: string | null
+  mode: OrderModeValue
+  total: number
+  delivery_fee?: number | null
+  created_by_name?: string | null
+  created_at: string
+  due_at?: string | null
+  status_changed_at?: string | null
+  note?: string | null
+  cancel_reason?: string | null
+  sale_id?: string | null
+  lines: OrderLine[]
+  history: OrderChainEntry[]
+}
+
+export type OrderDetailResponse = CatalogEnvelope<OrderDetail>
+
+export interface CancelOrderResult {
+  written_at: string
+}
+
+export interface TransferOrderResult {
+  id: string
+  ref: string
+  written_at: string
+}
+
 export interface SupplierPurchasesPage {
   total: number
   page: number
@@ -1108,6 +1303,11 @@ export interface Account {
   FirstName: string
   LastName: string
   Providers: Provider[] | null
+  // Was this account ever invited as a non-owner member of some tenant?
+  // Set once, server-side, and never cleared (survives revocation) — used
+  // to keep a revoked (or still-active) member from reaching the
+  // self-serve "create a tenant" flow, which is an owner-signup path.
+  HasBeenMember?: boolean
   CreatedAt: string
   UpdatedAt: string
 }

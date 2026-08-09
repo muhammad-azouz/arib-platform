@@ -15,6 +15,7 @@ export const qk = {
   tenants: ['tenants'] as const,
   bundle: (id: string) => ['bundle', id] as const,
   subscription: (id: string) => ['subscription', id] as const,
+  members: (id: string) => ['members', id] as const,
   branchActivity: (id: string) => ['branch-activity', id] as const,
   hqBranches: (id: string) => ['hq-branches', id] as const,
   catalogGroups: (id: string) => ['catalog-groups', id] as const,
@@ -138,4 +139,18 @@ export const qk = {
     id: string,
     params: { branchId?: string; from?: string; to?: string },
   ) => ['hq-suppliers', id, 'insights', params] as const,
+  // 'hq-orders' prefix — one SSE invalidation flips the list and detail
+  // (below) together, same pattern as 'hq-customers'/'hq-suppliers'.
+  orders: (
+    id: string,
+    params: { status?: number; branchId?: string; search?: string; page?: number; pageSize?: number },
+  ) => ['hq-orders', id, 'list', params] as const,
+  // T22: same 'hq-orders' prefix as the list above — an SSE invalidation of
+  // one flips the other too.
+  orderDetail: (id: string, orderId: string) => ['hq-orders', id, 'detail', orderId] as const,
+  // T21: not prefixed with 'hq-orders' — availability is a live per-branch
+  // read for the cart being built, not something an order-list SSE
+  // invalidation should ever touch.
+  orderAvailability: (id: string, branchId: string, productIds: string[]) =>
+    ['order-availability', id, branchId, productIds] as const,
 }

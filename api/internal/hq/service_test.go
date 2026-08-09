@@ -45,6 +45,13 @@ func (f *fakeStore) ShardByID(_ context.Context, id string) (*model.Shard, error
 	return &s, nil
 }
 
+func (f *fakeStore) MemberRole(_ context.Context, tenantID, accountID string) (model.MemberRole, error) {
+	if tenantID != f.tenant.ID || accountID != f.tenant.AccountID {
+		return "", mongostore.ErrNotFound
+	}
+	return model.RoleOwner, nil
+}
+
 type fakeTokens struct{ minted string }
 
 func (f *fakeTokens) IssueHQToken(dbName string) (string, error) {

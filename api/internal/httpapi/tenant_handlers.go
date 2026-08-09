@@ -260,6 +260,46 @@ func (s *Server) handleBranchDeviceRelease(w http.ResponseWriter, r *http.Reques
 	writeJSON(w, http.StatusOK, map[string]string{"status": "released"})
 }
 
+// --- client: members (T14) ---
+
+func (s *Server) handleMemberList(w http.ResponseWriter, r *http.Request) {
+	c := claimsFrom(r.Context())
+	list, err := s.tenant.Members(r.Context(), c.Subject, chi.URLParam(r, "id"))
+	if err != nil {
+		s.writeTenantError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, list)
+}
+
+func (s *Server) handleMemberInvite(w http.ResponseWriter, r *http.Request) {
+	c := claimsFrom(r.Context())
+	var req struct {
+		Email string `json:"email"`
+	}
+	if err := decode(r, &req); err != nil {
+		writeErr(w, http.StatusBadRequest, "invalid body")
+		return
+	}
+	m, err := s.tenant.InviteMember(r.Context(), c.Subject, chi.URLParam(r, "id"), req.Email)
+	if err != nil {
+		s.writeTenantError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusCreated, m)
+}
+
+func (s *Server) handleMemberRevoke(w http.ResponseWriter, r *http.Request) {
+	c := claimsFrom(r.Context())
+	err := s.tenant.RevokeMember(r.Context(), c.Subject,
+		chi.URLParam(r, "id"), chi.URLParam(r, "memberId"))
+	if err != nil {
+		s.writeTenantError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "revoked"})
+}
+
 // --- client: sync token ---
 
 func (s *Server) handleSyncToken(w http.ResponseWriter, r *http.Request) {
@@ -364,6 +404,19 @@ func (s *Server) writeTenantError(w http.ResponseWriter, err error) {
 		writeErr(w, http.StatusConflict, "tenant already has a company (one company per tenant)")
 	case errors.Is(err, tenant.ErrNoCompany):
 		writeErr(w, http.StatusConflict, "register the company before adding branches")
+	case errors.Is(err, tenant.ErrOwnerOnly):
+		writeErr(w, http.StatusForbidden, "only the tenant owner can manage members")
+	case errors.Is(err, tenant.ErrAlreadyMember):
+		writeErr(w, http.StatusConflict, "this email is already a member of the tenant")
+	case errors.Is(err, tenant.ErrCannotRemoveOwner):
+		writeErr(w, http.StatusConflict, "the tenant owner cannot be removed")
+	case errors.Is(err, tenant.ErrInvalidEmail):
+		writeErr(w, http.StatusBadRequest, "invalid email")
+	case errors.Is(err, tenant.ErrMembersCannotCreateTenant):
+		writeJSON(w, http.StatusForbidden, map[string]string{
+			"code":  "members_cannot_create_tenant",
+			"error": "accounts invited as a member cannot create their own tenant",
+		})
 	case errors.Is(err, mongostore.ErrNotFound):
 		writeErr(w, http.StatusNotFound, "not found")
 	default:

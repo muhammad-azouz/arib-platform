@@ -17,6 +17,7 @@ import (
 
 	"github.com/aribpos/license-api/internal/billing"
 	"github.com/aribpos/license-api/internal/idgen"
+	"github.com/aribpos/license-api/internal/membership"
 	"github.com/aribpos/license-api/internal/model"
 	mongostore "github.com/aribpos/license-api/internal/store/mongo"
 	"github.com/golang-jwt/jwt/v5"
@@ -35,6 +36,10 @@ var (
 	ErrCompanyExists       = errors.New("tenant already has a company (one company per tenant)")
 	ErrNoCompany           = errors.New("tenant has no company yet")
 	ErrNotFound            = mongostore.ErrNotFound
+	// ErrMembersCannotCreateTenant guards Register: self-serve tenant
+	// creation is an owner-signup path, not something an account that was
+	// ever invited as a member (see model.Account.HasBeenMember) gets to do.
+	ErrMembersCannotCreateTenant = errors.New("accounts invited as a member cannot create their own tenant")
 )
 
 // Service coordinates the registry store and the sync-token signer.
@@ -83,6 +88,13 @@ func (s *Service) Register(ctx context.Context, accountID, name string) (*model.
 	if strings.TrimSpace(name) == "" {
 		return nil, errors.New("tenant name required")
 	}
+	acc, err := s.store.AccountByID(ctx, accountID)
+	if err != nil {
+		return nil, err
+	}
+	if acc.HasBeenMember {
+		return nil, ErrMembersCannotCreateTenant
+	}
 	now := time.Now().UTC()
 	t := &model.Tenant{
 		ID:        idgen.New("tnt"),
@@ -95,12 +107,74 @@ func (s *Service) Register(ctx context.Context, accountID, name string) (*model.
 	if err := s.store.InsertTenant(ctx, t); err != nil {
 		return nil, err
 	}
+	if err := s.store.InsertMember(ctx, &model.TenantMember{
+		ID:        idgen.New("mem"),
+		TenantID:  t.ID,
+		AccountID: accountID,
+		Role:      model.RoleOwner,
+		CreatedAt: now,
+	}); err != nil {
+		return nil, err
+	}
 	return t, nil
 }
 
-// Tenants lists the account's tenants.
+// BackfillOwnerMembers ensures every existing tenant's original AccountID has
+// an owner TenantMember row (T13) — needed only for tenants registered
+// before this model existed; Register now creates the row itself. Idempotent
+// and safe to call on every startup: InsertMemberIfAbsent no-ops once a
+// tenant's owner row exists. Returns how many rows it actually inserted.
+func (s *Service) BackfillOwnerMembers(ctx context.Context) (int, error) {
+	tenants, err := s.store.AllTenants(ctx)
+	if err != nil {
+		return 0, err
+	}
+	inserted := 0
+	for _, t := range tenants {
+		ok, err := s.store.InsertMemberIfAbsent(ctx, &model.TenantMember{
+			ID:        idgen.New("mem"),
+			TenantID:  t.ID,
+			AccountID: t.AccountID,
+			Role:      model.RoleOwner,
+			CreatedAt: t.CreatedAt,
+		})
+		if err != nil {
+			return inserted, err
+		}
+		if ok {
+			inserted++
+		}
+	}
+	return inserted, nil
+}
+
+// BackfillHasBeenMember marks HasBeenMember=true for every account that
+// currently holds a member-role TenantMember row, closing the gap for
+// members invited before that flag existed. It cannot help anyone already
+// revoked before this shipped — TenantMember rows are hard-deleted on
+// revoke, so there's no history left to recover for those — but every
+// revocation from here on is covered, since InviteMember now sets the flag
+// at invite time, before any future revoke. Idempotent, safe on every boot.
+func (s *Service) BackfillHasBeenMember(ctx context.Context) (int, error) {
+	ids, err := s.store.MemberAccountIDs(ctx)
+	if err != nil {
+		return 0, err
+	}
+	for _, id := range ids {
+		if err := s.store.MarkHasBeenMember(ctx, id); err != nil {
+			return 0, err
+		}
+	}
+	return len(ids), nil
+}
+
+// Tenants lists every tenant the account can reach — owned or as an
+// invited member (T14 fix: this used to be owner-only, which meant an
+// active non-owner member saw an empty list here too, indistinguishable
+// from a revoked one — see model.Account.HasBeenMember for how the
+// create-tenant gate now tells the two apart).
 func (s *Service) Tenants(ctx context.Context, accountID string) ([]model.Tenant, error) {
-	return s.store.TenantsByAccount(ctx, accountID)
+	return s.store.TenantsForAccount(ctx, accountID)
 }
 
 // GetBundle returns the tenant with its companies and branches, enforcing
@@ -820,10 +894,24 @@ func (s *Service) owned(ctx context.Context, accountID, tenantID string) (*model
 	if err != nil {
 		return nil, err
 	}
-	if t.AccountID != accountID {
-		return nil, ErrForbidden
+	if _, err := s.memberRole(ctx, tenantID, accountID); err != nil {
+		return nil, err
 	}
 	return t, nil
+}
+
+// memberRole is the membership.Require call every tenant-scoped method goes
+// through — owned() uses it for a bare access check; InviteMember/RevokeMember
+// (T14) also need the actual role to enforce their owner-only gate.
+func (s *Service) memberRole(ctx context.Context, tenantID, accountID string) (model.MemberRole, error) {
+	role, err := membership.Require(ctx, s.store, tenantID, accountID)
+	if err != nil {
+		if errors.Is(err, membership.ErrForbidden) {
+			return "", ErrForbidden
+		}
+		return "", err
+	}
+	return role, nil
 }
 
 func (s *Service) activeTenant(ctx context.Context, accountID, tenantID string) (*model.Tenant, error) {

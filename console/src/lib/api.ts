@@ -11,6 +11,7 @@ import type {
   BulkUpdateSuppliersInput,
   BulkUpdateSuppliersResult,
   Bundle,
+  CancelOrderResult,
   CatalogGroupsResponse,
   CatalogProductsResponse,
   Company,
@@ -30,13 +31,20 @@ import type {
   InventoryProductsResponse,
   InventoryStatusFilter,
   MeView,
+  Member,
   MovementsResponse,
   NewCustomerInput,
   NewCustomerResult,
+  NewOrderInput,
+  NewOrderResult,
   NewProductInput,
   NewProductResult,
   NewSupplierInput,
   NewSupplierResult,
+  OrderAvailabilityResponse,
+  OrderDetailResponse,
+  OrderShortfall,
+  OrdersResponse,
   PriceChangeInput,
   PriceChangeResult,
   ProductDetailResponse,
@@ -55,6 +63,7 @@ import type {
   SuppliersResponse,
   SyncToken,
   Tenant,
+  TransferOrderResult,
   UpdateCustomerResult,
   UpdateSupplierResult,
 } from './types'
@@ -77,6 +86,18 @@ export class ApiError extends Error {
     super(message)
     this.status = status
     this.name = 'ApiError'
+  }
+}
+
+// CreateOrder's D16 stock-gate refusal (409) — carries the short lines
+// verbatim from the gateway so the cart can highlight them without a second
+// round trip, the same shape hq.OrderUnavailableError gives the Go layer.
+export class OrderUnavailableError extends ApiError {
+  shortfalls: OrderShortfall[]
+  constructor(message: string, shortfalls: OrderShortfall[]) {
+    super(409, message)
+    this.shortfalls = shortfalls
+    this.name = 'OrderUnavailableError'
   }
 }
 
@@ -305,6 +326,17 @@ export const api = {
   // sync token for connecting a desktop install
   syncToken: (tenantId: string, deviceId: string) =>
     request<SyncToken>(`/v1/tenants/${tenantId}/sync-token`, post({ device_id: deviceId })),
+
+  // members (T14): who besides the owner can reach this tenant's console.
+  // Invite/revoke are owner-only server-side (403 for anyone else).
+  listMembers: (tenantId: string) =>
+    request<Member[] | null>(`/v1/tenants/${tenantId}/members`).then((r) => r ?? []),
+  inviteMember: (tenantId: string, email: string) =>
+    request<Member>(`/v1/tenants/${tenantId}/members`, post({ email })),
+  revokeMember: (tenantId: string, memberId: string) =>
+    request<{ status: string }>(`/v1/tenants/${tenantId}/members/${memberId}`, {
+      method: 'DELETE',
+    }),
 
   // billing (Phase 10): bills + derived subscription state, read-only here —
   // recording/voiding bills is an admin-only action (admin app).
@@ -757,6 +789,80 @@ export const api = {
     if (!res.ok) throw new ApiError(res.status, await parseError(res))
     return (await res.json()) as ImportSuppliersResult
   },
+
+  // orders (T20): list only — detail/create/cancel/transfer are T21/T22.
+  orders: (
+    tenantId: string,
+    params: {
+      status?: number
+      branchId?: string
+      search?: string
+      page?: number
+      pageSize?: number
+    },
+  ) => {
+    const q = new URLSearchParams()
+    if (params.status !== undefined) q.set('status', String(params.status))
+    if (params.branchId) q.set('branch_id', params.branchId)
+    if (params.search) q.set('search', params.search)
+    if (params.page) q.set('page', String(params.page))
+    if (params.pageSize) q.set('page_size', String(params.pageSize))
+    const qs = q.toString()
+    return request<OrdersResponse>(`/v1/tenants/${tenantId}/hq/orders${qs ? `?${qs}` : ''}`)
+  },
+
+  // T21: one branch's whole-cart availability read (T17) — one call for
+  // however many product ids are in the cart, never one call per line.
+  orderAvailability: (tenantId: string, branchId: string, productIds: string[]) => {
+    const q = new URLSearchParams({ branch_id: branchId })
+    for (const id of productIds) q.append('product_id', id)
+    return request<OrderAvailabilityResponse>(
+      `/v1/tenants/${tenantId}/hq/orders/availability?${q.toString()}`,
+    )
+  },
+
+  // T21: create an order (T16, D9's only write path). Bypasses the generic
+  // `request()` helper because a D16 refusal (409) carries a structured
+  // `shortfalls` list, not just an `error` string — every other write in
+  // this file has nothing to gain from that, this one does.
+  async createOrder(tenantId: string, input: NewOrderInput): Promise<NewOrderResult> {
+    const res = await rawFetch(`/v1/tenants/${tenantId}/hq/orders`, post(input))
+    if (res.status === 409) {
+      const body = (await res.json().catch(() => ({}))) as {
+        error?: string
+        shortfalls?: OrderShortfall[]
+      }
+      throw new OrderUnavailableError(
+        body.error ?? 'الكمية المطلوبة تتجاوز المتاح',
+        body.shortfalls ?? [],
+      )
+    }
+    if (!res.ok) throw new ApiError(res.status, await parseError(res))
+    return (await res.json()) as NewOrderResult
+  },
+
+  // T22: one order's full detail, including its D7 transfer chain.
+  orderDetail: (tenantId: string, orderId: string) =>
+    request<OrderDetailResponse>(`/v1/tenants/${tenantId}/hq/orders/${orderId}`),
+
+  // T22: cancel a still-New order (D4). The gateway's refusal (order no
+  // longer New, or already delivered) is a plain `{error}` 409 — unlike
+  // createOrder's structured shortfalls, there's nothing here for a
+  // dedicated error class to carry, so this stays on the generic `request()`
+  // helper.
+  cancelOrder: (tenantId: string, orderId: string, reason?: string) =>
+    request<CancelOrderResult>(
+      `/v1/tenants/${tenantId}/hq/orders/${orderId}/cancel`,
+      post({ reason }),
+    ),
+
+  // T22: close the order at its current branch and reissue it at
+  // toBranchId under the same Ref (D7). Same New-only gate as cancel.
+  transferOrder: (tenantId: string, orderId: string, toBranchId: string) =>
+    request<TransferOrderResult>(
+      `/v1/tenants/${tenantId}/hq/orders/${orderId}/transfer`,
+      post({ to_branch_id: toBranchId }),
+    ),
 
   // SSE stream URL. EventSource cannot set an Authorization header, so the
   // current access token rides the query string (the server keeps this route

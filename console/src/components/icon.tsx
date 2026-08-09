@@ -56,6 +56,14 @@ import {
   History,
   BellBing,
   Delivery,
+  Bag4,
+  CartLarge2,
+  Notebook,
+  Maximize,
+  Minimize,
+  AddSquare,
+  MinusSquare,
+  RoundTransferHorizontal,
 } from '@solar-icons/react'
 
 /** Shared type for any icon component in this module (Solar forward-ref svg). */
@@ -82,6 +90,19 @@ export const BarcodeIcon = Scanner
 export const HistoryIcon = History
 export const BellIcon = BellBing
 export const SupplierIcon = Delivery
+export const OrdersIcon = Bag4
+
+// New-order workspace (T21)
+export const CartIcon = CartLarge2
+export const DeliveryModeIcon = Delivery
+export const NotesIcon = Notebook
+export const ZenExpandIcon = Maximize
+export const ZenCollapseIcon = Minimize
+export const QtyIncreaseIcon = AddSquare
+export const QtyDecreaseIcon = MinusSquare
+
+// Order detail (T22)
+export const TransferIcon = RoundTransferHorizontal
 
 // Actions
 export const AddIcon = AddCircle

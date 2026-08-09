@@ -99,6 +99,22 @@ func main() {
 	}
 
 	tenantSvc := tenant.New(store, syncKey, cfg.SyncTokenTTL, nil)
+	// T13: backfill owner TenantMember rows for tenants registered before the
+	// membership model existed. Idempotent — cheap to run on every boot.
+	if n, err := tenantSvc.BackfillOwnerMembers(ctx); err != nil {
+		log.Error("backfill tenant owner members", "err", err)
+		os.Exit(1)
+	} else if n > 0 {
+		log.Info("backfilled tenant owner members", "count", n)
+	}
+	// T14 fix: backfill HasBeenMember for accounts invited before that flag
+	// existed. Idempotent — cheap to run on every boot.
+	if n, err := tenantSvc.BackfillHasBeenMember(ctx); err != nil {
+		log.Error("backfill has-been-member", "err", err)
+		os.Exit(1)
+	} else if n > 0 {
+		log.Info("backfilled has-been-member", "count", n)
+	}
 	billingSvc := billing.New(store, tenantSvc)
 	rolloutSvc := rollout.New(store, tenantSvc, nil)
 	hqSvc := hq.New(store, tenantSvc, nil)

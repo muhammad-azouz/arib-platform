@@ -55,6 +55,14 @@ func testService(t *testing.T) (*Service, context.Context) {
 	}); err != nil {
 		t.Fatalf("seed shard: %v", err)
 	}
+	// Register now looks up the caller's Account (T14's HasBeenMember gate),
+	// mirroring the real request path where an authenticated account always
+	// exists first — seed the shared `owner` fixture the same way.
+	if err := store.InsertAccount(ctx, &model.Account{
+		ID: owner, Email: "owner@arib.test", CreatedAt: now, UpdatedAt: now,
+	}); err != nil {
+		t.Fatalf("seed owner account: %v", err)
+	}
 	return New(store, key, time.Hour, nil), ctx
 }
 
@@ -500,5 +508,89 @@ func TestIssueHQToken(t *testing.T) {
 	ttl := time.Until(claims.ExpiresAt.Time)
 	if ttl <= 0 || ttl > 6*time.Minute {
 		t.Fatalf("expiry %v not a short TTL", ttl)
+	}
+}
+
+// TestRegisterCreatesOwnerMember covers T13's acceptance directly: Register
+// must create the owner TenantMember row alongside the tenant, and that row
+// (not Tenant.AccountID) is what authorization now runs on.
+func TestRegisterCreatesOwnerMember(t *testing.T) {
+	s, ctx := testService(t)
+
+	tn, err := s.Register(ctx, owner, "منشأة الاختبار")
+	if err != nil {
+		t.Fatalf("register: %v", err)
+	}
+
+	role, err := s.store.MemberRole(ctx, tn.ID, owner)
+	if err != nil {
+		t.Fatalf("member role: %v", err)
+	}
+	if role != model.RoleOwner {
+		t.Fatalf("role = %q, want owner", role)
+	}
+
+	if _, err := s.store.MemberRole(ctx, tn.ID, "acc_intruder"); !errors.Is(err, mongostore.ErrNotFound) {
+		t.Fatalf("non-member lookup: want ErrNotFound, got %v", err)
+	}
+
+	// The membership lookup, not Tenant.AccountID, is what owned() enforces.
+	if _, err := s.GetBundle(ctx, "acc_intruder", tn.ID); !errors.Is(err, ErrForbidden) {
+		t.Fatalf("intruder read: want ErrForbidden, got %v", err)
+	}
+}
+
+// TestBackfillOwnerMembers covers the migration path for tenants that
+// predate the membership model: a tenant inserted with no member row gets
+// one backfilled, a second run is a no-op, and a tenant that already has its
+// owner row (the Register path) is left alone.
+func TestBackfillOwnerMembers(t *testing.T) {
+	s, ctx := testService(t)
+	now := time.Now().UTC()
+
+	// Simulate a pre-T13 tenant: inserted straight into the store, bypassing
+	// Register, so it has no TenantMember row yet.
+	legacy := &model.Tenant{
+		ID: idgen.New("tnt"), AccountID: "acc_legacy", Name: "منشأة قديمة",
+		Status: model.TenantActive, CreatedAt: now, UpdatedAt: now,
+	}
+	if err := s.store.InsertTenant(ctx, legacy); err != nil {
+		t.Fatalf("insert legacy tenant: %v", err)
+	}
+	if _, err := s.store.MemberRole(ctx, legacy.ID, "acc_legacy"); !errors.Is(err, mongostore.ErrNotFound) {
+		t.Fatalf("legacy tenant should start without a member row, got %v", err)
+	}
+
+	fresh, err := s.Register(ctx, owner, "منشأة حديثة")
+	if err != nil {
+		t.Fatalf("register: %v", err)
+	}
+
+	n, err := s.BackfillOwnerMembers(ctx)
+	if err != nil {
+		t.Fatalf("backfill: %v", err)
+	}
+	if n != 1 {
+		t.Fatalf("backfill inserted %d rows, want 1 (only the legacy tenant)", n)
+	}
+
+	role, err := s.store.MemberRole(ctx, legacy.ID, "acc_legacy")
+	if err != nil || role != model.RoleOwner {
+		t.Fatalf("legacy tenant owner role: %v err=%v", role, err)
+	}
+
+	// Re-running must be a pure no-op: nothing new inserted, and the tenant
+	// registered through Register (already backed by its own owner row) is
+	// untouched.
+	n2, err := s.BackfillOwnerMembers(ctx)
+	if err != nil {
+		t.Fatalf("second backfill: %v", err)
+	}
+	if n2 != 0 {
+		t.Fatalf("second backfill inserted %d rows, want 0", n2)
+	}
+	role, err = s.store.MemberRole(ctx, fresh.ID, owner)
+	if err != nil || role != model.RoleOwner {
+		t.Fatalf("fresh tenant owner role: %v err=%v", role, err)
 	}
 }

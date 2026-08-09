@@ -52,6 +52,16 @@ func (s *Store) UpdateAccount(ctx context.Context, a *model.Account) error {
 	return err
 }
 
+// MarkHasBeenMember sets the account's HasBeenMember flag. Idempotent —
+// setting an already-true flag is a no-op — and one-directional, this is
+// never cleared back to false.
+func (s *Store) MarkHasBeenMember(ctx context.Context, accountID string) error {
+	_, err := s.Accounts.UpdateByID(ctx, accountID, bson.D{{Key: "$set", Value: bson.D{
+		{Key: "has_been_member", Value: true},
+	}}})
+	return err
+}
+
 // SearchAccounts returns accounts matching an email/name substring (admin).
 func (s *Store) SearchAccounts(ctx context.Context, q string, limit int64) ([]model.Account, error) {
 	filter := bson.D{}

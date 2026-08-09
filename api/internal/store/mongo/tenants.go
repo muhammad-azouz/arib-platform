@@ -39,6 +39,39 @@ func (s *Store) TenantsByAccount(ctx context.Context, accountID string) ([]model
 	return out, cur.All(ctx, &out)
 }
 
+// TenantsForAccount lists every tenant the account can reach — as owner or
+// as an invited member — via TenantMembers, so an active member's console
+// resolver (GET /v1/tenants) actually shows the tenant they were invited
+// into instead of the owner-only query treating them as tenant-less.
+func (s *Store) TenantsForAccount(ctx context.Context, accountID string) ([]model.Tenant, error) {
+	ids, err := s.TenantIDsForAccount(ctx, accountID)
+	if err != nil {
+		return nil, err
+	}
+	if len(ids) == 0 {
+		return []model.Tenant{}, nil
+	}
+	cur, err := s.Tenants.Find(ctx,
+		bson.D{{Key: "_id", Value: bson.D{{Key: "$in", Value: ids}}}},
+		options.Find().SetSort(bson.D{{Key: "created_at", Value: 1}}))
+	if err != nil {
+		return nil, err
+	}
+	var out []model.Tenant
+	return out, cur.All(ctx, &out)
+}
+
+// AllTenants lists every tenant in the registry, regardless of owner —
+// used only by the one-time BackfillOwnerMembers pass (T13).
+func (s *Store) AllTenants(ctx context.Context) ([]model.Tenant, error) {
+	cur, err := s.Tenants.Find(ctx, bson.D{})
+	if err != nil {
+		return nil, err
+	}
+	var out []model.Tenant
+	return out, cur.All(ctx, &out)
+}
+
 // UpdateTenantStatus flips a tenant between active and suspended.
 func (s *Store) UpdateTenantStatus(ctx context.Context, id string, status model.TenantStatus, at time.Time) error {
 	return s.updateTenant(ctx, id, bson.D{

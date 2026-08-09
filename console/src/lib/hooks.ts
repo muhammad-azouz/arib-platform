@@ -11,7 +11,9 @@ import type {
   CustomerDebtFilter,
   CustomerEditInput,
   InventoryStatusFilter,
+  Member,
   NewCustomerInput,
+  NewOrderInput,
   NewProductInput,
   NewSupplierInput,
   PriceChangeInput,
@@ -24,6 +26,11 @@ import type {
 /** All tenants owned by the signed-in account. */
 export function useTenants() {
   return useQuery({ queryKey: qk.tenants, queryFn: api.listTenants })
+}
+
+/** The signed-in account itself — used to tell "am I this tenant's owner". */
+export function useMe() {
+  return useQuery({ queryKey: qk.me, queryFn: api.me })
 }
 
 /**
@@ -50,6 +57,48 @@ export function useSubscription(tenantId: string | undefined) {
     queryKey: qk.subscription(tenantId ?? ''),
     queryFn: () => api.subscription(tenantId as string),
     enabled: !!tenantId,
+  })
+}
+
+/**
+ * Tenant members (T14): who besides the owner can reach this tenant's
+ * console. Any member may list; InviteMember/RevokeMember are owner-only
+ * server-side — the UI hides those actions for a non-owner via useMe, but
+ * the 403 is the real gate.
+ */
+export function useMembers(tenantId: string | undefined) {
+  return useQuery({
+    queryKey: qk.members(tenantId ?? ''),
+    queryFn: () => api.listMembers(tenantId as string),
+    enabled: !!tenantId,
+  })
+}
+
+/** Invite a member by email (`POST …/members`). Owner-only. */
+export function useInviteMember(tenantId: string) {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: (email: string) => api.inviteMember(tenantId, email),
+    onSuccess: (member) => {
+      qc.setQueryData<Member[]>(qk.members(tenantId), (prev) =>
+        prev ? [...prev, member] : prev,
+      )
+      void qc.invalidateQueries({ queryKey: qk.members(tenantId) })
+    },
+  })
+}
+
+/** Revoke a member — effective immediately (`DELETE …/members/{id}`). Owner-only. */
+export function useRevokeMember(tenantId: string) {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: (memberId: string) => api.revokeMember(tenantId, memberId),
+    onSuccess: (_status, memberId) => {
+      qc.setQueryData<Member[]>(qk.members(tenantId), (prev) =>
+        prev?.filter((m) => m.id !== memberId),
+      )
+      void qc.invalidateQueries({ queryKey: qk.members(tenantId) })
+    },
   })
 }
 
@@ -290,6 +339,10 @@ export function useTenantEvents(tenantId: string | undefined) {
         // Suppliers share the same Bills/CustomerTransactions rows, just
         // Type == Supplier — same invalidation trigger as customers above.
         void qc.invalidateQueries({ queryKey: ['hq-suppliers', tenantId] })
+        // Orders are TPH Invoice rows (D6) — a branch sync round is exactly
+        // when a branch's own status changes (accept/prepare/deliver) reach
+        // the console (criterion 3).
+        void qc.invalidateQueries({ queryKey: ['hq-orders', tenantId] })
       })
       es.onerror = () => {
         es?.close()
@@ -714,6 +767,101 @@ export function useImportSuppliers(tenantId: string) {
       api.importSuppliers(tenantId, file, branchId),
     onSuccess: () => {
       void qc.invalidateQueries({ queryKey: ['hq-suppliers', tenantId] })
+    },
+  })
+}
+
+// --- Orders (T20-T22; hq/service_orders.go via Program.cs's /hq/orders*
+// routes). ---
+
+export interface OrdersParams {
+  status?: number
+  branchId?: string
+  search?: string
+  page?: number
+  pageSize?: number
+}
+
+/** One page of the searchable/filterable order list. */
+export function useOrders(tenantId: string | undefined, params: OrdersParams) {
+  return useQuery({
+    queryKey: qk.orders(tenantId ?? '', params),
+    queryFn: () => api.orders(tenantId as string, params),
+    enabled: !!tenantId,
+    placeholderData: keepPreviousData,
+  })
+}
+
+/**
+ * T21: one branch's whole-cart availability read (T17). `enabled` requires
+ * both a chosen branch and at least one product-kind line — an empty cart
+ * or an unpicked branch issues zero requests rather than a call with no
+ * `product_id`s.
+ */
+export function useOrderAvailability(
+  tenantId: string | undefined,
+  branchId: string | undefined,
+  productIds: string[],
+) {
+  return useQuery({
+    queryKey: qk.orderAvailability(tenantId ?? '', branchId ?? '', productIds),
+    queryFn: () => api.orderAvailability(tenantId as string, branchId as string, productIds),
+    enabled: !!tenantId && !!branchId && productIds.length > 0,
+    placeholderData: keepPreviousData,
+  })
+}
+
+/**
+ * Create an order (T16, D9's only write path). On success, invalidates
+ * every `hq-orders` list query for this tenant so the board/list picks up
+ * the new row the moment it's next visited — same pattern as
+ * useCreateCustomer/useCreateProduct.
+ */
+export function useCreateOrder(tenantId: string) {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: (input: NewOrderInput) => api.createOrder(tenantId, input),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ['hq-orders', tenantId] })
+    },
+  })
+}
+
+/** T22: one order's full detail, including its D7 transfer chain. */
+export function useOrderDetail(tenantId: string | undefined, orderId: string | undefined) {
+  return useQuery({
+    queryKey: qk.orderDetail(tenantId ?? '', orderId ?? ''),
+    queryFn: () => api.orderDetail(tenantId as string, orderId as string),
+    enabled: !!tenantId && !!orderId,
+  })
+}
+
+/**
+ * T22: cancel a still-New order (D4). Invalidates the whole `hq-orders`
+ * prefix (list + detail) on success, same as useCreateOrder.
+ */
+export function useCancelOrder(tenantId: string) {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: ({ orderId, reason }: { orderId: string; reason?: string }) =>
+      api.cancelOrder(tenantId, orderId, reason),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ['hq-orders', tenantId] })
+    },
+  })
+}
+
+/**
+ * T22: close the order at its current branch and reissue it at toBranchId
+ * under the same Ref (D7). Same invalidation as useCancelOrder.
+ */
+export function useTransferOrder(tenantId: string) {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: ({ orderId, toBranchId }: { orderId: string; toBranchId: string }) =>
+      api.transferOrder(tenantId, orderId, toBranchId),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ['hq-orders', tenantId] })
     },
   })
 }

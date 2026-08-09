@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { Link, Navigate, useNavigate } from 'react-router-dom'
-import { useTenants } from '@/lib/hooks'
+import { useMe, useTenants } from '@/lib/hooks'
 import type { Tenant } from '@/lib/types'
 import { tenantStatusLabel, tenantStatusTone, toArabicDigits } from '@/lib/format'
 import { TopBar } from '@/components/TopBar'
@@ -20,7 +20,13 @@ import { CreateTenantDialog } from '@/components/CreateTenantDialog'
 export function Tenants() {
   const navigate = useNavigate()
   const { data, isLoading, isError, error, refetch } = useTenants()
+  const { data: me } = useMe()
   const [createOpen, setCreateOpen] = useState(false)
+  // Self-serve tenant creation is an owner-signup path — an account ever
+  // invited as a member (even one since revoked) can't reach it server-side
+  // either (Register / ErrMembersCannotCreateTenant), so don't dangle a
+  // button here that would just 403.
+  const canCreateTenant = !me?.account.HasBeenMember
 
   const onCreated = (tenant: Tenant) => {
     setCreateOpen(false)
@@ -41,17 +47,25 @@ export function Tenants() {
               onRetry={() => void refetch()}
             />
           ) : !data || data.length === 0 ? (
-            <EmptyState
-              icon={TenantIcon}
-              title="لا توجد أنشطة بعد"
-              description="ابدأ بإنشاء نشاطك التجاري الأول لتجهيز شركتك وفروعك."
-              action={
-                <Button onClick={() => setCreateOpen(true)}>
-                  <AddIcon className="size-4" />
-                  إنشاء نشاط
-                </Button>
-              }
-            />
+            canCreateTenant ? (
+              <EmptyState
+                icon={TenantIcon}
+                title="لا توجد أنشطة بعد"
+                description="ابدأ بإنشاء نشاطك التجاري الأول لتجهيز شركتك وفروعك."
+                action={
+                  <Button onClick={() => setCreateOpen(true)}>
+                    <AddIcon className="size-4" />
+                    إنشاء نشاط
+                  </Button>
+                }
+              />
+            ) : (
+              <EmptyState
+                icon={TenantIcon}
+                title="لا يوجد نشاط تجاري متاح"
+                description="لم تعد جزءًا من أي نشاط تجاري. تواصل مع صاحب النشاط إذا كنت تتوقع الوصول إليه."
+              />
+            )
           ) : data.length === 1 ? (
             <Navigate to={`/tenants/${data[0].ID}`} replace />
           ) : (
@@ -65,10 +79,12 @@ export function Tenants() {
                     اختر نشاطًا لإدارته أو أنشئ نشاطًا جديدًا.
                   </p>
                 </div>
-                <Button onClick={() => setCreateOpen(true)}>
-                  <AddIcon className="size-4" />
-                  نشاط جديد
-                </Button>
+                {canCreateTenant && (
+                  <Button onClick={() => setCreateOpen(true)}>
+                    <AddIcon className="size-4" />
+                    نشاط جديد
+                  </Button>
+                )}
               </div>
 
               <div className="grid gap-3 sm:grid-cols-2">

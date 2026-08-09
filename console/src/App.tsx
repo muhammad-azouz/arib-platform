@@ -20,6 +20,9 @@ import { Customers } from '@/pages/console/Customers'
 import { CustomerDetail } from '@/pages/console/CustomerDetail'
 import { Suppliers } from '@/pages/console/Suppliers'
 import { SupplierDetail } from '@/pages/console/SupplierDetail'
+import { Orders } from '@/pages/console/Orders'
+import { NewOrder } from '@/pages/console/NewOrder'
+import { OrderDetail } from '@/pages/console/OrderDetail'
 import { Conflicts } from '@/pages/console/Conflicts'
 import { Reports } from '@/pages/console/Reports'
 import { Download } from '@/pages/console/Download'
@@ -69,6 +72,9 @@ export default function App() {
             <Route path="customers/:customerId" element={<CustomerDetail />} />
             <Route path="suppliers" element={<Suppliers />} />
             <Route path="suppliers/:supplierId" element={<SupplierDetail />} />
+            <Route path="orders" element={<Orders />} />
+            <Route path="orders/new" element={<NewOrder />} />
+            <Route path="orders/:orderId" element={<OrderDetail />} />
             <Route path="conflicts" element={<Conflicts />} />
             <Route path="reports" element={<Reports />} />
             <Route path="download" element={<Download />} />
