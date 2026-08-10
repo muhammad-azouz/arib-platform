@@ -79,11 +79,19 @@ export function GroupDrill({
   isLoading,
   selected,
   onSelect,
+  className,
 }: {
   groups: CatalogGroup[]
   isLoading: boolean
   selected?: string
   onSelect: (id: string | undefined) => void
+  /**
+   * Overrides sizing/overflow only — the visual chrome (border, background,
+   * padding) is fixed. Defaults to `h-fit` for page-flow placement (Catalog);
+   * pass `h-full min-h-0 overflow-y-auto` when the column sits in a
+   * fixed-height layout instead (the order workspace).
+   */
+  className?: string
 }) {
   const [pathIds, setPathIds] = useState<string[]>([])
   const [outgoing, setOutgoing] = useState<Outgoing | null>(null)
@@ -207,7 +215,7 @@ export function GroupDrill({
   return (
     <aside
       onKeyDown={onKeyDown}
-      className="h-fit rounded-xl border border-border bg-card/50 p-2"
+      className={cn('rounded-xl border border-border bg-card/50 p-2', className ?? 'h-fit')}
     >
       {isLoading ? (
         <div className="space-y-2 p-2">

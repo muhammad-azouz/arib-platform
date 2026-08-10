@@ -15,20 +15,13 @@ import {
   useOrderAvailability,
 } from '@/lib/hooks'
 import { toArabicDigits } from '@/lib/format'
-import { cn } from '@/lib/utils'
 import { ORDER_MODE, type OrderAvailabilityLine, type OrderModeValue, type OrderShortfall } from '@/lib/types'
 import { PageHeader } from '@/components/PageHeader'
+import { GroupDrill } from '@/components/GroupDrill'
 import { BranchSelector } from '@/components/orders/BranchSelector'
 import { ProductGrid } from '@/components/orders/ProductGrid'
 import { OrderCart, type CartLine } from '@/components/orders/OrderCart'
-import {
-  CatalogIcon,
-  DangerIcon,
-  SearchIcon,
-  UsersIcon,
-  ZenCollapseIcon,
-  ZenExpandIcon,
-} from '@/components/icon'
+import { DangerIcon, SearchIcon, UsersIcon, ZenCollapseIcon, ZenExpandIcon } from '@/components/icon'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -242,8 +235,6 @@ export function NewOrder() {
 
   if (!bundle) return null
 
-  const groups = [...(groupsQuery.data?.data ?? [])].sort((a, b) => a.num - b.num)
-
   const topBar = (
     <div className="flex flex-wrap items-center gap-2 rounded-xl border border-border bg-card/50 p-2.5">
       <div ref={comboRef} className="relative">
@@ -339,40 +330,13 @@ export function NewOrder() {
       className="grid h-full min-h-0 flex-1 gap-4"
       style={{ gridTemplateColumns: '220px 1fr 350px' }}
     >
-      <aside className="min-h-0 overflow-y-auto rounded-xl border border-border bg-card/50 p-2">
-        <ul className="space-y-0.5">
-          <li>
-            <button
-              type="button"
-              onClick={() => setGroupId(undefined)}
-              className={cn(
-                'flex w-full items-center gap-2 rounded-lg px-2.5 py-1.5 text-sm transition-colors hover:bg-accent/60',
-                groupId === undefined ? 'bg-accent font-semibold text-primary' : 'text-foreground/80',
-              )}
-            >
-              <CatalogIcon className="size-4 shrink-0 text-muted-foreground" />
-              كل الأصناف
-            </button>
-          </li>
-          {groups.map((g) => (
-            <li key={g.id}>
-              <button
-                type="button"
-                onClick={() => setGroupId(g.id)}
-                className={cn(
-                  'flex w-full items-center gap-2 rounded-lg px-2.5 py-1.5 text-sm transition-colors hover:bg-accent/60',
-                  groupId === g.id ? 'bg-accent font-semibold text-primary' : 'text-foreground/80',
-                )}
-              >
-                <span className="min-w-0 flex-1 truncate">{g.name}</span>
-                <span className="shrink-0 text-xs text-muted-foreground">
-                  {toArabicDigits(g.product_count)}
-                </span>
-              </button>
-            </li>
-          ))}
-        </ul>
-      </aside>
+      <GroupDrill
+        groups={groupsQuery.data?.data ?? []}
+        isLoading={groupsQuery.isLoading}
+        selected={groupId}
+        onSelect={setGroupId}
+        className="h-full min-h-0 overflow-y-auto"
+      />
 
       <div className="min-h-0">
         <ProductGrid tenantId={tenantId} groupId={groupId} onAdd={(id) => void addToCart(id)} />
