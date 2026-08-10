@@ -1,9 +1,21 @@
 import * as React from 'react'
 import { cn } from '@/lib/utils'
 
-function Table({ className, ...props }: React.ComponentProps<'table'>) {
+function Table({
+  className,
+  containerClassName,
+  ...props
+}: React.ComponentProps<'table'> & {
+  /**
+   * Sizing/overflow for the wrapper that actually scrolls. Needed because a
+   * sticky `<thead>` sticks to its nearest scrollport — which is this wrapper,
+   * never an ancestor — so a vertically scrolling table has to be constrained
+   * here rather than on some outer box.
+   */
+  containerClassName?: string
+}) {
   return (
-    <div className="relative w-full overflow-x-auto">
+    <div className={cn('relative w-full overflow-x-auto', containerClassName)}>
       <table
         className={cn('w-full caption-bottom text-sm', className)}
         {...props}

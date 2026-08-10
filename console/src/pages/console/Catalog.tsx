@@ -70,7 +70,11 @@ export function Catalog() {
     productsQuery.error instanceof ApiError && productsQuery.error.status !== 402
 
   return (
-    <>
+    // Fills the shell's viewport frame so the products table can take whatever
+    // height is left over and scroll on its own — below `lg` the two columns
+    // stack, where splitting the viewport would leave both a few rows tall, so
+    // the layout falls back to normal page flow there.
+    <div className="flex h-full flex-col">
       <PageHeader
         title="الكتالوج"
         description="المجموعات والأصناف والأسعار عبر كل الفروع."
@@ -101,16 +105,17 @@ export function Catalog() {
           }}
         />
       ) : (
-        <div className="grid gap-4 lg:grid-cols-[240px_1fr]">
+        <div className="grid gap-4 lg:min-h-0 lg:flex-1 lg:grid-cols-[240px_1fr]">
           <GroupDrill
             groups={groupsQuery.data?.data ?? []}
             isLoading={groupsQuery.isLoading}
             selected={groupId}
             onSelect={setGroupId}
+            className="h-fit lg:h-full lg:min-h-0 lg:overflow-y-auto"
           />
 
-          <div className="min-w-0">
-            <div className="relative mb-4">
+          <div className="flex min-w-0 flex-col lg:min-h-0">
+            <div className="relative mb-4 shrink-0">
               <SearchIcon className="pointer-events-none absolute start-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
               <Input
                 value={search}
@@ -127,17 +132,19 @@ export function Catalog() {
             />
 
             {productsQuery.data && productsQuery.data.data.total > 0 && (
-              <Pagination
-                page={page}
-                pageSize={PAGE_SIZE}
-                total={productsQuery.data.data.total}
-                onPageChange={setPage}
-              />
+              <div className="shrink-0">
+                <Pagination
+                  page={page}
+                  pageSize={PAGE_SIZE}
+                  total={productsQuery.data.data.total}
+                  onPageChange={setPage}
+                />
+              </div>
             )}
           </div>
         </div>
       )}
-    </>
+    </div>
   )
 }
 
@@ -162,9 +169,12 @@ function ProductsTable({
     )
   }
   return (
-    <div className="rounded-xl border border-border">
-      <Table>
-        <TableHeader>
+    <div className="rounded-xl border border-border lg:min-h-0 lg:flex-1 lg:overflow-hidden">
+      <Table containerClassName="lg:h-full lg:overflow-y-auto">
+        {/* The header row's own `border-b` would scroll away with the body:
+            collapsed table borders are painted by the table, not by the sticky
+            `<thead>`. An inset shadow rides along with it instead. */}
+        <TableHeader className="sticky top-0 z-10 bg-background/95 backdrop-blur-md [&_tr]:border-0 [&_tr]:shadow-[inset_0_-1px_0_var(--border)]">
           <TableRow>
             <TableHead>الكود</TableHead>
             <TableHead>الاسم</TableHead>

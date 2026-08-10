@@ -63,10 +63,15 @@ export function AppShell() {
     .sort((a, b) => b.to.length - a.to.length)
     .find((n) => pathname.startsWith(n.to))
 
+  // The shell is a fixed-height frame, not a growing document: the box wrapping
+  // `<main>` below is the only scroll container. That is what lets a page hand
+  // its own remaining height to a child (the catalog table) instead of pushing
+  // the whole window past the viewport — and why the sidebar and header no
+  // longer need `sticky`.
   return (
-    <div className="flex min-h-screen">
+    <div className="flex h-screen overflow-hidden">
       {/* Sidebar (right side in RTL) */}
-      <aside className="sticky top-0 hidden h-screen w-64 shrink-0 flex-col border-e border-border bg-card/50 p-4 md:flex">
+      <aside className="hidden h-full w-64 shrink-0 flex-col overflow-y-auto border-e border-border bg-card/50 p-4 md:flex">
         <Brand className="px-2 py-3 w-25 h-10" />
 
         <nav className="mt-6 flex flex-col gap-1">
@@ -108,7 +113,7 @@ export function AppShell() {
 
       {/* Main */}
       <div className="flex min-w-0 flex-1 flex-col">
-        <header className="sticky top-0 z-20 flex h-14 items-center justify-between gap-4 border-b border-border bg-background/80 px-5 backdrop-blur-md">
+        <header className="z-20 flex h-14 shrink-0 items-center justify-between gap-4 border-b border-border bg-background/80 px-5 backdrop-blur-md">
           {/* mobile nav */}
           <nav className="flex items-center gap-1 md:hidden">
             {nav.map(({ to, label, icon: IconCmp, end }) => (
@@ -146,11 +151,22 @@ export function AppShell() {
           </div>
         </header>
 
-        <main className="mx-auto w-full max-w-6xl flex-1 px-5 py-7">
-          <div className="animate-rise">
-            <Outlet />
-          </div>
-        </main>
+        {/* The scroll container is this full-width box rather than `<main>`, so
+            the scrollbar rides the window edge instead of the centered column's.
+            It also owns the vertical padding: a scroll container's end padding
+            counts as scrollable overflow, whereas `py-*` on the `h-full` main
+            below would land mid-content once a page outgrows the viewport. */}
+        <div className="min-h-0 flex-1 overflow-y-auto py-7">
+          {/* `h-full` here — not `min-h-full` — is what makes the height
+              *definite*, so a page can resolve `h-full` against it and hand the
+              leftover to a scrolling child. It stays a plain block, so pages
+              that outgrow it simply overflow and scroll as before. */}
+          <main className="mx-auto h-full w-full max-w-6xl px-5">
+            <div className="animate-rise h-full">
+              <Outlet />
+            </div>
+          </main>
+        </div>
       </div>
     </div>
   )

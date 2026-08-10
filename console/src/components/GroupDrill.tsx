@@ -87,9 +87,10 @@ export function GroupDrill({
   onSelect: (id: string | undefined) => void
   /**
    * Overrides sizing/overflow only — the visual chrome (border, background,
-   * padding) is fixed. Defaults to `h-fit` for page-flow placement (Catalog);
-   * pass `h-full min-h-0 overflow-y-auto` when the column sits in a
-   * fixed-height layout instead (the order workspace).
+   * padding) is fixed. Defaults to `h-fit` for page-flow placement; pass
+   * `h-full min-h-0 overflow-y-auto` when the column sits in a fixed-height
+   * layout instead (the order workspace always, the catalog at `lg` and up),
+   * which is also what lets the breadcrumb header stick while the level scrolls.
    */
   className?: string
 }) {
