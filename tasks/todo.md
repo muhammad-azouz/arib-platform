@@ -995,3 +995,75 @@ Decisions locked with owner (2026-07-17): backfill bills for existing tenants (n
   - [ ] Deploy order: API + admin UI first → **backfill real tenants' bills immediately** (inside the ~1 h token TTL, before their cached tokens expire) → console → desktop release last
   - [x] Audit log shows every bill action with actor *(confirmed during checkpoint 10a's E2E — `bill.create`/`bill.void` rows written with actor on every call)*
   - [x] **Human review — Phase 10 complete; revisit Phase 9 scheduling** *(approved 2026-07-17)*
+
+## Phase 11 — Catalog group drill-down
+
+Plan: `tasks/plan-catalog-groups.md` · Spec: `tasks/spec-catalog-groups.md` (2026-08-10)
+
+Interaction locked with owner (2026-08-10): group with children = one click drills **and** filters · leaf = filters only, level unchanged · **no "رجوع" row** (rejected as redundant) — header 📁 icon returns to root *and* clears the filter, any crumb jumps to that level, collapsed `…` is clickable · breadcrumb lives inside the sidebar top · drill state is component-only (no URL). Motion budget: 14px slide + crossfade, 200ms/130ms, `cubic-bezier(0.22, 1, 0.36, 1)` (same easing as `.animate-rise`), no stagger/spring/scale, no new dependency.
+
+- [~] **T91: `GroupDrill` — one-level column + breadcrumb header (no animation)** *(code complete; `pnpm build && pnpm lint` clean 2026-08-10 — drill-through on real data pending, folds into checkpoint 11a)*
+  - **Description:** New `console/src/components/GroupDrill.tsx`. Move `buildGroupTree`, `GroupNode`, and `ROOT_PARENT` out of `Catalog.tsx` (file-local today, not exported). Component owns `path: GroupNode[]` internally — the level is *not* derivable from `groupId`, since a leaf click filters without changing level — and reports selection through `onSelect(id | undefined)`. Renders: a sticky header (`📁` root button + crumb buttons; at root the header reads `📁 كل الأصناف` as a single non-interactive crumb — **no separate "كل الأصناف" list row**) over one level's rows, reusing the existing row markup verbatim (`GroupIcon`, `truncate` name, `toArabicDigits(product_count)` badge, selected state). Level swaps instantly at this stage. `Catalog.tsx` swaps the `<aside>` body and deletes `GroupTree`; skeleton, 402 path, gateway-error path, `filterKey` page-reset, and `?search=` deep link all untouched.
+  - Acceptance:
+    - [~] Column shows exactly one level, no indentation; group-with-children click drills **and** filters, leaf click only filters *(implemented; needs a human click-through — no browser-automation tool in the session that built it)*
+    - [~] Header icon returns to root *and* clears the filter; each crumb jumps to that level and filters by it *(same)*
+    - [x] Zero-groups tenant renders header + empty list without crashing *(`level.length === 0` → "لا توجد مجموعات"; no crash path)*
+  - Verify: `pnpm build && pnpm lint` *(clean 2026-08-10; 2 pre-existing `auth.tsx` react-refresh warnings only)*; manual in `pnpm dev` on a tenant with a ≥3-level hierarchy — drill down and back up every level, confirm the table's rows change at each step
+  - Files: `console/src/components/GroupDrill.tsx` (new), `console/src/pages/console/Catalog.tsx`
+  - Dependencies: none · **Size: M**
+
+- [~] **T92: Breadcrumb collapse — `…` ancestor dropdown** *(code complete; `pnpm build && pnpm lint` clean 2026-08-10 — deep-path click-through pending, folds into checkpoint 11a)*
+  - **Description:** When depth > 2, render `[📁] › … › parent › current`, collapsing every middle ancestor into a `…` trigger using the existing `ui/dropdown-menu` (same pattern as `AccountMenu.tsx`). Picking an entry behaves exactly like clicking that crumb. **Spec amendment (plan §Architecture):** collapse is depth-based, not width-measured — no ResizeObserver, no measure/re-measure oscillation; long names are handled by `truncate` + `title` on each crumb.
+  - Acceptance:
+    - [x] `…` appears only at depth > 2 and lists exactly the hidden ancestors, root-first *(`hidden = path.slice(0, len - 2)` — non-empty only past depth 2, already root-first)*
+    - [~] Header never wraps and never overflows the 240px column, even with long Arabic group names *(icon/`…`/separators are `shrink-0`, crumb spans `min-w-0` + `truncate` so only names shrink — needs a look with real long names)*
+  - Verify: `pnpm build && pnpm lint` *(clean 2026-08-10)*; manual — drill 4+ levels deep, open `…`, jump to a hidden ancestor
+  - Files: `console/src/components/GroupDrill.tsx`
+  - Dependencies: T91 · **Size: S**
+
+- [ ] **Checkpoint 11a — behavior before motion**
+  - [ ] `pnpm build && pnpm lint` clean
+  - [ ] Manual: full drill/back navigation matches the interaction table in spec §Interaction contract
+  - [ ] Regression: `/tenants/:id/catalog?search=…` from the command palette still prefills search and lands at root
+  - [ ] **Human review** — sidebar structure approved, and a look at real tenant data to settle open Q1 (parent rows showing `٠` because `product_count` is direct-only) before motion work starts
+
+- [~] **T93: Drill animation — slide + crossfade** *(code complete; `pnpm build && pnpm lint` clean 2026-08-10 — the animation itself is subjective and unverifiable without eyes, folds into checkpoint 11b)*
+  - **Description:** `@keyframes` in `console/src/index.css` beside `.animate-rise`, reusing its `cubic-bezier(0.22, 1, 0.36, 1)`: 14px directional slide + opacity, 200ms transform / 130ms opacity. RTL sign comes from one named `DRILL_SHIFT` constant fed in as a CSS custom property (`translateX` does not flip with `dir`; the app is `dir="rtl"` app-wide). Both panes stay mounted for the transition — outgoing absolutely positioned inside an `overflow-hidden` viewport — so the old level never vanishes abruptly. Transitions are keyed on a monotonic `navSeq` (not the group id): two navigations can land on the same id, and a stale cleanup timer must not clear a newer transition. Drilling in = incoming enters from the inline-start edge; going up = mirrored. Leaf clicks do not animate.
+  - Acceptance:
+    - [~] Drill in and up animate in visibly opposite, correct directions; no stagger/spring/scale; nothing animates on page load *(four keyframes, signs written for RTL; animation classes apply only while a transition is live, so first paint is static — needs eyes)*
+    - [x] Spam-clicking two groups alternately leaves no ghost or stuck pane (in-flight transition snaps to its end state, new one starts clean) *(a new navigation replaces `outgoing`, unmounting the previous pane; the retire timer is `seq`-guarded so a stale one can't retire a newer transition)*
+  - Verify: `pnpm build && pnpm lint` *(clean 2026-08-10)*; manual — spam-click both directions, then step through one level at a time watching the pane edges
+  - **Spec correction made here:** the spec's "incoming enters from the inline-start (left) edge" was self-contradictory — inline-start is the *right* edge in RTL. Implemented as literal left-on-drill-in (the mirror of the LTR/Inkdrop convention, which is what "(left)" meant); spec §Animation contract amended.
+  - Files: `console/src/components/GroupDrill.tsx`, `console/src/index.css`
+  - Dependencies: T91 · **Size: M**
+
+- [~] **T94: Column height smoothing** *(droppable — see plan §Risks)* *(code complete; `pnpm build && pnpm lint` clean 2026-08-10 — needs eyes, folds into checkpoint 11b)*
+  - **Description:** Transition the viewport's height between levels so the products table beside it doesn't jump when a short level follows a long one: freeze the current px height, reflow, set the incoming level's measured height, release to `auto` when the transition ends (same `navSeq` cleanup as T93). Decide `max-h` + internal scroll here, against real data, only if a tenant level actually exceeds the viewport (spec open Q2). If this fights the layout, revert **this task only** — T93 stands alone.
+  - Acceptance:
+    - [~] No visible jump in the products area when levels of very different lengths swap *(px→px height run over `--drill-ms`; outgoing pane pinned to its captured height so it isn't squashed by the shrinking viewport — needs eyes)*
+    - [x] Column settles at natural height after the transition (no frozen or clipped height on resize) *(the retire timer clears the inline height back to `auto`, same `seq`-guarded callback that unmounts the outgoing pane)*
+  - Verify: `pnpm build && pnpm lint` *(clean 2026-08-10)*; manual — drill between a 12-group level and a 2-group level, then resize the window mid-idle
+  - **Open Q2 (column `max-h` + internal scroll) left unresolved deliberately:** it was scoped to "only if a real tenant level exceeds the viewport", and a tall level is *not* a regression here — the old fully-expanded tree was strictly taller. Decide at checkpoint 11b with real data on screen.
+  - Files: `console/src/components/GroupDrill.tsx`
+  - Dependencies: T93 · **Size: S**
+
+- [~] **T95: Accessibility — reduced motion, `Backspace`, focus** *(code complete; `pnpm build && pnpm lint` clean 2026-08-10 — keyboard/reduced-motion pass pending, folds into checkpoint 11c)*
+  - **Description:** `prefers-reduced-motion: reduce` drops transform and height animation entirely (opacity crossfade ≤80ms may remain). `Backspace` with focus inside the column goes up one level — handler bails when the event target is an input/textarea and calls `preventDefault` so it never triggers browser back-navigation. Keyboard-activated drills (detectable via `e.detail === 0` on click) move focus into the new level; pointer clicks leave focus alone so the page doesn't scroll under the cursor.
+  - Acceptance:
+    - [~] With OS "reduce motion" on, levels swap instantly with nothing broken or clipped *(media query drops the transform keyframes to an 80ms opacity-only crossfade and kills the height transition; the retire timer was already time-based, not `animationend`-based, so nothing hangs — needs a look)*
+    - [~] `Backspace` goes up a level from the column and never navigates the browser back; typing in the search box is unaffected *(handler bails on INPUT/TEXTAREA/SELECT/contentEditable and `preventDefault`s otherwise; the search box is outside this `<aside>` and never reaches the handler at all)*
+    - [~] Tab/Enter through the column works and focus is never lost after a keyboard drill *(keyboard activation detected via `e.detail === 0`; focus moves to the new level's first row only then, so pointer clicks don't scroll the page)*
+  - Verify: `pnpm build && pnpm lint` *(clean 2026-08-10)*; manual — toggle macOS Reduce Motion, then a keyboard-only pass through drill/back/`…` dropdown
+  - Files: `console/src/components/GroupDrill.tsx`, `console/src/index.css`
+  - Dependencies: T93 (T94 if kept) · **Size: S**
+
+- [ ] **Checkpoint 11b — motion feel**
+  - [ ] `pnpm build && pnpm lint` clean
+  - [ ] **Human review of the animation itself** — subjective and the whole point of the task: is it Inkdrop-restrained, or over-animated? Duration/distance are cheap to tune here (200ms/14px are starting values, not commitments)
+
+- [ ] **Checkpoint 11c — Phase 11 complete**
+  - [ ] Full manual checklist in spec §Testing Strategy passes on a ≥3-level hierarchy
+  - [ ] No regression: search, pagination, `?search=` deep link, 402 "no subscription" state, gateway-error state
+  - [ ] `package.json` unchanged — no animation library added
+  - [ ] Spec open Q1 (direct-only parent counts) and Q2 (column max-height) resolved or explicitly carried forward
+  - [ ] **Human review — Phase 11 complete**

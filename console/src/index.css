@@ -136,6 +136,141 @@
   animation: rise 0.5s cubic-bezier(0.22, 1, 0.36, 1) both;
 }
 
+/*
+ * Catalog group drill-down: the incoming level slides a short distance while
+ * the outgoing one slides the opposite way and fades, Inkdrop-style.
+ *
+ * The app is RTL app-wide, and `translateX` does NOT flip with `dir` — so the
+ * signs here are written for RTL directly: going deeper, the new level enters
+ * from the left and the old one leaves to the right; going back up, mirrored.
+ * Opacity finishes at 65% of the run (~130ms of 200ms) so the crossfade reads
+ * as quicker than the movement rather than muddying it.
+ */
+.drill-viewport {
+  --drill-shift: 14px;
+  --drill-ease: cubic-bezier(0.22, 1, 0.36, 1);
+  --drill-ms: 200ms;
+  /* Only ever transitions between the two explicit px heights the component
+     sets during a run; idle height is `auto`, which never animates. */
+  transition: height var(--drill-ms) var(--drill-ease);
+}
+@keyframes drill-in-forward {
+  from {
+    opacity: 0;
+    transform: translateX(calc(-1 * var(--drill-shift)));
+  }
+  65% {
+    opacity: 1;
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+@keyframes drill-out-forward {
+  from {
+    opacity: 1;
+    transform: none;
+  }
+  65% {
+    opacity: 0;
+  }
+  to {
+    opacity: 0;
+    transform: translateX(var(--drill-shift));
+  }
+}
+@keyframes drill-in-back {
+  from {
+    opacity: 0;
+    transform: translateX(var(--drill-shift));
+  }
+  65% {
+    opacity: 1;
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+@keyframes drill-out-back {
+  from {
+    opacity: 1;
+    transform: none;
+  }
+  65% {
+    opacity: 0;
+  }
+  to {
+    opacity: 0;
+    transform: translateX(calc(-1 * var(--drill-shift)));
+  }
+}
+.animate-drill-in-forward {
+  animation: drill-in-forward var(--drill-ms) var(--drill-ease) both;
+}
+.animate-drill-out-forward {
+  animation: drill-out-forward var(--drill-ms) var(--drill-ease) both;
+}
+.animate-drill-in-back {
+  animation: drill-in-back var(--drill-ms) var(--drill-ease) both;
+}
+.animate-drill-out-back {
+  animation: drill-out-back var(--drill-ms) var(--drill-ease) both;
+}
+
+/*
+ * Reduced motion: no sliding, no height run — just a quick crossfade so the
+ * two panes don't visibly stack during the (unchanged) 200ms retire window.
+ */
+@keyframes drill-fade-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+@keyframes drill-fade-out {
+  from {
+    opacity: 1;
+  }
+  to {
+    opacity: 0;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .drill-viewport {
+    transition: none;
+  }
+  .animate-drill-in-forward,
+  .animate-drill-in-back {
+    animation: drill-fade-in 80ms linear both;
+  }
+  .animate-drill-out-forward,
+  .animate-drill-out-back {
+    animation: drill-fade-out 80ms linear both;
+  }
+  .animate-crumb-in {
+    animation: none;
+  }
+}
+
+/* a new breadcrumb settling into the header */
+@keyframes crumb-in {
+  from {
+    opacity: 0;
+    transform: translateX(calc(-1 * var(--drill-shift, 14px) / 2.3));
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+.animate-crumb-in {
+  animation: crumb-in 130ms cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
 /* thin warm scrollbars */
 * {
   scrollbar-width: thin;

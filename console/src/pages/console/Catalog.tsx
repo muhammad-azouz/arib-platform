@@ -3,13 +3,13 @@ import { useNavigate, useParams, useSearchParams } from 'react-router-dom'
 import { ApiError } from '@/lib/api'
 import { useBundle, useCatalogGroups, useCatalogProducts } from '@/lib/hooks'
 import { toArabicDigits } from '@/lib/format'
-import { cn } from '@/lib/utils'
-import type { CatalogGroup, CatalogProduct } from '@/lib/types'
+import type { CatalogProduct } from '@/lib/types'
 import { CreateProductDialog } from '@/components/CreateProductDialog'
+import { GroupDrill } from '@/components/GroupDrill'
 import { PageHeader } from '@/components/PageHeader'
 import { Pagination } from '@/components/Pagination'
 import { LoadingState, EmptyState, ErrorState } from '@/components/States'
-import { AddIcon, CatalogIcon, GroupIcon, SearchIcon } from '@/components/icon'
+import { AddIcon, CatalogIcon, SearchIcon } from '@/components/icon'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -24,27 +24,6 @@ import {
 
 const money = new Intl.NumberFormat('ar', { maximumFractionDigits: 2 })
 const PAGE_SIZE = 25
-const ROOT_PARENT = '00000000-0000-0000-0000-000000000000'
-
-interface GroupNode extends CatalogGroup {
-  children: GroupNode[]
-}
-
-function buildGroupTree(groups: CatalogGroup[]): GroupNode[] {
-  const nodes = new Map<string, GroupNode>(groups.map((g) => [g.id, { ...g, children: [] }]))
-  const roots: GroupNode[] = []
-  for (const node of nodes.values()) {
-    const parent = node.parent_id !== ROOT_PARENT ? nodes.get(node.parent_id) : undefined
-    if (parent) parent.children.push(node)
-    else roots.push(node)
-  }
-  const sortTree = (list: GroupNode[]) => {
-    list.sort((a, b) => a.num - b.num)
-    list.forEach((n) => sortTree(n.children))
-  }
-  sortTree(roots)
-  return roots
-}
 
 export function Catalog() {
   const { tenantId } = useParams<'tenantId'>()
@@ -123,38 +102,12 @@ export function Catalog() {
         />
       ) : (
         <div className="grid gap-4 lg:grid-cols-[240px_1fr]">
-          <aside className="h-fit rounded-xl border border-border bg-card/50 p-2">
-            {groupsQuery.isLoading ? (
-              <div className="space-y-2 p-2">
-                <div className="h-5 w-24 animate-pulse rounded bg-muted" />
-                <div className="h-5 w-32 animate-pulse rounded bg-muted" />
-                <div className="h-5 w-20 animate-pulse rounded bg-muted" />
-              </div>
-            ) : (
-              <ul className="space-y-0.5">
-                <li>
-                  <button
-                    type="button"
-                    onClick={() => setGroupId(undefined)}
-                    className={cn(
-                      'flex w-full items-center gap-2 rounded-lg px-2.5 py-1.5 text-sm transition-colors hover:bg-accent/60',
-                      groupId === undefined
-                        ? 'bg-accent font-semibold text-primary'
-                        : 'text-foreground/80',
-                    )}
-                  >
-                    <CatalogIcon className="size-4 shrink-0 text-muted-foreground" />
-                    كل الأصناف
-                  </button>
-                </li>
-                <GroupTree
-                  nodes={buildGroupTree(groupsQuery.data?.data ?? [])}
-                  selected={groupId}
-                  onSelect={setGroupId}
-                />
-              </ul>
-            )}
-          </aside>
+          <GroupDrill
+            groups={groupsQuery.data?.data ?? []}
+            isLoading={groupsQuery.isLoading}
+            selected={groupId}
+            onSelect={setGroupId}
+          />
 
           <div className="min-w-0">
             <div className="relative mb-4">
@@ -185,43 +138,6 @@ export function Catalog() {
         </div>
       )}
     </>
-  )
-}
-
-function GroupTree({
-  nodes,
-  selected,
-  onSelect,
-  depth = 0,
-}: {
-  nodes: GroupNode[]
-  selected?: string
-  onSelect: (id: string) => void
-  depth?: number
-}) {
-  if (nodes.length === 0) return null
-  return (
-    <ul className={depth === 0 ? 'space-y-0.5' : 'mt-0.5 space-y-0.5 ps-4'}>
-      {nodes.map((n) => (
-        <li key={n.id}>
-          <button
-            type="button"
-            onClick={() => onSelect(n.id)}
-            className={cn(
-              'flex w-full items-center gap-2 rounded-lg px-2.5 py-1.5 text-sm transition-colors hover:bg-accent/60',
-              selected === n.id ? 'bg-accent font-semibold text-primary' : 'text-foreground/80',
-            )}
-          >
-            <GroupIcon className="size-4 shrink-0 text-muted-foreground" />
-            <span className="min-w-0 flex-1 truncate">{n.name}</span>
-            <span className="shrink-0 text-xs text-muted-foreground">
-              {toArabicDigits(n.product_count)}
-            </span>
-          </button>
-          <GroupTree nodes={n.children} selected={selected} onSelect={onSelect} depth={depth + 1} />
-        </li>
-      ))}
-    </ul>
   )
 }
 
