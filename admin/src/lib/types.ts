@@ -145,6 +145,24 @@ export interface TenantDeletionResult {
   db_dropped: boolean
 }
 
+// rollout.TenantState — one tenant's line in a schema report / rollout run.
+export interface TenantSchemaState {
+  tenant_id: string
+  db_name: string
+  schema_version: number
+  rollout_status: string // model.RolloutStatus: idle | migrating | failed
+  rollout_error?: string
+}
+
+// rollout.Report — the fleet's mixed-version view (E3).
+export interface SchemaReport {
+  target_version: number
+  tenants: TenantSchemaState[] | null
+  by_version: Record<string, number> | null
+  failed: string[] | null
+  unreachable_shards?: string[] | null
+}
+
 export interface Session {
   access_token: string
   refresh_token: string

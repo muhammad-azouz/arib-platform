@@ -6,6 +6,7 @@ import { Overview } from '@/pages/Overview'
 import { Clients } from '@/pages/Clients'
 import { ClientDetail } from '@/pages/ClientDetail'
 import { Audit } from '@/pages/Audit'
+import { SchemaRollout } from '@/pages/SchemaRollout'
 
 function BootScreen() {
   return (
@@ -31,6 +32,7 @@ export default function App() {
             <Route index element={<Overview />} />
             <Route path="clients" element={<Clients />} />
             <Route path="clients/:id" element={<ClientDetail />} />
+            <Route path="schema" element={<SchemaRollout />} />
             <Route path="audit" element={<Audit />} />
           </Route>
           <Route path="*" element={<Navigate to="/" replace />} />

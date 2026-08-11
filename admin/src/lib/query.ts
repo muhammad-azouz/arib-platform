@@ -13,6 +13,7 @@ export const queryClient = new QueryClient({
 export const qk = {
   stats: ['stats'] as const,
   audit: ['audit'] as const,
+  schemaReport: ['schema-report'] as const,
   clients: (q: string) => ['clients', q] as const,
   client: (id: string) => ['client', id] as const,
   bills: (tenantId: string) => ['bills', tenantId] as const,

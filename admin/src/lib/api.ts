@@ -5,6 +5,7 @@ import type {
   CreateBillResult,
   License,
   LicenseStatus,
+  SchemaReport,
   Session,
   Stats,
   Tenant,
@@ -237,4 +238,11 @@ export const adminApi = {
     request<{ audit: AuditLog[] | null }>('/v1/admin/audit').then(
       (r) => r.audit ?? [],
     ),
+
+  // Fleet schema rollout (E3). schemaReport is read-only; rollout migrates
+  // every sync tenant that is behind the gateway's version and can take
+  // minutes on a large fleet.
+  schemaReport: () => request<SchemaReport>('/v1/admin/schema-report'),
+
+  rollout: () => request<SchemaReport>('/v1/admin/rollout', body({})),
 }

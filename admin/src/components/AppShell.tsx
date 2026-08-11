@@ -1,5 +1,6 @@
 import { NavLink, Outlet } from 'react-router-dom'
 import {
+  DatabaseZap,
   LayoutGrid,
   LogOut,
   ScrollText,
@@ -28,6 +29,7 @@ interface NavItem {
 const NAV: NavItem[] = [
   { to: '/', label: 'Overview', icon: LayoutGrid, end: true },
   { to: '/clients', label: 'Clients', icon: Users },
+  { to: '/schema', label: 'Schema rollout', icon: DatabaseZap },
   { to: '/audit', label: 'Audit log', icon: ScrollText },
 ]
 
