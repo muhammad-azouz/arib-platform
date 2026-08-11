@@ -10,6 +10,7 @@ import type {
   Stats,
   Tenant,
   TenantBills,
+  TenantDBDropResult,
   TenantDeletionResult,
 } from './types'
 
@@ -208,6 +209,11 @@ export const adminApi = {
 
   provisionSync: (tenantId: string) =>
     request<Tenant>(`/v1/admin/tenants/${tenantId}/provision-sync`, body({})),
+
+  // Drops ONLY the tenant's central sync DB; the tenant, its branches and its
+  // seats survive and the gateway rebuilds the DB on the next sync.
+  dropTenantDb: (tenantId: string) =>
+    request<TenantDBDropResult>(`/v1/admin/tenants/${tenantId}/drop-db`, body({})),
 
   deleteTenant: (tenantId: string) =>
     request<TenantDeletionResult>(`/v1/admin/tenants/${tenantId}`, {

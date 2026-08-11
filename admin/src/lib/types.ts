@@ -145,6 +145,13 @@ export interface TenantDeletionResult {
   db_dropped: boolean
 }
 
+// tenant.DBDropResult — central DB dropped, tenant registry left intact.
+export interface TenantDBDropResult {
+  tenant_id: string
+  db_name: string
+  dropped: boolean
+}
+
 // rollout.TenantState — one tenant's line in a schema report / rollout run.
 export interface TenantSchemaState {
   tenant_id: string

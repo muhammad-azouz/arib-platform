@@ -5,6 +5,7 @@ import {
   ArrowLeft,
   Building2,
   CalendarClock,
+  DatabaseBackup,
   DatabaseZap,
   FileSignature,
   HardDrive,
@@ -40,6 +41,7 @@ import { AssignLicenseDialog } from '@/components/dialogs/AssignLicenseDialog'
 import { ExtendUpdatesDialog } from '@/components/dialogs/ExtendUpdatesDialog'
 import { SignOfflineDialog } from '@/components/dialogs/SignOfflineDialog'
 import { EditClientDialog } from '@/components/dialogs/EditClientDialog'
+import { DropTenantDbDialog } from '@/components/dialogs/DropTenantDbDialog'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
@@ -74,6 +76,7 @@ export function ClientDetail() {
   const [updatesLicense, setUpdatesLicense] = useState<License | null>(null)
   const [releaseDevice, setReleaseDevice] = useState<Device | null>(null)
   const [deleteTenant, setDeleteTenant] = useState<Tenant | null>(null)
+  const [dropDbTenant, setDropDbTenant] = useState<Tenant | null>(null)
 
   const invalidate = () => {
     qc.invalidateQueries({ queryKey: qk.client(id) })
@@ -255,6 +258,20 @@ export function ClientDetail() {
                         >
                           <DatabaseZap className="size-4" />
                           {t.DBName ? 'Re-provision sync' : 'Provision sync'}
+                        </Button>
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          className="size-8 text-danger hover:bg-danger/10 hover:text-danger"
+                          title={
+                            t.DBName
+                              ? 'Drop the central DB (keeps the tenant)'
+                              : 'No central DB provisioned'
+                          }
+                          disabled={!t.DBName}
+                          onClick={() => setDropDbTenant(t)}
+                        >
+                          <DatabaseBackup className="size-4" />
                         </Button>
                         <Button
                           variant="ghost"
@@ -524,6 +541,12 @@ export function ClientDetail() {
         onConfirm={async () => {
           if (releaseDevice) await releaseMutation.mutateAsync(releaseDevice.ID)
         }}
+      />
+      <DropTenantDbDialog
+        tenant={dropDbTenant}
+        open={!!dropDbTenant}
+        onOpenChange={(o) => !o && setDropDbTenant(null)}
+        onDropped={invalidate}
       />
       <ConfirmDialog
         open={!!deleteTenant}

@@ -437,6 +437,63 @@ func TestDeleteTenant_GatewayFailureAbortsDeletion(t *testing.T) {
 	}
 }
 
+// TestDropCentralDB_NotProvisioned verifies the repair lever refuses a tenant
+// that has no central DB to drop, rather than calling the gateway with an empty
+// db_name.
+func TestDropCentralDB_NotProvisioned(t *testing.T) {
+	s, ctx := testService(t)
+	tenantID, _, _ := setupTenant(t, s, ctx)
+
+	if _, err := s.DropCentralDB(ctx, "admin@aribpos.test", tenantID); !errors.Is(err, ErrNotSubscribed) {
+		t.Fatalf("expected ErrNotSubscribed, got %v", err)
+	}
+}
+
+// TestDropCentralDB_GatewayFailureKeepsRegistry pins the guarantee the whole
+// lever rests on: dropping the central DB touches nothing else, so a failure
+// against the gateway leaves the tenant fully intact — same DB name, same
+// company and branches — and is safe to retry once the gateway recovers.
+// It also pins the error type, since the HTTP layer answers 502 with the
+// gateway's own message only for a *GatewayError.
+func TestDropCentralDB_GatewayFailureKeepsRegistry(t *testing.T) {
+	s, ctx := testService(t)
+	tenantID, _, branchID := setupTenant(t, s, ctx)
+
+	provisioned, err := s.ProvisionSync(ctx, tenantID)
+	if err != nil {
+		t.Fatalf("provision sync: %v", err)
+	}
+
+	_, err = s.DropCentralDB(ctx, "admin@aribpos.test", tenantID)
+	if err == nil {
+		t.Fatalf("expected gateway drop failure, got nil error")
+	}
+	var gwErr *GatewayError
+	if !errors.As(err, &gwErr) {
+		t.Fatalf("expected a *GatewayError so the API answers 502, got %T: %v", err, err)
+	}
+
+	after, err := s.store.TenantByID(ctx, tenantID)
+	if err != nil {
+		t.Fatalf("tenant should still exist after a failed drop: %v", err)
+	}
+	if after.DBName != provisioned.DBName {
+		t.Fatalf("db name changed on a failed drop: %q -> %q", provisioned.DBName, after.DBName)
+	}
+	// The schema reset runs only after a successful drop; a failed one must not
+	// mark the tenant behind and pull it into the next fleet rollout.
+	if after.SchemaVersion != provisioned.SchemaVersion {
+		t.Fatalf("schema version changed on a failed drop: %d -> %d",
+			provisioned.SchemaVersion, after.SchemaVersion)
+	}
+	if _, err := s.store.CompanyByTenant(ctx, tenantID); err != nil {
+		t.Fatalf("company should still exist after a failed drop: %v", err)
+	}
+	if _, err := s.store.BranchByID(ctx, branchID); err != nil {
+		t.Fatalf("branch should still exist after a failed drop: %v", err)
+	}
+}
+
 // TestRecordSyncCompleted covers the gateway's sync-completed callback: the
 // branch's last_sync_at is stamped, a claims/branch tenant mismatch is
 // forbidden, and an unknown branch is not found.

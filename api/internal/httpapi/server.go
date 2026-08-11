@@ -231,6 +231,10 @@ func (s *Server) Router() http.Handler {
 			// Multi-tenant registry (subscription & billing levers).
 			r.Post("/tenants/{id}/provision-sync", s.handleAdminProvisionSync)
 			r.Delete("/tenants/{id}", s.handleAdminDeleteTenant)
+			// Repair lever: drop the central DB only — the tenant, its
+			// branches and its seats survive, and the gateway rebuilds the
+			// DB from scratch on the next sync.
+			r.Post("/tenants/{id}/drop-db", s.handleAdminDropTenantDB)
 			r.Post("/branches/{id}/seats", s.handleAdminBranchSeats)
 
 			// Bills (Phase 10 billing): amount + period recorded against a

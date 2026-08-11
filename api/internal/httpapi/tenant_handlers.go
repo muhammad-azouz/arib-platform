@@ -364,6 +364,18 @@ func (s *Server) handleAdminDeleteTenant(w http.ResponseWriter, r *http.Request)
 	writeJSON(w, http.StatusOK, res)
 }
 
+// handleAdminDropTenantDB drops only the tenant's central sync DB, leaving the
+// tenant registry intact; the gateway rebuilds it on the next sync/migrate.
+func (s *Server) handleAdminDropTenantDB(w http.ResponseWriter, r *http.Request) {
+	c := claimsFrom(r.Context())
+	res, err := s.tenant.DropCentralDB(r.Context(), c.Email, chi.URLParam(r, "id"))
+	if err != nil {
+		s.writeTenantError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, res)
+}
+
 func (s *Server) handleAdminBranchSeats(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Seats int `json:"seats"`
@@ -419,6 +431,12 @@ func (s *Server) writeTenantError(w http.ResponseWriter, err error) {
 		})
 	case errors.Is(err, mongostore.ErrNotFound):
 		writeErr(w, http.StatusNotFound, "not found")
+	case errors.As(err, new(*tenant.GatewayError)):
+		// The shard gateway refused or was unreachable — pass its message
+		// through (502), the way handleAdminRollout already does. Only the
+		// repair levers wrap their errors this way; nothing here is derived
+		// from client input.
+		writeErr(w, http.StatusBadGateway, err.Error())
 	default:
 		writeErr(w, http.StatusInternalServerError, "request failed")
 	}

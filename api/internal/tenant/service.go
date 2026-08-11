@@ -42,6 +42,16 @@ var (
 	ErrMembersCannotCreateTenant = errors.New("accounts invited as a member cannot create their own tenant")
 )
 
+// GatewayError marks a failure that came back from a shard gateway rather than
+// from the registry, so the HTTP layer can answer 502 with the gateway's own
+// message instead of a generic 500. The operator reaching for a repair lever is
+// already debugging a broken tenant — the gateway's text ("db_name is required",
+// a SQL error, an expired ops token) is the whole diagnostic.
+type GatewayError struct{ Err error }
+
+func (e *GatewayError) Error() string { return e.Err.Error() }
+func (e *GatewayError) Unwrap() error { return e.Err }
+
 // Service coordinates the registry store and the sync-token signer.
 type Service struct {
 	store   *mongostore.Store
@@ -803,6 +813,67 @@ func (s *Service) DeleteTenant(ctx context.Context, actor, tenantID string) (*De
 		CreatedAt: time.Now().UTC(),
 	})
 	return res, nil
+}
+
+// DBDropResult summarizes what DropCentralDB tore down, for the admin response.
+type DBDropResult struct {
+	TenantID string `json:"tenant_id"`
+	DBName   string `json:"db_name"`
+	Dropped  bool   `json:"dropped"`
+}
+
+// DropCentralDB deletes a tenant's central sync DB while leaving the tenant,
+// its company, branches and device seats untouched — the repair counterpart of
+// DeleteTenant. Used when a tenant's central DB is beyond fixing in place (a
+// scope that no longer matches the schema, a half-applied migration) and the
+// cheapest route is to let the gateway rebuild it from scratch.
+//
+// The tenant KEEPS its DBName: the gateway recreates the DB lazily on the next
+// /sync (or on the next /admin/migrate), provisioning the current SyncScope
+// from scratch, so existing sync tokens stay valid and nothing needs
+// re-provisioning in the registry. The schema-version registry is reset to 0 so
+// the next fleet rollout treats the tenant as behind and migrates it explicitly
+// rather than skipping it on a stale "already at target" record.
+//
+// Central data is NOT restored automatically. A branch's local scope still
+// holds its own watermark, so its next ordinary sync uploads nothing to the
+// fresh DB; each branch must be told to re-send (Force full resync + Mark
+// untracked rows on the branch's sync settings). The caller's UI is expected to
+// say so before confirming.
+func (s *Service) DropCentralDB(ctx context.Context, actor, tenantID string) (*DBDropResult, error) {
+	t, err := s.store.TenantByID(ctx, tenantID)
+	if err != nil {
+		return nil, err
+	}
+	if t.DBName == "" || t.ShardID == "" {
+		return nil, ErrNotSubscribed
+	}
+	shard, err := s.store.ShardByID(ctx, t.ShardID)
+	if err != nil {
+		return nil, fmt.Errorf("resolve shard: %w", err)
+	}
+	if err := s.dropCentralDB(ctx, shard.GatewayURL, t.DBName); err != nil {
+		return nil, &GatewayError{fmt.Errorf("drop central db: %w", err)}
+	}
+
+	now := time.Now().UTC()
+	// Best effort: the DB is already gone, and a stale registry version only
+	// costs one skipped tenant on the next rollout — not worth failing on.
+	_ = s.store.UpdateTenantSchema(ctx, tenantID, 0, model.RolloutIdle, "", 0, now)
+
+	_ = s.store.InsertAudit(ctx, &model.AuditLog{
+		ID:     idgen.New("aud"),
+		Actor:  actor,
+		Action: "drop_tenant_db",
+		Target: tenantID,
+		Meta: map[string]any{
+			"db_name":  t.DBName,
+			"shard_id": t.ShardID,
+		},
+		CreatedAt: now,
+	})
+
+	return &DBDropResult{TenantID: tenantID, DBName: t.DBName, Dropped: true}, nil
 }
 
 // dropCentralDB asks the gateway to drop a tenant's central DB (the teardown
