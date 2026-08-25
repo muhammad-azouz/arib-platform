@@ -10,18 +10,30 @@ import {
   useBundle,
   useCatalogGroups,
   useCreateOrder,
+  useCustomer,
   useCustomers,
+  useDeliveryFee,
   useMe,
   useOrderAvailability,
 } from '@/lib/hooks'
 import { toArabicDigits } from '@/lib/format'
-import { ORDER_MODE, type OrderAvailabilityLine, type OrderModeValue, type OrderShortfall } from '@/lib/types'
+import {
+  ORDER_MODE,
+  type DeliveryFeeSource,
+  type OrderAvailabilityLine,
+  type OrderModeValue,
+  type OrderShortfall,
+} from '@/lib/types'
 import { PageHeader } from '@/components/PageHeader'
 import { GroupDrill } from '@/components/GroupDrill'
 import { BranchSelector } from '@/components/orders/BranchSelector'
 import { ProductGrid } from '@/components/orders/ProductGrid'
 import { OrderCart, type CartLine } from '@/components/orders/OrderCart'
-import { DangerIcon, SearchIcon, UsersIcon, ZenCollapseIcon, ZenExpandIcon } from '@/components/icon'
+import {
+  QuickAddCustomerDialog,
+  type QuickAddCustomer,
+} from '@/components/orders/QuickAddCustomerDialog'
+import { AddIcon, DangerIcon, SearchIcon, UsersIcon, ZenCollapseIcon, ZenExpandIcon } from '@/components/icon'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -30,6 +42,19 @@ interface SelectedCustomer {
   id: string
   name: string
   phone1: string
+  // T97: captured from the CustomerRow at pick time (no extra request) —
+  // lets a branch switch detect a stranded customer without a detail fetch.
+  branchId: string
+}
+
+// T3b (plan OQ1): mirrors the desktop's own DeliveryFeeSource wording
+// one-to-one — 'None' gets no hint, the fee is 0 because nothing is priced,
+// not because someone priced it at zero.
+const DELIVERY_FEE_SOURCE_LABEL: Record<DeliveryFeeSource, string | undefined> = {
+  Customer: 'خاص بالعميل',
+  Zone: 'تعريفة المنطقة',
+  BranchDefault: 'افتراضي الفرع',
+  None: undefined,
 }
 
 export function NewOrder() {
@@ -55,32 +80,43 @@ export function NewOrder() {
   const groupsQuery = useCatalogGroups(tenantId)
 
   const [cart, setCart] = useState<CartLine[]>([])
-  const [mode, setMode] = useState<OrderModeValue>(ORDER_MODE.Pickup)
+  // T96 (spec "mode is the delivery signal"): a fixed constant, never
+  // inferred from the customer record — HQ call-centre orders are deliveries
+  // by default, pickup is the deliberate exception the operator opts into.
+  const [mode, setMode] = useState<OrderModeValue>(ORDER_MODE.Delivery)
   const [contactAddress, setContactAddress] = useState('')
   const [deliveryFee, setDeliveryFee] = useState('')
   const [note, setNote] = useState('')
   const [zen, setZen] = useState(false)
   const [shortfalls, setShortfalls] = useState<OrderShortfall[]>([])
+  // T100: whether QuickAddCustomerDialog is open — declared up here so the
+  // zen Esc guard below can read it.
+  const [quickAddOpen, setQuickAddOpen] = useState(false)
 
   // Esc exits zen mode; body scroll is locked while it's open (the workspace
   // portals fullscreen, so the page behind it must not also scroll).
+  // T100: the handler bails while the quick-add dialog is open — Radix
+  // closes the dialog on its own `document` listener first (nothing calls
+  // stopPropagation), so without this guard the same Esc press would also
+  // exit zen mode; `quickAddOpen` in the deps keeps the closure current.
   useEffect(() => {
     if (!zen) return
     const prevOverflow = document.body.style.overflow
     document.body.style.overflow = 'hidden'
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') setZen(false)
+      if (e.key === 'Escape' && !quickAddOpen) setZen(false)
     }
     window.addEventListener('keydown', onKey)
     return () => {
       document.body.style.overflow = prevOverflow
       window.removeEventListener('keydown', onKey)
     }
-  }, [zen])
+  }, [zen, quickAddOpen])
 
   // --- customer picker (inline combobox, T21's "top bar carries the
-  // customer picker" — no separate CreateCustomerDialog affordance here,
-  // out of this task's Files/Acceptance scope; pick an existing customer) ---
+  // customer picker"; T100 adds an in-picker «عميل جديد» affordance —
+  // QuickAddCustomerDialog, not CreateCustomerDialog, which stays the
+  // Customers page's own full-form/navigate-to-profile path) ---
   const [customer, setCustomer] = useState<SelectedCustomer | null>(null)
   const [customerOpen, setCustomerOpen] = useState(false)
   const [customerSearch, setCustomerSearch] = useState('')
@@ -101,11 +137,94 @@ export function NewOrder() {
     return () => document.removeEventListener('mousedown', onMouseDown)
   }, [customerOpen])
 
-  const customersQuery = useCustomers(customerOpen ? tenantId : undefined, {
+  // T97: scoped to the order's branch (user decision — no cross-branch
+  // orders), so there's no "list" to show until a branch is picked.
+  const customersQuery = useCustomers(customerOpen && branchId ? tenantId : undefined, {
     search: debouncedCustomerSearch || undefined,
+    branchId,
     page: 1,
     pageSize: 8,
   })
+
+  // T100: seeded from the raw (non-debounced) search text so the dialog
+  // opens with whatever the operator already typed — digits read as a
+  // phone number, anything else as a name.
+  const trimmedCustomerSearch = customerSearch.trim()
+  const customerSearchIsDigits = trimmedCustomerSearch !== '' && /^\d+$/.test(trimmedCustomerSearch)
+  const quickAddDefaultName =
+    trimmedCustomerSearch && !customerSearchIsDigits ? trimmedCustomerSearch : undefined
+  const quickAddDefaultPhone1 =
+    trimmedCustomerSearch && customerSearchIsDigits ? trimmedCustomerSearch : undefined
+  const branchName = bundle?.Branches?.find((b) => b.ID === branchId)?.Name ?? ''
+
+  const openQuickAdd = () => {
+    if (!branchId) return
+    setCustomerOpen(false)
+    setQuickAddOpen(true)
+  }
+
+  // Selecting the new customer re-arms the T98 address auto-fill on its own
+  // (the customer-id change is what re-arms it), so setting contactAddress
+  // here is enough — no separate "skip the fetch" flag needed.
+  const onQuickAddCreated = (created: QuickAddCustomer) => {
+    setCustomer({ id: created.id, name: created.name, phone1: created.phone1, branchId: created.branchId })
+    setContactAddress(created.address)
+    setCustomerSearch('')
+  }
+
+  // --- delivery fee auto-fill (T3b, plan OQ1) — mirrors the desktop's own
+  // OnCustomerChanged/OnIsDeliveryChanged: any manual edit clears "auto" and
+  // the field is left alone from then on; a new branch, a new customer, or
+  // re-entering delivery mode always resolves fresh and overwrites it, the
+  // same way the desktop never lets a stale number silently follow a switch.
+  // The resolved value is never stored in state — it's computed at render
+  // time from the query result, same "adjust state, don't duplicate it"
+  // shape as React's own guidance for deriving from a changed prop. ---
+  const isDelivery = mode === ORDER_MODE.Delivery
+  const deliveryFeeQuery = useDeliveryFee(tenantId, branchId, customer?.id, isDelivery)
+
+  const deliveryContextKey = `${branchId ?? ''}:${customer?.id ?? ''}:${isDelivery}`
+  const [deliveryFeeAuto, setDeliveryFeeAuto] = useState(true)
+  const [lastDeliveryContextKey, setLastDeliveryContextKey] = useState(deliveryContextKey)
+  if (deliveryContextKey !== lastDeliveryContextKey) {
+    setLastDeliveryContextKey(deliveryContextKey)
+    setDeliveryFeeAuto(true)
+  }
+
+  const resolvedDeliveryFee =
+    isDelivery && deliveryFeeQuery.data ? String(deliveryFeeQuery.data.data.fee) : undefined
+  const displayedDeliveryFee =
+    deliveryFeeAuto && resolvedDeliveryFee !== undefined ? resolvedDeliveryFee : deliveryFee
+  const onDeliveryFeeChange = (value: string) => {
+    setDeliveryFee(value)
+    setDeliveryFeeAuto(false)
+  }
+  const deliveryFeeHint =
+    deliveryFeeAuto && isDelivery && deliveryFeeQuery.data
+      ? DELIVERY_FEE_SOURCE_LABEL[deliveryFeeQuery.data.data.source]
+      : undefined
+
+  // --- delivery address auto-fill (T98) — mirrors the T3b contract above
+  // one-to-one, but re-arms on the customer id alone (spec's Auto-fill
+  // contract): an order's contact_address is a per-order snapshot, so the
+  // profile address is a starting point, never the source of truth. Gated
+  // to delivery + a selected customer so pickup mode never fires the call. ---
+  const customerQuery = useCustomer(tenantId, isDelivery ? customer?.id : undefined)
+
+  const [addressAuto, setAddressAuto] = useState(true)
+  const [lastCustomerKey, setLastCustomerKey] = useState(customer?.id ?? '')
+  if ((customer?.id ?? '') !== lastCustomerKey) {
+    setLastCustomerKey(customer?.id ?? '')
+    setAddressAuto(true)
+  }
+
+  const resolvedAddress = customerQuery.data?.data.address ?? undefined
+  const displayedAddress = addressAuto && resolvedAddress ? resolvedAddress : contactAddress
+  const onContactAddressChange = (value: string) => {
+    setContactAddress(value)
+    setAddressAuto(false)
+  }
+  const contactAddressHint = addressAuto && resolvedAddress ? 'عنوان العميل' : undefined
 
   // --- cart mutation helpers ---
   // Resolved lazily on add: the product-list read (ProductGrid) only carries
@@ -189,20 +308,29 @@ export function NewOrder() {
       meQuery.data.account.Email
     : ''
 
+  // T97 (spec OQ1 — no cross-branch orders): a branch switch keeps the
+  // selected customer (never silently dropped) but the order can't be saved
+  // until either the branch or the customer changes back into agreement.
+  const customerBranchMismatch = !!customer && !!branchId && customer.branchId !== branchId
+
   const saveBlockedReason = !branchId
     ? 'اختر الفرع'
     : !customer
       ? 'اختر العميل'
       : cart.length === 0
         ? 'أضف صنفًا واحدًا على الأقل'
-        : undefined
+        : customerBranchMismatch
+          ? 'اختر عميلًا من هذا الفرع'
+          // T98's one real trap: displayedAddress, never contactAddress — a
+          // prefilled-but-untouched address lives only in the derived value.
+          : isDelivery && !displayedAddress.trim()
+            ? 'عنوان التوصيل مطلوب'
+            : undefined
 
   const save = async () => {
     if (!tenantId || !branchId || !customer || cart.length === 0) return
-    if (mode === ORDER_MODE.Delivery && !contactAddress.trim()) {
-      toast.error('عنوان التوصيل مطلوب')
-      return
-    }
+    if (customerBranchMismatch) return
+    if (isDelivery && !displayedAddress.trim()) return
     setShortfalls([])
     try {
       const result = await createOrder.mutateAsync({
@@ -210,9 +338,13 @@ export function NewOrder() {
         partner_id: customer.id,
         created_by_name: createdByName,
         mode,
-        contact_address: mode === ORDER_MODE.Delivery ? contactAddress.trim() : undefined,
-        delivery_fee:
-          mode === ORDER_MODE.Delivery && deliveryFee ? Number(deliveryFee) || 0 : undefined,
+        contact_address: isDelivery ? displayedAddress.trim() : undefined,
+        // Sends undefined only when the operator cleared an empty field by
+        // hand — the auto-fill above means displayedDeliveryFee is already
+        // the resolved number by the time a delivery order is saveable, so
+        // the gateway's own T3b fallback (input.DeliveryFee is null) is a
+        // backstop for a slow/failed preview call, not the common path.
+        delivery_fee: isDelivery && displayedDeliveryFee ? Number(displayedDeliveryFee) || 0 : undefined,
         note: note.trim() || undefined,
         lines: cart.map((l) => ({
           product_id: l.productId,
@@ -250,42 +382,83 @@ export function NewOrder() {
         </button>
         {customerOpen && (
           <div className="absolute start-0 top-full z-20 mt-1 w-80 rounded-lg border border-border bg-popover p-2 shadow-2xl">
-            <div className="relative mb-2">
-              <SearchIcon className="pointer-events-none absolute start-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
-              <Input
-                autoFocus
-                value={customerSearch}
-                onChange={(e) => setCustomerSearch(e.target.value)}
-                placeholder="ابحث بالاسم أو الهاتف"
-                className="h-8 ps-9 text-sm"
-              />
-            </div>
-            <div className="max-h-64 overflow-y-auto">
-              {customersQuery.isLoading ? (
-                <p className="px-2 py-4 text-center text-xs text-muted-foreground">جارٍ البحث…</p>
-              ) : (customersQuery.data?.data.items.length ?? 0) === 0 ? (
-                <p className="px-2 py-4 text-center text-xs text-muted-foreground">لا نتائج مطابقة</p>
-              ) : (
-                customersQuery.data?.data.items.map((c) => (
-                  <button
-                    key={c.id}
-                    type="button"
-                    onClick={() => {
-                      setCustomer({ id: c.id, name: c.name, phone1: c.phone1 })
-                      setCustomerOpen(false)
-                      setCustomerSearch('')
-                    }}
-                    className="flex w-full items-center justify-between gap-2 rounded-md px-2.5 py-1.5 text-start text-sm hover:bg-accent"
-                  >
-                    <span className="min-w-0 flex-1 truncate">{c.name}</span>
-                    <span className="dir-ltr shrink-0 text-xs text-muted-foreground">{c.phone1}</span>
-                  </button>
-                ))
-              )}
+            {!branchId ? (
+              <p className="px-2 py-4 text-center text-xs text-muted-foreground">
+                اختر الفرع أولًا لعرض عملائه
+              </p>
+            ) : (
+              <>
+                <div className="relative mb-2">
+                  <SearchIcon className="pointer-events-none absolute start-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
+                  <Input
+                    autoFocus
+                    value={customerSearch}
+                    onChange={(e) => setCustomerSearch(e.target.value)}
+                    placeholder="ابحث بالاسم أو الهاتف"
+                    className="h-8 ps-9 text-sm"
+                  />
+                </div>
+                <div className="max-h-64 overflow-y-auto">
+                  {customersQuery.isLoading ? (
+                    <p className="px-2 py-4 text-center text-xs text-muted-foreground">جارٍ البحث…</p>
+                  ) : (customersQuery.data?.data.items.length ?? 0) === 0 ? (
+                    <div className="space-y-2 px-2 py-4 text-center">
+                      <p className="text-xs text-muted-foreground">لا نتائج مطابقة</p>
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        className="gap-1.5"
+                        onClick={openQuickAdd}
+                      >
+                        <AddIcon className="size-4" />
+                        إنشاء عميل جديد
+                      </Button>
+                    </div>
+                  ) : (
+                    customersQuery.data?.data.items.map((c) => (
+                      <button
+                        key={c.id}
+                        type="button"
+                        onClick={() => {
+                          setCustomer({ id: c.id, name: c.name, phone1: c.phone1, branchId: c.branch_id })
+                          setCustomerOpen(false)
+                          setCustomerSearch('')
+                        }}
+                        className="flex w-full items-center justify-between gap-2 rounded-md px-2.5 py-1.5 text-start text-sm hover:bg-accent"
+                      >
+                        <span className="min-w-0 flex-1 truncate">{c.name}</span>
+                        <span className="dir-ltr shrink-0 text-xs text-muted-foreground">{c.phone1}</span>
+                      </button>
+                    ))
+                  )}
+                </div>
+              </>
+            )}
+            <div className="mt-2 border-t border-border pt-2">
+              <Button
+                type="button"
+                variant="ghost"
+                size="sm"
+                className="w-full justify-center gap-1.5"
+                disabled={!branchId}
+                title={!branchId ? 'اختر الفرع أولًا لعرض عملائه' : undefined}
+                onClick={openQuickAdd}
+              >
+                <AddIcon className="size-4" />
+                عميل جديد
+              </Button>
             </div>
           </div>
         )}
       </div>
+
+      {customerBranchMismatch && (
+        <Badge tone="warning" className="gap-1.5">
+          <DangerIcon className="size-3.5" />
+          العميل مسجّل في فرع آخر
+        </Badge>
+      )}
 
       <BranchSelector branches={bundle.Branches ?? []} value={branchId} onChange={onBranchChange} />
 
@@ -325,6 +498,22 @@ export function NewOrder() {
     </div>
   )
 
+  // T100: rendered in both the zen and normal trees (Radix portals it to
+  // `document.body` regardless), mounted only with a real branchId — the
+  // footer/empty-state buttons that open it are already disabled without one.
+  const quickAddDialog = branchId && (
+    <QuickAddCustomerDialog
+      tenantId={tenantId as string}
+      open={quickAddOpen}
+      onOpenChange={setQuickAddOpen}
+      branchId={branchId}
+      branchName={branchName}
+      defaultName={quickAddDefaultName}
+      defaultPhone1={quickAddDefaultPhone1}
+      onCreated={onQuickAddCreated}
+    />
+  )
+
   const workspace = (
     <div
       className="grid h-full min-h-0 flex-1 gap-4"
@@ -349,10 +538,12 @@ export function NewOrder() {
           hasBranch={!!branchId}
           mode={mode}
           onModeChange={setMode}
-          contactAddress={contactAddress}
-          onContactAddressChange={setContactAddress}
-          deliveryFee={deliveryFee}
-          onDeliveryFeeChange={setDeliveryFee}
+          contactAddress={displayedAddress}
+          onContactAddressChange={onContactAddressChange}
+          contactAddressHint={contactAddressHint}
+          deliveryFee={displayedDeliveryFee}
+          onDeliveryFeeChange={onDeliveryFeeChange}
+          deliveryFeeHint={deliveryFeeHint}
           note={note}
           onNoteChange={setNote}
           onQtyChange={updateQty}
@@ -376,6 +567,7 @@ export function NewOrder() {
         {topBar}
         {shortfallBanner}
         {workspace}
+        {quickAddDialog}
       </div>,
       document.body,
     )
@@ -396,6 +588,7 @@ export function NewOrder() {
       {topBar}
       {shortfallBanner}
       <div className="h-[70vh]">{workspace}</div>
+      {quickAddDialog}
     </div>
   )
 }

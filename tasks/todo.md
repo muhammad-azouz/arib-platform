@@ -1067,3 +1067,77 @@ Interaction locked with owner (2026-08-10): group with children = one click dril
   - [ ] `package.json` unchanged — no animation library added
   - [ ] Spec open Q1 (direct-only parent counts) and Q2 (column max-height) resolved or explicitly carried forward
   - [ ] **Human review — Phase 11 complete**
+
+## Phase 12 — New Order: inline customer create + address prefill
+
+Spec: `tasks/spec-order-customer.md` · Plan: `tasks/plan-order-customer.md`.
+Console-only: no API/gateway change, no new dependency, `lib/{types,api,query,hooks}.ts` untouched.
+
+- [~] **T96: Mode segmented control + توصيل default + address in `saveBlockedReason`** *(code complete; `pnpm build && pnpm lint` clean 2026-08-24 — manual spec-steps 1–4 pass pending)*
+  - **Description:** Replace `OrderCart.tsx`'s single on/off «توصيل» button with a two-option segmented control («استلام من الفرع» / «توصيل») under a «طريقة الاستلام» label, both states always visible and labelled. `NewOrder.tsx`'s `mode` initial state becomes `ORDER_MODE.Delivery` (user decision — HQ call-centre orders are deliveries; pickup is the deliberate exception), so the address + fee panel is open from first render. Move the missing-address check out of `save()`'s toast into the `saveBlockedReason` chain after branch/customer/cart; `save()` keeps a plain early return without the toast. Ownership is unchanged — `NewOrder` still owns `mode`, `OrderCart` still renders it.
+  - Acceptance:
+    - [x] A fresh order opens with «توصيل» selected and the address + delivery-fee panel expanded *(`mode` initial state is `ORDER_MODE.Delivery`; `OrderCart`'s panel renders on `isDelivery`)*
+    - [x] «استلام من الفرع» collapses the panel; the saved request body has **no** `contact_address`, and no address is required *(unchanged `contact_address: isDelivery ? … : undefined` gate; `saveBlockedReason`'s address branch is also gated on `isDelivery`)*
+    - [x] An address typed in delivery mode survives a pickup → delivery round-trip (kept in local state, not cleared) *(no code path clears `contactAddress` on a mode switch)*
+    - [x] Delivery mode with an empty address disables the save button with «عنوان التوصيل مطلوب» — no toast-on-click path remains *(moved into `saveBlockedReason`; `save()`'s guard is a plain early return, `toast.error` call removed)*
+    - [x] The mode default is a fixed constant — identical for a customer with a profile address and one without (never inferred from the customer record) *(`useState(ORDER_MODE.Delivery)` has no dependency on `customer`)*
+  - Verify: `pnpm build && pnpm lint` *(clean 2026-08-24)*; manual — spec §Testing Strategy steps 1–4 *(pending — no browser tooling available this session)*
+  - Files: `console/src/components/orders/OrderCart.tsx`, `console/src/pages/console/NewOrder.tsx`
+  - Dependencies: none · **Size: S**
+
+- [~] **T97: Branch-scoped customer picker + `SelectedCustomer.branchId` + cross-branch block** *(code complete; `pnpm build && pnpm lint` clean 2026-08-24 — manual spec-steps 5–6, 17–18 pass pending)*
+  - **Description:** Pass `branchId` into the picker's `useCustomers` call so it lists only the order branch's customers (user decision). With no branch selected, the popover shows «اختر الفرع أولًا لعرض عملائه» instead of an unscoped list. `SelectedCustomer` gains `branchId`, captured from the `CustomerRow` at pick time (`types.ts:696` already carries it — no extra request). If a branch switch strands the selected customer, keep them selected but show a warning badge «العميل مسجّل في فرع آخر» beside the picker and add «اختر عميلًا من هذا الفرع» to `saveBlockedReason` (spec OQ1: no cross-branch orders — the console refuses before the request rather than relying on the gateway's 400).
+  - Acceptance:
+    - [x] With a branch selected, the popover lists only that branch's customers; the search box still filters within it *(`useCustomers` now takes `branchId`, which is part of the `qk.customers` key, so switching branches refetches)*
+    - [x] With no branch selected, the popover shows the hint and no customer list *(popover renders the hint paragraph instead of the search+list block when `!branchId`; query itself is disabled)*
+    - [x] Switching to a branch the selected customer doesn't belong to shows the badge and blocks save with the stated reason — the cart, mode, note, and customer selection all survive *(`onBranchChange` only touches `branchId`/URL; `customerBranchMismatch` is derived, not stored)*
+    - [x] Switching back to the customer's own branch clears the badge and re-enables save *(mismatch is recomputed every render from `customer.branchId !== branchId`)*
+    - [x] Picking a replacement customer from the rescoped picker clears the badge *(the picker is already scoped to the current branch, so any pick sets `customer.branchId === branchId`)*
+  - Verify: `pnpm build && pnpm lint` *(clean 2026-08-24)*; manual — spec steps 5–6, 17–18 *(pending — no browser tooling available this session)*
+  - Files: `console/src/pages/console/NewOrder.tsx`
+  - Dependencies: none (sequence after T96 — same file) · **Size: S**
+
+- [~] **T98: Delivery address auto-fill from the customer's profile** *(code complete; `pnpm build && pnpm lint` clean 2026-08-24 — manual spec-steps 11–14, 16 pass pending)*
+  - **Description:** Mirror T3b's delivery-fee auto/manual contract for the address: `useCustomer(tenantId, customer?.id)` enabled only while a customer is selected **and** mode is Delivery; `addressAuto` re-armed by a `contextKey` of the customer id; `resolvedAddress` read off the query result; `displayedAddress` derived at render — never copied into state. Any manual edit sets `addressAuto = false` for good. `OrderCart` gains `contactAddressHint?: string`, rendered under the address input exactly like `deliveryFeeHint`, showing «عنوان العميل» while the value is still the resolved one.
+  - Acceptance:
+    - [x] Selecting a customer with a profile address fills the field and shows the «عنوان العميل» hint *(`displayedAddress`/`contactAddressHint` resolve from `customerQuery.data?.data.address` once loaded)*
+    - [x] Editing the field clears the hint, and no refetch, mode toggle, or re-render ever overwrites the edit *(`onContactAddressChange` sets `addressAuto = false` for good; the re-arm key is the customer id alone, not `isDelivery`, so a mode toggle never re-arms it)*
+    - [x] Selecting a different customer re-arms the auto-fill and overwrites the field *(`lastCustomerKey` tracks `customer?.id`; a change flips `addressAuto` back to `true`)*
+    - [x] A customer with no profile address leaves the field empty with no hint, and save stays blocked by T96's required-address reason *(`resolvedAddress` is `undefined` when `.data.address` is null/undefined, both hint and `displayedAddress` fall through to empty `contactAddress`)*
+    - [x] **`saveBlockedReason` and `save()` both read `displayedAddress`, not `contactAddress`** — a prefilled, untouched address saves successfully and arrives in the request body (plan §Architecture, the one real trap in this phase) *(both updated, plus the `contact_address` field in the `createOrder.mutateAsync` payload)*
+    - [x] No `useCustomer` request is made in pickup mode or with no customer selected *(`useCustomer(tenantId, isDelivery ? customer?.id : undefined)` — the hook's own `enabled: !!customerId` does the gating; `lib/hooks.ts` stays untouched)*
+  - Verify: `pnpm build && pnpm lint` *(clean 2026-08-24)*; manual — spec steps 11–14, 16, with the network tab open for the last criterion *(pending — no browser tooling available this session)*
+  - Files: `console/src/pages/console/NewOrder.tsx`, `console/src/components/orders/OrderCart.tsx`
+  - Dependencies: T96 · **Size: M**
+
+- [~] **T99: `QuickAddCustomerDialog` — four-field in-order create form** *(code complete; `pnpm build && pnpm lint` clean 2026-08-24 — new file has no importer yet, exercised end-to-end in T100)*
+  - **Description:** New leaf component `components/orders/QuickAddCustomerDialog.tsx`: الاسم\*, الهاتف\*, العنوان, الفرع. Same stack as its sibling (`Dialog` + `react-hook-form` + `zod`) and the same validation bounds (name ≤100, phone ≤12, address ≤200) so both forms reject the same input. The branch is **read-only**, rendered from a `branchName` prop — visible so the operator sees where the customer is registered, never editable (cross-branch orders are refused, so any other branch would produce a customer unusable for this order). Optional `defaultName`/`defaultPhone1` seeds. Submits through the existing `useCreateCustomer` with `group_id: undefined, credit_limit: 0`, then reports `{ id, name, phone1, address, branchId }` through `onCreated`. **Never navigates**, and `CreateCustomerDialog.tsx` is not touched.
+  - Acceptance:
+    - [x] Four fields in order, الاسم autofocused, الفرع displayed and not editable *(name/phone1/address/branch in that order; `autoFocus` on the name input; branch renders as a `disabled readOnly` `Input`)*
+    - [x] Name and phone are required with the same messages/bounds as `CreateCustomerDialog`'s schema; a failed create surfaces `errorMessage(err)` in a toast and leaves the dialog open with the form intact *(schema copied verbatim for these two fields; the `catch` block toasts and does not call `onOpenChange`/reset)*
+    - [x] Success fires `onCreated` with the created id plus the submitted name/phone/address and the branch id, and calls no navigation *(no `useNavigate` in the file)*
+    - [x] Reopening the dialog after a create or a cancel starts from empty fields (plus any seeds) *(`useEffect` resets the form to `{defaultName, defaultPhone1, ''}` on every `open` transition to `true`, since the dialog stays mounted across opens and RHF's `defaultValues` is a mount-time snapshot, not reactive to prop changes)*
+    - [x] `git diff --stat` shows `CreateCustomerDialog.tsx` unchanged *(verified — empty diff)*
+  - Verify: `pnpm build && pnpm lint` *(clean 2026-08-24)*; component is exercised end-to-end in T100
+  - Files: `console/src/components/orders/QuickAddCustomerDialog.tsx` (new)
+  - Dependencies: none (parallelizable with T96–T98) · **Size: M**
+
+- [~] **T100: Wire the quick-add into the customer picker + zen-mode guards** *(code complete; `pnpm build && pnpm lint` clean 2026-08-24 — manual spec-steps 7–10, 15 pass pending)*
+  - **Description:** Add «عميل جديد» to the picker popover (footer button, plus a seeded «إنشاء عميل جديد» in the no-results empty state — digits in the search box seed the phone, anything else seeds the name). Disabled with the «اختر الفرع أولًا» hint while no branch is selected, since the customer must be created at the order's branch. Opening it closes the popover and mounts `QuickAddCustomerDialog` with the order's `branchId`/`branchName`. On success: select the new customer (including its `branchId`), seed `contactAddress` from the submitted address with the auto flag still armed so no detail fetch is needed, toast, close — **no navigation**. Zen guards: the zen `Escape` handler bails while the dialog is open, and the dialog is confirmed to paint above the zen overlay (spec OQ3 — fallback, decided in advance: drop the zen container to `z-40`, never bump the shared dialog primitive).
+  - Acceptance:
+    - [x] The create affordance appears in the popover footer and in the no-results empty state, seeded from the search text (digits → phone, otherwise → name) *(footer `Button` always renders when the popover is open; the no-results block adds a second seeded button; both share `quickAddDefaultName`/`quickAddDefaultPhone1`, derived from the raw `customerSearch` via `/^\d+$/`)*
+    - [x] With no branch selected, the affordance is disabled and says why *(footer button `disabled={!branchId}` with a `title` repeating the popover's own «اختر الفرع أولًا لعرض عملائه» hint)*
+    - [x] Creating selects the new customer, fills the delivery address from the submitted address, keeps the cart/branch/mode/note untouched, and leaves the URL unchanged *(`onQuickAddCreated` only calls `setCustomer`/`setContactAddress`/`setCustomerSearch('')`; no navigation, no other state touched)*
+    - [x] Cancelling or a failed create leaves the previously selected customer and every other field exactly as they were *(cancel only calls `onOpenChange(false)`; a failed create's `catch` in `QuickAddCustomerDialog` toasts and never calls `onCreated`)*
+    - [~] In zen mode the dialog paints above the overlay; `Esc` closes only the dialog, and a second `Esc` exits zen *(zen's keydown handler now bails while `quickAddOpen` is true, with `quickAddOpen` in the effect's deps to keep the closure current; the paint-order claim relies on Radix's dialog portal mounting into `document.body` after the zen portal, both `z-50` — untestable without a browser this session, so the `z-40` fallback was **not** applied preemptively per the plan's "verify first" note)*
+  - Verify: `pnpm build && pnpm lint` *(clean 2026-08-24)*; manual — spec steps 7–10, 15 *(pending — no browser tooling available this session)*
+  - Files: `console/src/pages/console/NewOrder.tsx`
+  - Dependencies: T97, T98, T99 · **Size: M**
+
+- [ ] **Checkpoint 12a — Phase 12 complete**
+  - [ ] `pnpm build && pnpm lint` clean, no new warnings beyond the two pre-existing `auth.tsx` react-refresh ones
+  - [ ] Full 19-step manual checklist in spec §Testing Strategy passes on a tenant with ≥2 branches, customers on each, and at least one customer with a profile address and one without
+  - [ ] Regression: Customers page «عميل جديد» still opens the full form and still navigates to the new profile; `git diff --stat` shows `CreateCustomerDialog.tsx` untouched
+  - [ ] `package.json` unchanged; `lib/{types,api,query,hooks}.ts` unchanged
+  - [ ] Spec OQ3 (dialog stacking) settled; OQ4 (detail-fetch cost) resolved or explicitly carried forward
+  - [ ] **Human review — Phase 12 complete**

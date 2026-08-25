@@ -2,7 +2,7 @@ import { useState } from 'react'
 import type { OrderAvailabilityLine, OrderModeValue } from '@/lib/types'
 import { ORDER_MODE } from '@/lib/types'
 import { toArabicDigits } from '@/lib/format'
-import { CartIcon, DeliveryModeIcon, NotesIcon } from '@/components/icon'
+import { BranchIcon, CartIcon, DeliveryModeIcon, NotesIcon } from '@/components/icon'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -40,8 +40,10 @@ export function OrderCart({
   onModeChange,
   contactAddress,
   onContactAddressChange,
+  contactAddressHint,
   deliveryFee,
   onDeliveryFeeChange,
+  deliveryFeeHint,
   note,
   onNoteChange,
   onQtyChange,
@@ -55,8 +57,15 @@ export function OrderCart({
   onModeChange: (mode: OrderModeValue) => void
   contactAddress: string
   onContactAddressChange: (value: string) => void
+  // T98: mirrors deliveryFeeHint one-to-one — shown only while the field
+  // still holds the resolved profile address; a manual edit clears it.
+  contactAddressHint?: string
   deliveryFee: string
   onDeliveryFeeChange: (value: string) => void
+  // T3b: which of the three layers produced the current number — shown
+  // only while it's still the resolved value; a manual edit clears it (the
+  // page owns that decision, this component only renders whatever it's given).
+  deliveryFeeHint?: string
   note: string
   onNoteChange: (value: string) => void
   onQtyChange: (productId: string, unitId: string, qty: number) => void
@@ -76,22 +85,37 @@ export function OrderCart({
         </Badge>
       </div>
 
-      <div className="flex items-center gap-2 border-b border-border px-4 py-2.5">
-        <Button
-          type="button"
-          variant={isDelivery ? 'default' : 'outline'}
-          size="sm"
-          className="gap-1.5"
-          onClick={() => onModeChange(isDelivery ? ORDER_MODE.Pickup : ORDER_MODE.Delivery)}
-        >
-          <DeliveryModeIcon className="size-4" />
-          توصيل
-        </Button>
+      <div className="flex flex-wrap items-center gap-3 border-b border-border px-4 py-2.5">
+        <div className="flex items-center gap-2">
+          <Label className="text-xs">طريقة الاستلام</Label>
+          <div className="flex gap-1">
+            <Button
+              type="button"
+              variant={isDelivery ? 'outline' : 'default'}
+              size="sm"
+              className="gap-1.5"
+              onClick={() => onModeChange(ORDER_MODE.Pickup)}
+            >
+              <BranchIcon className="size-4" />
+              استلام من الفرع
+            </Button>
+            <Button
+              type="button"
+              variant={isDelivery ? 'default' : 'outline'}
+              size="sm"
+              className="gap-1.5"
+              onClick={() => onModeChange(ORDER_MODE.Delivery)}
+            >
+              <DeliveryModeIcon className="size-4" />
+              توصيل
+            </Button>
+          </div>
+        </div>
         <Button
           type="button"
           variant={notesOpen || note ? 'default' : 'outline'}
           size="sm"
-          className="gap-1.5"
+          className="gap-1.5 ms-auto"
           onClick={() => setNotesOpen((v) => !v)}
         >
           <NotesIcon className="size-4" />
@@ -112,6 +136,9 @@ export function OrderCart({
               placeholder="العنوان بالتفصيل"
               className="h-8 text-sm"
             />
+            {contactAddressHint && (
+              <p className="text-xs text-muted-foreground">{contactAddressHint}</p>
+            )}
           </div>
           <div className="space-y-1">
             <Label htmlFor="cart-delivery-fee" className="text-xs">
@@ -127,6 +154,9 @@ export function OrderCart({
               value={deliveryFee}
               onChange={(e) => onDeliveryFeeChange(e.target.value)}
             />
+            {deliveryFeeHint && (
+              <p className="text-xs text-muted-foreground">{deliveryFeeHint}</p>
+            )}
           </div>
         </div>
       )}
