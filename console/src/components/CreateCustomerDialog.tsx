@@ -4,6 +4,7 @@ import { z } from 'zod'
 import { toast } from 'sonner'
 import { useNavigate } from 'react-router-dom'
 import { errorMessage } from '@/lib/auth'
+import { findDuplicateCustomerName } from '@/lib/customers'
 import { useBundle, useCreateCustomer, useCustomerGroups } from '@/lib/hooks'
 import { Button } from '@/components/ui/button'
 import {
@@ -63,6 +64,14 @@ export function CreateCustomerDialog({
 
   const submit = form.handleSubmit(async (values) => {
     try {
+      // Same duplicate-name guard as QuickAddCustomerDialog (New Order's
+      // in-picker create) — scoped to the branch just chosen in this form,
+      // checked at submit time so it works with whatever branch ends up picked.
+      if (await findDuplicateCustomerName(tenantId, values.branchId, values.name)) {
+        form.setError('name', { message: 'يوجد عميل بهذا الاسم في هذا الفرع بالفعل' })
+        return
+      }
+      form.clearErrors('name')
       const result = await create.mutateAsync({
         name: values.name,
         phone1: values.phone1,
