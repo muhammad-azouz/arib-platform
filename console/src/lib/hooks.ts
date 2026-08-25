@@ -812,6 +812,24 @@ export function useOrderAvailability(
 }
 
 /**
+ * T3b (plan OQ1): preview the delivery fee a save would resolve to for one
+ * branch/customer pair. `enabled` requires both plus delivery mode — a
+ * pickup order or an unpicked branch/customer issues zero requests.
+ */
+export function useDeliveryFee(
+  tenantId: string | undefined,
+  branchId: string | undefined,
+  partnerId: string | undefined,
+  enabled: boolean,
+) {
+  return useQuery({
+    queryKey: qk.deliveryFee(tenantId ?? '', branchId ?? '', partnerId ?? ''),
+    queryFn: () => api.deliveryFee(tenantId as string, branchId as string, partnerId as string),
+    enabled: enabled && !!tenantId && !!branchId && !!partnerId,
+  })
+}
+
+/**
  * Create an order (T16, D9's only write path). On success, invalidates
  * every `hq-orders` list query for this tenant so the board/list picks up
  * the new row the moment it's next visited — same pattern as

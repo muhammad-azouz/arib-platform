@@ -127,6 +127,44 @@ func TestOrderAvailability_PassesBranchAndProductIDs(t *testing.T) {
 	}
 }
 
+func TestDeliveryFee_PassesParamsAndDecodesResolution(t *testing.T) {
+	var gotQuery url.Values
+	gw := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotQuery = r.URL.Query()
+		if r.URL.Path != "/hq/orders/delivery-fee" {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"fee":25.5,"source":"Zone"}`))
+	}))
+	defer gw.Close()
+
+	s := New(testStore(gw.URL), &fakeTokens{}, nil)
+	env, err := s.DeliveryFee(context.Background(), "acc_owner", "tnt_1", "b1", "p1")
+	if err != nil {
+		t.Fatalf("delivery fee: %v", err)
+	}
+	if gotQuery.Get("branch_id") != "b1" || gotQuery.Get("partner_id") != "p1" {
+		t.Fatalf("gateway did not see branch_id/partner_id params: %v", gotQuery)
+	}
+	if env.Data.Fee != 25.5 || env.Data.Source != "Zone" {
+		t.Fatalf("delivery fee resolution wrong: %+v", env.Data)
+	}
+}
+
+func TestDeliveryFee_NotFound(t *testing.T) {
+	gw := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer gw.Close()
+
+	s := New(testStore(gw.URL), &fakeTokens{}, nil)
+	if _, err := s.DeliveryFee(context.Background(), "acc_owner", "tnt_1", "b1", "does-not-exist"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("expected ErrNotFound, got %v", err)
+	}
+}
+
 func TestCreateOrder_ForwardsAndReturnsResult(t *testing.T) {
 	var gotMethod string
 	var gotBody NewOrder

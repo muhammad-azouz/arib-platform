@@ -24,6 +24,7 @@ import type {
   CustomerLedgerResponse,
   CustomerPurchasesResponse,
   CustomersResponse,
+  DeliveryFeeResponse,
   HqBranchesResponse,
   ImportCustomersResult,
   ImportSuppliersResult,
@@ -821,6 +822,15 @@ export const api = {
     )
   },
 
+  // T3b (plan OQ1): preview the fee a save would resolve to for this
+  // branch/customer, so the screen can show it before the operator saves.
+  deliveryFee: (tenantId: string, branchId: string, partnerId: string) => {
+    const q = new URLSearchParams({ branch_id: branchId, partner_id: partnerId })
+    return request<DeliveryFeeResponse>(
+      `/v1/tenants/${tenantId}/hq/orders/delivery-fee?${q.toString()}`,
+    )
+  },
+
   // T21: create an order (T16, D9's only write path). Bypasses the generic
   // `request()` helper because a D16 refusal (409) carries a structured
   // `shortfalls` list, not just an `error` string — every other write in
@@ -870,3 +880,4 @@ export const api = {
   eventsUrl: (tenantId: string) =>
     `${BASE}/v1/tenants/${tenantId}/events?access_token=${encodeURIComponent(accessToken ?? '')}`,
 }
+

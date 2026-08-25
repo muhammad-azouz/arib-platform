@@ -1075,6 +1075,20 @@ export interface OrderAvailability {
 
 export type OrderAvailabilityResponse = CatalogEnvelope<OrderAvailability>
 
+// GET /v1/tenants/{id}/hq/orders/delivery-fee (T3b, plan OQ1) — a preview of
+// the fee POST /hq/orders would resolve for this branch/customer, so the
+// screen can show the number before the operator saves rather than only
+// after. "Customer" | "Zone" | "BranchDefault" | "None" mirror the desktop's
+// own DeliveryFeeSource one-to-one — surfaced as the hint next to the field.
+export type DeliveryFeeSource = 'Customer' | 'Zone' | 'BranchDefault' | 'None'
+
+export interface DeliveryFeeResolution {
+  fee: number
+  source: DeliveryFeeSource
+}
+
+export type DeliveryFeeResponse = CatalogEnvelope<DeliveryFeeResolution>
+
 // POST /v1/tenants/{id}/hq/orders (T16) — HQ's only write path into a
 // tenant's orders (D9). No discount field anywhere: D2's Order schema
 // carries none, unlike Invoice's ~30 money columns.

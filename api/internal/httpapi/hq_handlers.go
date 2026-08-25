@@ -1088,6 +1088,26 @@ func (s *Server) handleHqOrderAvailability(w http.ResponseWriter, r *http.Reques
 	writeJSON(w, http.StatusOK, env)
 }
 
+// handleHqDeliveryFeePreview (T3b, plan OQ1) previews the fee a create
+// would land on, so the console can show the resolved number before the
+// operator saves it. Read-only — never creates the branch-local customer
+// clone a save would.
+func (s *Server) handleHqDeliveryFeePreview(w http.ResponseWriter, r *http.Request) {
+	branchID := r.URL.Query().Get("branch_id")
+	partnerID := r.URL.Query().Get("partner_id")
+	if branchID == "" || partnerID == "" {
+		writeErr(w, http.StatusBadRequest, "branch_id and partner_id are required")
+		return
+	}
+	c := claimsFrom(r.Context())
+	env, err := s.hq.DeliveryFee(r.Context(), c.Subject, chi.URLParam(r, "id"), branchID, partnerID)
+	if err != nil {
+		s.writeHqError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, env)
+}
+
 // handleHqOrderCreate is HQ's only write path into a tenant's orders (T16,
 // D9). CreatedByName is the console operator's own name, a plain string
 // carried on the row — no user FK, unlike the gateway's own anchor Users

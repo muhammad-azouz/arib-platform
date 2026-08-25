@@ -153,4 +153,8 @@ export const qk = {
   // invalidation should ever touch.
   orderAvailability: (id: string, branchId: string, productIds: string[]) =>
     ['order-availability', id, branchId, productIds] as const,
+  // T3b: same reasoning as orderAvailability above — a live per-branch/
+  // customer preview for the order being built, not part of 'hq-orders'.
+  deliveryFee: (id: string, branchId: string, partnerId: string) =>
+    ['delivery-fee', id, branchId, partnerId] as const,
 }

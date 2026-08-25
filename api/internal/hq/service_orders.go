@@ -78,6 +78,46 @@ func (s *Service) OrderAvailability(ctx context.Context, accountID, tenantID, br
 	return &OrderAvailabilityEnvelope{Data: resp, Source: source, AsOf: asOf}, nil
 }
 
+// --- read: delivery fee preview (T3b, plan OQ1) ---
+
+// DeliveryFeeResolution is the fee the gateway's three-layer rule (customer
+// override > zone tariff > branch default) resolves to for one branch/
+// customer pair, and which layer produced it — surfaced to the console as a
+// hint next to the prefilled number, same idea as the desktop's own
+// DeliveryFeeSource.
+type DeliveryFeeResolution struct {
+	Fee    float64 `json:"fee"`
+	Source string  `json:"source"`
+}
+
+// DeliveryFeeEnvelope wraps the resolution in the freshness envelope, same
+// as every other read in this package.
+type DeliveryFeeEnvelope struct {
+	Data   DeliveryFeeResolution `json:"data"`
+	Source string                `json:"source"`
+	AsOf   *time.Time            `json:"as_of,omitempty"`
+}
+
+// DeliveryFee previews the fee a POST /hq/orders for this branch/customer
+// would land on, without creating anything — a read-only preview so the
+// console can show the resolved number before the operator saves. Returns
+// ErrNotFound when the branch or the customer doesn't exist.
+func (s *Service) DeliveryFee(ctx context.Context, accountID, tenantID, branchID, partnerID string) (*DeliveryFeeEnvelope, error) {
+	t, shard, err := s.resolveGateway(ctx, accountID, tenantID)
+	if err != nil {
+		return nil, err
+	}
+	q := url.Values{"branch_id": {branchID}, "partner_id": {partnerID}}
+	u := shard.GatewayURL + "/hq/orders/delivery-fee?" + q.Encode()
+
+	var resp DeliveryFeeResolution
+	if err := s.getJSON(ctx, u, t.DBName, &resp); err != nil {
+		return nil, err
+	}
+	source, asOf := s.tenantFreshness(ctx, tenantID)
+	return &DeliveryFeeEnvelope{Data: resp, Source: source, AsOf: asOf}, nil
+}
+
 // --- read: list (T18) ---
 
 // OrderRow is one row of the order list.

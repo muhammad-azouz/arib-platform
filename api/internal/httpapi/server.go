@@ -205,6 +205,9 @@ func (s *Server) Router() http.Handler {
 					r.Get("/hq/orders", s.handleHqOrders)
 					r.Post("/hq/orders", s.handleHqOrderCreate)
 					r.Get("/hq/orders/availability", s.handleHqOrderAvailability)
+					// T3b (plan OQ1): a delivery-fee preview, same literal-segment-
+					// ahead-of-{orderId} placement as availability above.
+					r.Get("/hq/orders/delivery-fee", s.handleHqDeliveryFeePreview)
 					r.Get("/hq/orders/{orderId}", s.handleHqOrderDetail)
 					r.Post("/hq/orders/{orderId}/cancel", s.handleHqOrderCancel)
 					r.Post("/hq/orders/{orderId}/transfer", s.handleHqOrderTransfer)
