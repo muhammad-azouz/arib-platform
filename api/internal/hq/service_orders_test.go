@@ -384,3 +384,168 @@ func TestTransferOrder_MissingAccountOperand(t *testing.T) {
 		t.Fatalf("expected ErrMissingAccountOperand, got %v", err)
 	}
 }
+
+// --- T120: row-level 404s and write-target checks, mirroring
+// service_test.go's Customer suite for orders. scopedCtx/multipartBranchID
+// live in service_test.go, same package. ---
+
+func TestOrderDetail_ScopedMemberOutOfAllowlistIsNotFound(t *testing.T) {
+	gw := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/hq/orders/o1":
+			_, _ = w.Write([]byte(`{"id":"o1","ref":"HQ-26-00001","branch_id":"b1","status":0}`))
+		case "/hq/orders/o2":
+			_, _ = w.Write([]byte(`{"id":"o2","ref":"HQ-26-00002","branch_id":"b2","status":0}`))
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer gw.Close()
+
+	fs := testStore(gw.URL)
+	s := New(fs, &fakeTokens{}, nil)
+	ctx := scopedCtx(fs, []string{"b1"})
+
+	if _, err := s.OrderDetail(ctx, fs.tenant.AccountID, fs.tenant.ID, "o1"); err != nil {
+		t.Fatalf("in-allowlist order should succeed, got %v", err)
+	}
+	if _, err := s.OrderDetail(ctx, fs.tenant.AccountID, fs.tenant.ID, "o2"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("expected ErrNotFound for an out-of-allowlist order, got %v", err)
+	}
+}
+
+func TestCreateOrder_ScopedMemberTargetBranchChecked(t *testing.T) {
+	called := false
+	gw := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		called = true
+		w.WriteHeader(http.StatusCreated)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"o1","ref":"HQ-26-00001","written_at":"2026-08-27T10:00:00Z"}`))
+	}))
+	defer gw.Close()
+
+	fs := testStore(gw.URL)
+	s := New(fs, &fakeTokens{}, nil)
+	ctx := scopedCtx(fs, []string{"b1"})
+
+	if _, err := s.CreateOrder(ctx, fs.tenant.AccountID, fs.tenant.ID, NewOrder{BranchID: "b2"}); !errors.Is(err, ErrForbiddenScope) {
+		t.Fatalf("expected ErrForbiddenScope for an out-of-allowlist target branch, got %v", err)
+	}
+	if called {
+		t.Fatalf("gateway must never be called for an out-of-allowlist create")
+	}
+	if _, err := s.CreateOrder(ctx, fs.tenant.AccountID, fs.tenant.ID, NewOrder{BranchID: "b1"}); err != nil {
+		t.Fatalf("in-allowlist create should succeed, got %v", err)
+	}
+	if !called {
+		t.Fatalf("expected the gateway to be reached for an in-allowlist create")
+	}
+}
+
+func TestCancelOrder_ScopedMemberOutOfAllowlistIsNotFound(t *testing.T) {
+	cancelCalled := false
+	gw := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/hq/orders/o1":
+			_, _ = w.Write([]byte(`{"branch_id":"b1"}`))
+		case r.Method == http.MethodGet && r.URL.Path == "/hq/orders/o2":
+			_, _ = w.Write([]byte(`{"branch_id":"b2"}`))
+		case r.Method == http.MethodPost && r.URL.Path == "/hq/orders/o1/cancel":
+			cancelCalled = true
+			_, _ = w.Write([]byte(`{"written_at":"2026-08-27T10:00:00Z"}`))
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer gw.Close()
+
+	fs := testStore(gw.URL)
+	s := New(fs, &fakeTokens{}, nil)
+	ctx := scopedCtx(fs, []string{"b1"})
+
+	if _, err := s.CancelOrder(ctx, fs.tenant.AccountID, fs.tenant.ID, "o2", nil); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("expected ErrNotFound for an out-of-allowlist order, got %v", err)
+	}
+	if cancelCalled {
+		t.Fatalf("gateway's cancel must never be reached for an out-of-allowlist order")
+	}
+	if _, err := s.CancelOrder(ctx, fs.tenant.AccountID, fs.tenant.ID, "o1", nil); err != nil {
+		t.Fatalf("in-allowlist cancel should succeed, got %v", err)
+	}
+	if !cancelCalled {
+		t.Fatalf("expected the gateway's cancel to be reached for an in-allowlist order")
+	}
+}
+
+// TestTransferOrder_ScopedMemberOriginOutOfAllowlistIsNotFound covers an
+// order the caller cannot even see at its current branch — refused before
+// the destination is ever considered, same "don't let ids be probed"
+// reasoning as OrderDetail's 404 (spec D5b).
+func TestTransferOrder_ScopedMemberOriginOutOfAllowlistIsNotFound(t *testing.T) {
+	transferCalled := false
+	gw := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/hq/orders/o2":
+			_, _ = w.Write([]byte(`{"branch_id":"b2"}`))
+		case r.Method == http.MethodPost && r.URL.Path == "/hq/orders/o2/transfer":
+			transferCalled = true
+			_, _ = w.Write([]byte(`{"id":"o3","ref":"HQ-26-00002","written_at":"2026-08-27T10:00:00Z"}`))
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer gw.Close()
+
+	fs := testStore(gw.URL)
+	s := New(fs, &fakeTokens{}, nil)
+	ctx := scopedCtx(fs, []string{"b1"})
+
+	// b1 is a valid destination, but o2 itself belongs to out-of-allowlist b2.
+	if _, err := s.TransferOrder(ctx, fs.tenant.AccountID, fs.tenant.ID, "o2", "b1"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("expected ErrNotFound for an out-of-allowlist order origin, got %v", err)
+	}
+	if transferCalled {
+		t.Fatalf("gateway's transfer must never be reached for an out-of-allowlist order")
+	}
+}
+
+// TestTransferOrder_ScopedMemberDestinationOutOfAllowlistRefused covers D5b's
+// explicitly-called-out case: the order's own current branch is in scope,
+// but the requested destination is not — a scoped member must not push an
+// order into a branch they cannot see.
+func TestTransferOrder_ScopedMemberDestinationOutOfAllowlistRefused(t *testing.T) {
+	transferCalled := false
+	gw := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/hq/orders/o1":
+			_, _ = w.Write([]byte(`{"branch_id":"b1"}`))
+		case r.Method == http.MethodPost && r.URL.Path == "/hq/orders/o1/transfer":
+			transferCalled = true
+			_, _ = w.Write([]byte(`{"id":"o3","ref":"HQ-26-00001","written_at":"2026-08-27T10:00:00Z"}`))
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer gw.Close()
+
+	fs := testStore(gw.URL)
+	s := New(fs, &fakeTokens{}, nil)
+	ctx := scopedCtx(fs, []string{"b1"})
+
+	if _, err := s.TransferOrder(ctx, fs.tenant.AccountID, fs.tenant.ID, "o1", "b2"); !errors.Is(err, ErrForbiddenScope) {
+		t.Fatalf("expected ErrForbiddenScope for an out-of-allowlist destination, got %v", err)
+	}
+	if transferCalled {
+		t.Fatalf("gateway's transfer must never be reached for an out-of-allowlist destination")
+	}
+	if _, err := s.TransferOrder(ctx, fs.tenant.AccountID, fs.tenant.ID, "o1", "b1"); err != nil {
+		t.Fatalf("in-allowlist transfer should succeed, got %v", err)
+	}
+	if !transferCalled {
+		t.Fatalf("expected the gateway's transfer to be reached for an in-allowlist destination")
+	}
+}

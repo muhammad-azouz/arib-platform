@@ -35,11 +35,17 @@ export function CompanyForm({
   company,
   submitLabel,
   onSaved,
+  readOnly,
 }: {
   tenantId: string
   company: Company | null
   submitLabel: string
   onSaved?: (company: Company) => void
+  // T115 (spec D3): without `company.manage` the page stays reachable and the
+  // data stays visible — only the write path (inputs + submit) is disabled,
+  // never the whole form. Defaults to false so the setup wizard (always the
+  // owner, company.manage held) is unaffected.
+  readOnly?: boolean
 }) {
   const save = useSetCompany(tenantId)
   const form = useForm<Form>({
@@ -86,7 +92,8 @@ export function CompanyForm({
       >
         <Input
           id="company-name"
-          autoFocus
+          autoFocus={!readOnly}
+          disabled={readOnly}
           placeholder="مثال: مؤسسة النور التجارية"
           {...form.register('name')}
         />
@@ -104,6 +111,7 @@ export function CompanyForm({
             inputMode="tel"
             dir="ltr"
             className="text-start"
+            disabled={readOnly}
             placeholder="+966 5XX XXX XXX"
             {...form.register('phone')}
           />
@@ -118,6 +126,7 @@ export function CompanyForm({
             id="company-tax"
             dir="ltr"
             className="text-start font-mono"
+            disabled={readOnly}
             placeholder="3XXXXXXXXXXXXXX"
             {...form.register('tax_number')}
           />
@@ -131,16 +140,19 @@ export function CompanyForm({
       >
         <Textarea
           id="company-address"
+          disabled={readOnly}
           placeholder="الحي، الشارع، المدينة"
           {...form.register('address')}
         />
       </Field>
 
-      <div className="flex justify-end">
-        <Button type="submit" disabled={busy}>
-          {submitLabel}
-        </Button>
-      </div>
+      {!readOnly && (
+        <div className="flex justify-end">
+          <Button type="submit" disabled={busy}>
+            {submitLabel}
+          </Button>
+        </div>
+      )}
     </form>
   )
 }

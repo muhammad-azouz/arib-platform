@@ -58,6 +58,32 @@ func (s *Sender) SendOTP(ctx context.Context, to, code string) error {
 	return smtp.SendMail(s.addr, s.auth, extractAddr(s.from), []string{to}, []byte(msg))
 }
 
+// SendInvite emails (or logs) a tenant invitation. There is no accept token
+// or link (spec-console-rbac D6) — OTP sign-in with this address is the
+// accept step — so the message only needs to name the tenant and say how to
+// get in.
+func (s *Sender) SendInvite(ctx context.Context, to, tenantName string) error {
+	if s.host == "" {
+		s.log.Warn("SMTP not configured; logging invite for dev only", "email", to, "tenant", tenantName)
+		return nil
+	}
+	subject := fmt.Sprintf("You've been invited to %s on Arib POS", tenantName)
+	body := fmt.Sprintf(
+		"You've been invited to join %s on Arib POS.\r\n\r\n"+
+			"Sign in with this email address (%s): open the app and enter it to receive a one-time login code.",
+		tenantName, to)
+	msg := strings.Join([]string{
+		"From: " + s.from,
+		"To: " + to,
+		"Subject: " + subject,
+		"MIME-Version: 1.0",
+		"Content-Type: text/plain; charset=UTF-8",
+		"",
+		body,
+	}, "\r\n")
+	return smtp.SendMail(s.addr, s.auth, extractAddr(s.from), []string{to}, []byte(msg))
+}
+
 func extractAddr(from string) string {
 	if i := strings.LastIndex(from, "<"); i >= 0 {
 		return strings.TrimSuffix(from[i+1:], ">")

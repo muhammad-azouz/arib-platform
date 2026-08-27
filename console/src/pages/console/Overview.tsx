@@ -16,6 +16,7 @@ import {
   toArabicDigits,
 } from '@/lib/format'
 import { deriveAlerts, type Alert } from '@/lib/alerts'
+import { can, PERM, useScope } from '@/lib/perm'
 import { cn } from '@/lib/utils'
 import { PageHeader } from '@/components/PageHeader'
 import { LoadingState } from '@/components/States'
@@ -45,11 +46,21 @@ const money = new Intl.NumberFormat('ar', { maximumFractionDigits: 2 })
 export function Overview() {
   const { tenantId } = useParams<'tenantId'>()
   const { data: bundle } = useBundle(tenantId)
-  const { data: hq, isLoading: hqLoading } = useHqBranches(tenantId)
+  const scope = useScope(tenantId)
+  // Composition gating (T114, spec D10): Overview is not itself gated (any
+  // member reaches it), but it composes three other sections' data — each
+  // query only fires when the member holds that section's own `view` code,
+  // so a reports-only member never issues (or pays for) a request their
+  // role can't see the result of.
+  const canBranches = can(scope, PERM.BranchesView)
+  const canInventory = can(scope, PERM.InventoryView)
+  const canConflicts = can(scope, PERM.ConflictsView)
+
+  const hqQuery = useHqBranches(canBranches ? tenantId : undefined)
   // Two cheap extra queries so the Overview alerts panel matches the bell
   // (T38) exactly — same shared deriveAlerts, same inputs.
-  const { data: attention } = useInventoryAttention(tenantId, {})
-  const { data: conflicts } = useConflicts(tenantId, {})
+  const attentionQuery = useInventoryAttention(canInventory ? tenantId : undefined, {})
+  const conflictsQuery = useConflicts(canConflicts ? tenantId : undefined, {})
   const { data: subscription } = useSubscription(tenantId)
 
   // The gate guarantees a complete bundle before this renders; guard anyway.
@@ -60,7 +71,16 @@ export function Overview() {
   const branches = Branches ?? []
   const activeBranches = branches.filter((b) => b.Status === 'active').length
   const deviceCount = branches.reduce((sum, b) => sum + (b.ActiveDevices ?? 0), 0)
+  const hq = hqQuery.data
   const totals = hq?.totals
+  // Undefined (not an empty array) while a *permitted* query is still in
+  // flight — AlertsPanel reads that as "loading". A query the member has no
+  // permission for is never pending (it's disabled, see the hooks above),
+  // so this never waits on a section the member can't see.
+  const alertsLoading =
+    (canBranches && hqQuery.isLoading) ||
+    (canInventory && attentionQuery.isLoading) ||
+    (canConflicts && conflictsQuery.isLoading)
 
   return (
     <>
@@ -106,47 +126,51 @@ export function Overview() {
       )}
 
       {/* Today's KPIs — company-wide sums the API derives from the same
-          branch snapshots the Branches cards render, so the numbers agree. */}
-      <section className="mb-6">
-        <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
-          <h2 className="font-display text-base font-bold">اليوم</h2>
-          {totals ? (
-            <Freshness
-              source={totals.synced_branches > 0 ? 'synced' : 'offline'}
-              asOf={totals.as_of}
+          branch snapshots the Branches cards render, so the numbers agree.
+          Gated on branches.view (T114): this is hq-branches data, the same
+          source the Branches page itself is gated on (T111). */}
+      {canBranches && (
+        <section className="mb-6">
+          <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+            <h2 className="font-display text-base font-bold">اليوم</h2>
+            {totals ? (
+              <Freshness
+                source={totals.synced_branches > 0 ? 'synced' : 'offline'}
+                asOf={totals.as_of}
+              />
+            ) : hqQuery.isLoading ? (
+              <Skeleton className="h-6 w-40 rounded-full" />
+            ) : null}
+          </div>
+          <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+            <KpiCard
+              label="مبيعات اليوم"
+              value={totals ? money.format(totals.sales_total) : undefined}
             />
-          ) : hqLoading ? (
-            <Skeleton className="h-6 w-40 rounded-full" />
-          ) : null}
-        </div>
-        <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-          <KpiCard
-            label="مبيعات اليوم"
-            value={totals ? money.format(totals.sales_total) : undefined}
-          />
-          <KpiCard
-            label="الفواتير"
-            value={totals ? toArabicDigits(totals.sales_count) : undefined}
-          />
-          <KpiCard
-            label="المرتجعات"
-            value={totals ? money.format(totals.refunds_total) : undefined}
-          />
-          <KpiCard
-            label="الورديات المفتوحة"
-            value={totals ? toArabicDigits(totals.open_shift_count) : undefined}
-          />
-        </div>
-        {totals && totals.offline_branches > 0 && (
-          <p className="mt-2 text-xs text-muted-foreground">
-            تشمل الأرقام آخر بيانات معروفة لعدد{' '}
-            {toArabicDigits(totals.offline_branches)} من الفروع غير المتزامنة.
-          </p>
-        )}
-      </section>
+            <KpiCard
+              label="الفواتير"
+              value={totals ? toArabicDigits(totals.sales_count) : undefined}
+            />
+            <KpiCard
+              label="المرتجعات"
+              value={totals ? money.format(totals.refunds_total) : undefined}
+            />
+            <KpiCard
+              label="الورديات المفتوحة"
+              value={totals ? toArabicDigits(totals.open_shift_count) : undefined}
+            />
+          </div>
+          {totals && totals.offline_branches > 0 && (
+            <p className="mt-2 text-xs text-muted-foreground">
+              تشمل الأرقام آخر بيانات معروفة لعدد{' '}
+              {toArabicDigits(totals.offline_branches)} من الفروع غير المتزامنة.
+            </p>
+          )}
+        </section>
+      )}
 
       {/* Branch health strip — one chip per branch, click through to detail. */}
-      {hq && hq.branches.length > 0 && (
+      {canBranches && hq && hq.branches.length > 0 && (
         <section className="mb-6">
           <h2 className="mb-3 font-display text-base font-bold">صحة الفروع</h2>
           <div className="flex flex-wrap gap-2">
@@ -170,14 +194,14 @@ export function Overview() {
           <h2 className="mb-3 font-display text-base font-bold">التنبيهات</h2>
           <AlertsPanel
             alerts={
-              hq
-                ? deriveAlerts(t.ID, {
-                    branches: hq.branches,
-                    attention: attention?.data.counts,
-                    conflictsUnacked: conflicts?.data.unacked,
+              alertsLoading
+                ? undefined
+                : deriveAlerts(t.ID, {
+                    branches: canBranches ? hq?.branches : undefined,
+                    attention: canInventory ? attentionQuery.data?.data.counts : undefined,
+                    conflictsUnacked: canConflicts ? conflictsQuery.data?.data.unacked : undefined,
                     subscription: summary,
                   })
-                : undefined
             }
           />
         </section>

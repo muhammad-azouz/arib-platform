@@ -3,6 +3,7 @@ import { Link, useParams } from 'react-router-dom'
 import { toast } from 'sonner'
 import { errorMessage } from '@/lib/auth'
 import { useBundle, useHqBranches, useUpdateBranch } from '@/lib/hooks'
+import { PERM, useCan, useCanUnscoped } from '@/lib/perm'
 import {
   branchStatusLabel,
   branchStatusTone,
@@ -43,6 +44,13 @@ export function Branches() {
   const { data: bundle } = useBundle(tenantId)
   const { data: hq, isLoading: hqLoading } = useHqBranches(tenantId)
   const update = useUpdateBranch(tenantId ?? '')
+  const canManage = useCan(tenantId, PERM.BranchesManage)
+  // POST /branches is D5c-unscoped ("creates a branch that, by D4, they
+  // could not then see") — unlike rename/status-toggle above, which stay on
+  // `canManage` alone since PATCH /branches/{id} is D5d's per-branch
+  // allowlist rule, not D5c's blanket refusal, and a scoped manager renaming
+  // a branch they can already see is legitimate.
+  const canAddBranch = useCanUnscoped(tenantId, PERM.BranchesManage)
   const [addOpen, setAddOpen] = useState(false)
   const [renaming, setRenaming] = useState<Branch | null>(null)
 
@@ -73,10 +81,12 @@ export function Branches() {
         title="الفروع"
         description="حالة كل فرع الآن: المزامنة والوردية ومبيعات اليوم."
         actions={
-          <Button onClick={() => setAddOpen(true)} disabled={!companyId}>
-            <AddIcon className="size-4" />
-            فرع جديد
-          </Button>
+          canAddBranch ? (
+            <Button onClick={() => setAddOpen(true)} disabled={!companyId}>
+              <AddIcon className="size-4" />
+              فرع جديد
+            </Button>
+          ) : undefined
         }
       />
 
@@ -86,10 +96,12 @@ export function Branches() {
           title="لا توجد فروع"
           description="أضف أول فرع لنشاطك للبدء."
           action={
-            <Button onClick={() => setAddOpen(true)} disabled={!companyId}>
-              <AddIcon className="size-4" />
-              إضافة فرع
-            </Button>
+            canAddBranch ? (
+              <Button onClick={() => setAddOpen(true)} disabled={!companyId}>
+                <AddIcon className="size-4" />
+                إضافة فرع
+              </Button>
+            ) : undefined
           }
         />
       ) : (
@@ -116,28 +128,30 @@ export function Branches() {
                   <Badge tone={branchStatusTone(b.Status)} className="shrink-0">
                     {branchStatusLabel(b.Status)}
                   </Badge>
-                  <div className="ms-auto">
-                    <DropdownMenu>
-                      <DropdownMenuTrigger asChild>
-                        <Button variant="ghost" size="icon" aria-label="إجراءات الفرع">
-                          <MenuIcon className="size-4" />
-                        </Button>
-                      </DropdownMenuTrigger>
-                      <DropdownMenuContent align="end" className="w-44">
-                        <DropdownMenuItem onSelect={() => setRenaming(b)}>
-                          <EditIcon className="size-4" />
-                          إعادة تسمية
-                        </DropdownMenuItem>
-                        <DropdownMenuSeparator />
-                        <DropdownMenuItem
-                          variant={b.Status === 'active' ? 'destructive' : undefined}
-                          onSelect={() => toggleStatus(b)}
-                        >
-                          {b.Status === 'active' ? 'تعطيل الفرع' : 'تفعيل الفرع'}
-                        </DropdownMenuItem>
-                      </DropdownMenuContent>
-                    </DropdownMenu>
-                  </div>
+                  {canManage && (
+                    <div className="ms-auto">
+                      <DropdownMenu>
+                        <DropdownMenuTrigger asChild>
+                          <Button variant="ghost" size="icon" aria-label="إجراءات الفرع">
+                            <MenuIcon className="size-4" />
+                          </Button>
+                        </DropdownMenuTrigger>
+                        <DropdownMenuContent align="end" className="w-44">
+                          <DropdownMenuItem onSelect={() => setRenaming(b)}>
+                            <EditIcon className="size-4" />
+                            إعادة تسمية
+                          </DropdownMenuItem>
+                          <DropdownMenuSeparator />
+                          <DropdownMenuItem
+                            variant={b.Status === 'active' ? 'destructive' : undefined}
+                            onSelect={() => toggleStatus(b)}
+                          >
+                            {b.Status === 'active' ? 'تعطيل الفرع' : 'تفعيل الفرع'}
+                          </DropdownMenuItem>
+                        </DropdownMenuContent>
+                      </DropdownMenu>
+                    </div>
+                  )}
                 </div>
 
                 {/* freshness */}
@@ -202,18 +216,22 @@ export function Branches() {
         لأول مرة.
       </p>
 
-      <AddBranchDialog
-        tenantId={bundle.Tenant.ID}
-        companyId={companyId}
-        open={addOpen}
-        onOpenChange={setAddOpen}
-      />
-      <RenameBranchDialog
-        tenantId={bundle.Tenant.ID}
-        branch={renaming}
-        open={renaming != null}
-        onOpenChange={(o) => !o && setRenaming(null)}
-      />
+      {canAddBranch && (
+        <AddBranchDialog
+          tenantId={bundle.Tenant.ID}
+          companyId={companyId}
+          open={addOpen}
+          onOpenChange={setAddOpen}
+        />
+      )}
+      {canManage && (
+        <RenameBranchDialog
+          tenantId={bundle.Tenant.ID}
+          branch={renaming}
+          open={renaming != null}
+          onOpenChange={(o) => !o && setRenaming(null)}
+        />
+      )}
     </>
   )
 }

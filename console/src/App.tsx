@@ -2,6 +2,7 @@ import { BrowserRouter, Navigate, Route, Routes } from 'react-router-dom'
 import { useAuth } from '@/lib/auth'
 import { RouteLoader } from '@/components/RouteLoader'
 import { AppShell } from '@/components/AppShell'
+import { RequirePerm } from '@/components/RequirePerm'
 import { SetupGate } from '@/routes/SetupGate'
 import { Login } from '@/pages/Login'
 import { Home } from '@/pages/Home'
@@ -28,6 +29,7 @@ import { Reports } from '@/pages/console/Reports'
 import { Download } from '@/pages/console/Download'
 import { Settings } from '@/pages/console/Settings'
 import { AccountIcon, HelpIcon } from '@/components/icon'
+import { PERM } from '@/lib/perm'
 
 export default function App() {
   const { status } = useAuth()
@@ -63,20 +65,118 @@ export default function App() {
           <Route element={<AppShell />}>
             <Route index element={<Overview />} />
             <Route path="company" element={<Company />} />
-            <Route path="branches" element={<Branches />} />
-            <Route path="branches/:branchId" element={<BranchDetail />} />
-            <Route path="catalog" element={<Catalog />} />
-            <Route path="catalog/:productId" element={<ProductDetail />} />
-            <Route path="inventory" element={<Inventory />} />
-            <Route path="customers" element={<Customers />} />
-            <Route path="customers/:customerId" element={<CustomerDetail />} />
-            <Route path="suppliers" element={<Suppliers />} />
-            <Route path="suppliers/:supplierId" element={<SupplierDetail />} />
-            <Route path="orders" element={<Orders />} />
-            <Route path="orders/new" element={<NewOrder />} />
-            <Route path="orders/:orderId" element={<OrderDetail />} />
-            <Route path="conflicts" element={<Conflicts />} />
-            <Route path="reports" element={<Reports />} />
+            <Route
+              path="branches"
+              element={
+                <RequirePerm code={PERM.BranchesView}>
+                  <Branches />
+                </RequirePerm>
+              }
+            />
+            <Route
+              path="branches/:branchId"
+              element={
+                <RequirePerm code={PERM.BranchesView}>
+                  <BranchDetail />
+                </RequirePerm>
+              }
+            />
+            <Route
+              path="catalog"
+              element={
+                <RequirePerm code={PERM.CatalogView}>
+                  <Catalog />
+                </RequirePerm>
+              }
+            />
+            <Route
+              path="catalog/:productId"
+              element={
+                <RequirePerm code={PERM.CatalogView}>
+                  <ProductDetail />
+                </RequirePerm>
+              }
+            />
+            <Route
+              path="inventory"
+              element={
+                <RequirePerm code={PERM.InventoryView}>
+                  <Inventory />
+                </RequirePerm>
+              }
+            />
+            <Route
+              path="customers"
+              element={
+                <RequirePerm code={PERM.CustomersView}>
+                  <Customers />
+                </RequirePerm>
+              }
+            />
+            <Route
+              path="customers/:customerId"
+              element={
+                <RequirePerm code={PERM.CustomersView}>
+                  <CustomerDetail />
+                </RequirePerm>
+              }
+            />
+            <Route
+              path="suppliers"
+              element={
+                <RequirePerm code={PERM.SuppliersView}>
+                  <Suppliers />
+                </RequirePerm>
+              }
+            />
+            <Route
+              path="suppliers/:supplierId"
+              element={
+                <RequirePerm code={PERM.SuppliersView}>
+                  <SupplierDetail />
+                </RequirePerm>
+              }
+            />
+            <Route
+              path="orders"
+              element={
+                <RequirePerm code={PERM.OrdersView}>
+                  <Orders />
+                </RequirePerm>
+              }
+            />
+            <Route
+              path="orders/new"
+              element={
+                <RequirePerm code={PERM.OrdersManage}>
+                  <NewOrder />
+                </RequirePerm>
+              }
+            />
+            <Route
+              path="orders/:orderId"
+              element={
+                <RequirePerm code={PERM.OrdersView}>
+                  <OrderDetail />
+                </RequirePerm>
+              }
+            />
+            <Route
+              path="conflicts"
+              element={
+                <RequirePerm code={PERM.ConflictsView}>
+                  <Conflicts />
+                </RequirePerm>
+              }
+            />
+            <Route
+              path="reports"
+              element={
+                <RequirePerm code={PERM.ReportsView}>
+                  <Reports />
+                </RequirePerm>
+              }
+            />
             <Route path="download" element={<Download />} />
             <Route path="settings" element={<Settings />} />
           </Route>

@@ -13,6 +13,7 @@ import (
 	"github.com/aribpos/license-api/internal/billing"
 	"github.com/aribpos/license-api/internal/idgen"
 	"github.com/aribpos/license-api/internal/model"
+	"github.com/aribpos/license-api/internal/perm"
 	mongostore "github.com/aribpos/license-api/internal/store/mongo"
 	"github.com/golang-jwt/jwt/v5"
 )
@@ -63,7 +64,17 @@ func testService(t *testing.T) (*Service, context.Context) {
 	}); err != nil {
 		t.Fatalf("seed owner account: %v", err)
 	}
-	return New(store, key, time.Hour, nil), ctx
+	return New(store, key, time.Hour, nil, &fakeMailer{}, nil), ctx
+}
+
+// testServiceWithMailer is testService with an injectable Mailer, for the
+// handful of tests (T124) that need to observe what InviteMember sent, or
+// force a send failure to prove it doesn't roll back the membership.
+func testServiceWithMailer(t *testing.T, m Mailer) (*Service, context.Context) {
+	t.Helper()
+	s, ctx := testService(t)
+	s.mailer = m
+	return s, ctx
 }
 
 const owner = "acc_owner"
@@ -539,7 +550,7 @@ func TestIssueHQToken(t *testing.T) {
 	if err != nil {
 		t.Fatalf("generate key: %v", err)
 	}
-	s := New(nil, key, time.Hour, nil)
+	s := New(nil, key, time.Hour, nil, nil, nil)
 
 	if _, err := s.IssueHQToken(""); err == nil {
 		t.Fatalf("expected error for empty db name")
@@ -579,15 +590,15 @@ func TestRegisterCreatesOwnerMember(t *testing.T) {
 		t.Fatalf("register: %v", err)
 	}
 
-	role, err := s.store.MemberRole(ctx, tn.ID, owner)
+	member, err := s.store.MemberByAccount(ctx, tn.ID, owner)
 	if err != nil {
 		t.Fatalf("member role: %v", err)
 	}
-	if role != model.RoleOwner {
-		t.Fatalf("role = %q, want owner", role)
+	if member.Role != model.RoleOwner {
+		t.Fatalf("role = %q, want owner", member.Role)
 	}
 
-	if _, err := s.store.MemberRole(ctx, tn.ID, "acc_intruder"); !errors.Is(err, mongostore.ErrNotFound) {
+	if _, err := s.store.MemberByAccount(ctx, tn.ID, "acc_intruder"); !errors.Is(err, mongostore.ErrNotFound) {
 		t.Fatalf("non-member lookup: want ErrNotFound, got %v", err)
 	}
 
@@ -614,7 +625,7 @@ func TestBackfillOwnerMembers(t *testing.T) {
 	if err := s.store.InsertTenant(ctx, legacy); err != nil {
 		t.Fatalf("insert legacy tenant: %v", err)
 	}
-	if _, err := s.store.MemberRole(ctx, legacy.ID, "acc_legacy"); !errors.Is(err, mongostore.ErrNotFound) {
+	if _, err := s.store.MemberByAccount(ctx, legacy.ID, "acc_legacy"); !errors.Is(err, mongostore.ErrNotFound) {
 		t.Fatalf("legacy tenant should start without a member row, got %v", err)
 	}
 
@@ -631,9 +642,9 @@ func TestBackfillOwnerMembers(t *testing.T) {
 		t.Fatalf("backfill inserted %d rows, want 1 (only the legacy tenant)", n)
 	}
 
-	role, err := s.store.MemberRole(ctx, legacy.ID, "acc_legacy")
-	if err != nil || role != model.RoleOwner {
-		t.Fatalf("legacy tenant owner role: %v err=%v", role, err)
+	member, err := s.store.MemberByAccount(ctx, legacy.ID, "acc_legacy")
+	if err != nil || member.Role != model.RoleOwner {
+		t.Fatalf("legacy tenant owner role: %v err=%v", member, err)
 	}
 
 	// Re-running must be a pure no-op: nothing new inserted, and the tenant
@@ -646,8 +657,157 @@ func TestBackfillOwnerMembers(t *testing.T) {
 	if n2 != 0 {
 		t.Fatalf("second backfill inserted %d rows, want 0", n2)
 	}
-	role, err = s.store.MemberRole(ctx, fresh.ID, owner)
-	if err != nil || role != model.RoleOwner {
-		t.Fatalf("fresh tenant owner role: %v err=%v", role, err)
+	member, err = s.store.MemberByAccount(ctx, fresh.ID, owner)
+	if err != nil || member.Role != model.RoleOwner {
+		t.Fatalf("fresh tenant owner role: %v err=%v", member, err)
+	}
+}
+
+// setupScopedMember is T121's shared fixture: a second branch beside
+// setupTenant's, and a member holding perms scoped to only the first
+// branch (allowedBranch) — so allowedBranch is in the allowlist and the
+// returned otherBranch is deliberately not.
+func setupScopedMember(t *testing.T, s *Service, ctx context.Context, tenantID, companyID, allowedBranch string, perms []string) (memberAccountID, otherBranch string) {
+	t.Helper()
+	b, err := s.AddBranch(ctx, owner, tenantID, BranchInput{
+		CompanyID: companyID, Name: "فرع آخر", Seats: 2,
+		Phone1: "01011111111", Address: "شارع آخر",
+	})
+	if err != nil {
+		t.Fatalf("add second branch: %v", err)
+	}
+	role, err := s.CreateRole(ctx, owner, tenantID, "دور مقيّد", perms)
+	if err != nil {
+		t.Fatalf("create role: %v", err)
+	}
+	mv, err := s.InviteMember(ctx, owner, tenantID, "scoped-member@example.com", "", nil)
+	if err != nil {
+		t.Fatalf("invite: %v", err)
+	}
+	if _, err := s.AssignMemberRole(ctx, owner, tenantID, mv.ID, role.ID, []string{allowedBranch}); err != nil {
+		t.Fatalf("assign role: %v", err)
+	}
+	return mv.AccountID, b.ID
+}
+
+// TestOwnedBranchRoutes_ScopedMemberOutOfAllowlistRefused covers T121's
+// first acceptance bullet: rename and bind at an out-of-scope branch return
+// ErrForbiddenScope; the same calls at an allowlisted branch succeed, and an
+// unscoped caller (the owner) is unaffected. RenameBranch and BindDevice are
+// exercised directly since both route through the same ownedBranch choke
+// point SetBranchContact/SetBranchStatus also share — one test proves the
+// shared helper, not four duplicated ones.
+func TestOwnedBranchRoutes_ScopedMemberOutOfAllowlistRefused(t *testing.T) {
+	s, ctx := testService(t)
+	tenantID, companyID, allowedBranch := setupTenant(t, s, ctx)
+	memberAccount, otherBranch := setupScopedMember(t, s, ctx, tenantID, companyID, allowedBranch, []string{perm.BranchesManage})
+
+	if err := s.RenameBranch(ctx, memberAccount, tenantID, allowedBranch, "اسم جديد"); err != nil {
+		t.Fatalf("rename in-scope: %v", err)
+	}
+	if _, err := s.BindDevice(ctx, memberAccount, tenantID, allowedBranch, "machine-in", "POS-in", "windows"); err != nil {
+		t.Fatalf("bind in-scope: %v", err)
+	}
+
+	if err := s.RenameBranch(ctx, memberAccount, tenantID, otherBranch, "اسم آخر"); !errors.Is(err, ErrForbiddenScope) {
+		t.Fatalf("rename out-of-scope: want ErrForbiddenScope, got %v", err)
+	}
+	if _, err := s.BindDevice(ctx, memberAccount, tenantID, otherBranch, "machine-out", "POS-out", "windows"); !errors.Is(err, ErrForbiddenScope) {
+		t.Fatalf("bind out-of-scope: want ErrForbiddenScope, got %v", err)
+	}
+
+	if err := s.RenameBranch(ctx, owner, tenantID, otherBranch, "اسم المالك"); err != nil {
+		t.Fatalf("owner rename unaffected by another account's allowlist: %v", err)
+	}
+}
+
+// TestSetCompany_AddBranch_ScopedMemberRefusedUnscoped covers spec D5c for
+// the two tenant-package writes that carry no branch identity of their own
+// (company-wide edit; a new branch the creator, by D4, could not then see)
+// — found missing while cross-checking T123's console gating against the
+// server: T120 wired requireUnscoped into hq's ChangeProductPrices/
+// CreateProduct but explicitly left PUT /company and POST /branches
+// untouched as "genuinely out of hq/'s Files", and T121 only gave the
+// tenant package's control-plane routes the *allowlist* check (ownedBranch,
+// D5d), never the *unscoped* one D5c also requires here. A member scoped to
+// one branch and holding company.manage/branches.manage is refused
+// ErrForbiddenUnscoped on both; the same calls succeed for the owner
+// (always unscoped, D4) and for the same scoped member once reassigned
+// unscoped (nil branch allowlist).
+func TestSetCompany_AddBranch_ScopedMemberRefusedUnscoped(t *testing.T) {
+	s, ctx := testService(t)
+	tenantID, companyID, allowedBranch := setupTenant(t, s, ctx)
+	memberAccount, _ := setupScopedMember(t, s, ctx, tenantID, companyID, allowedBranch,
+		[]string{perm.CompanyManage, perm.BranchesManage})
+
+	if _, err := s.SetCompany(ctx, memberAccount, tenantID, CompanyInput{
+		ID: companyID, Name: "اسم جديد",
+	}); !errors.Is(err, ErrForbiddenUnscoped) {
+		t.Fatalf("scoped SetCompany: want ErrForbiddenUnscoped, got %v", err)
+	}
+	if _, err := s.AddBranch(ctx, memberAccount, tenantID, BranchInput{
+		CompanyID: companyID, Name: "فرع من عضو مقيّد", Seats: 1,
+		Phone1: "01022222222", Address: "شارع",
+	}); !errors.Is(err, ErrForbiddenUnscoped) {
+		t.Fatalf("scoped AddBranch: want ErrForbiddenUnscoped, got %v", err)
+	}
+
+	if _, err := s.SetCompany(ctx, owner, tenantID, CompanyInput{
+		ID: companyID, Name: "اسم المالك",
+	}); err != nil {
+		t.Fatalf("owner SetCompany unaffected: %v", err)
+	}
+	if _, err := s.AddBranch(ctx, owner, tenantID, BranchInput{
+		CompanyID: companyID, Name: "فرع المالك", Seats: 1,
+		Phone1: "01033333333", Address: "شارع",
+	}); err != nil {
+		t.Fatalf("owner AddBranch unaffected: %v", err)
+	}
+
+	// Reassigning the same member unscoped (nil allowlist) lifts the refusal
+	// — this is D5c narrowing an existing grant, not a separate permission.
+	member, err := s.store.MemberByAccount(ctx, tenantID, memberAccount)
+	if err != nil {
+		t.Fatalf("lookup member: %v", err)
+	}
+	if _, err := s.AssignMemberRole(ctx, owner, tenantID, member.ID, member.RoleID, nil); err != nil {
+		t.Fatalf("unscope member: %v", err)
+	}
+	if _, err := s.SetCompany(ctx, memberAccount, tenantID, CompanyInput{
+		ID: companyID, Name: "اسم بعد إلغاء التقييد",
+	}); err != nil {
+		t.Fatalf("unscoped member SetCompany: %v", err)
+	}
+}
+
+// TestReleaseDevice_ScopedMemberChecksDeviceOwnBranch covers T121's second
+// acceptance bullet: the release request carries only a device id, no
+// branch, so the check must come from the device's own BranchID — proven by
+// releasing a device bound at an out-of-scope branch and confirming it was
+// refused (and left active), never by a client-supplied branch that isn't
+// part of the request at all.
+func TestReleaseDevice_ScopedMemberChecksDeviceOwnBranch(t *testing.T) {
+	s, ctx := testService(t)
+	tenantID, companyID, allowedBranch := setupTenant(t, s, ctx)
+	memberAccount, otherBranch := setupScopedMember(t, s, ctx, tenantID, companyID, allowedBranch, []string{perm.BranchesManage})
+
+	dIn, err := s.BindDevice(ctx, owner, tenantID, allowedBranch, "machine-in", "POS-in", "windows")
+	if err != nil {
+		t.Fatalf("owner bind in-scope: %v", err)
+	}
+	dOut, err := s.BindDevice(ctx, owner, tenantID, otherBranch, "machine-out", "POS-out", "windows")
+	if err != nil {
+		t.Fatalf("owner bind out-of-scope: %v", err)
+	}
+
+	if err := s.ReleaseDevice(ctx, memberAccount, tenantID, dIn.ID); err != nil {
+		t.Fatalf("release in-scope device: %v", err)
+	}
+	if err := s.ReleaseDevice(ctx, memberAccount, tenantID, dOut.ID); !errors.Is(err, ErrForbiddenScope) {
+		t.Fatalf("release out-of-scope device: want ErrForbiddenScope, got %v", err)
+	}
+	stillActive, err := s.store.BranchDeviceByID(ctx, dOut.ID)
+	if err != nil || stillActive.Status != model.DeviceActive {
+		t.Fatalf("out-of-scope device should remain active: %+v err=%v", stillActive, err)
 	}
 }

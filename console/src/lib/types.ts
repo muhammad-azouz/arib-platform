@@ -102,12 +102,28 @@ export interface BranchDevice {
   ReleasedAt: string | null
 }
 
+// The requesting member's own role/permissions/branch-allowlist — the
+// bundle's `me` block (spec-console-rbac T108, tenant.MeView on the API
+// side). Unlike Tenant/Company/Branches above, this field carries an
+// explicit `json:"me"` tag in Go, hence the lowercase key here — and unlike
+// them it's hand-written JSON, so its own keys are snake_case too. Not to
+// be confused with the unrelated account-identity `MeView` below (`GET
+// /v1/me`) — that one wraps an Account, this one is per-tenant scope.
+export interface TenantMeView {
+  role: MemberRole
+  role_id?: string
+  role_name?: string
+  permissions: string[]
+  branch_ids: string[]
+}
+
 // GET /v1/tenants/{id} — the activation/login bundle. `Company` is null until
 // the company is registered; the Setup-Wizard completion gate keys off this.
 export interface Bundle {
   Tenant: Tenant
   Company: Company | null
   Branches: Branch[] | null
+  me: TenantMeView
 }
 
 // --- hand-written response maps (snake_case keys) ---
@@ -132,8 +148,34 @@ export interface Member {
   first_name?: string
   last_name?: string
   role: MemberRole
+  // RBAC role assignment (spec-console-rbac T108/T109). Empty role_id/
+  // role_name describes the owner row or a member not yet assigned a role
+  // (should not exist post-backfill — T113 renders it as «بدون دور»).
+  // branch_ids is always present, never omitted: [] means every branch.
+  role_id?: string
+  role_name?: string
+  branch_ids: string[]
   invited_by?: string
   created_at: string
+  // "Pending" (T125, spec-console-rbac D6) is derived client-side from this
+  // being absent — set once, server-side, on the member's first
+  // authenticated request on this tenant. Always absent for the owner row.
+  accepted_at?: string
+}
+
+// Roles (spec-console-rbac T107/T112): GET/POST/PUT/DELETE
+// /v1/tenants/{id}/roles[/{roleId}]. tenant.RoleView on the API side —
+// `permissions` always arrives already normalized (manage implies view,
+// perm.Normalize), so the console never re-derives that rule, only reflects
+// it (see lib/perm.ts). `assigned_count` lets the roles list warn before a
+// delete D8 would refuse anyway.
+export interface RoleView {
+  id: string
+  name: string
+  permissions: string[]
+  assigned_count: number
+  created_at: string
+  updated_at: string
 }
 
 // --- HQ reads (freshness envelope; hq/service.go + hq_handlers.go) ---

@@ -1239,7 +1239,8 @@ func (s *Server) handleTenantEvents(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	tenantID := chi.URLParam(r, "id")
-	if err := s.hq.CheckOwnership(r.Context(), claims.Subject, tenantID); err != nil {
+	scope, err := s.hq.CheckOwnership(r.Context(), claims.Subject, tenantID)
+	if err != nil {
 		s.writeHqError(w, err)
 		return
 	}
@@ -1249,7 +1250,7 @@ func (s *Server) handleTenantEvents(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	events, cancel := s.events.Subscribe(tenantID)
+	events, cancel := s.events.Subscribe(tenantID, scope.BranchIDs)
 	defer cancel()
 
 	w.Header().Set("Content-Type", "text/event-stream")
@@ -1302,6 +1303,16 @@ func (s *Server) writeHqError(w http.ResponseWriter, err error) {
 		return
 	}
 	switch {
+	case errors.Is(err, hq.ErrForbiddenScope):
+		writeJSON(w, http.StatusForbidden, map[string]string{
+			"code":  "forbidden_scope",
+			"error": "هذا الفرع خارج نطاق صلاحياتك",
+		})
+	case errors.Is(err, hq.ErrForbiddenUnscoped):
+		writeJSON(w, http.StatusForbidden, map[string]string{
+			"code":  "forbidden_unscoped",
+			"error": "هذه العملية تشمل كل الفروع ولا يمكن تنفيذها من حساب مقيّد بفرع",
+		})
 	case errors.Is(err, hq.ErrForbidden):
 		writeErr(w, http.StatusForbidden, "resource does not belong to this account")
 	case errors.Is(err, hq.ErrNotSubscribed):

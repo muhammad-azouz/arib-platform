@@ -1,10 +1,17 @@
 import { QueryClient } from '@tanstack/react-query'
+import { ApiError } from './api'
 
 export const queryClient = new QueryClient({
   defaultOptions: {
     queries: {
       staleTime: 30_000,
-      retry: 1,
+      // A 403/404 is a permission or existence answer, not a fluke — retrying
+      // it just costs a second round trip for the same denial (T111). Every
+      // other failure (network blip, 5xx) still gets the one retry.
+      retry: (failureCount, error) => {
+        if (error instanceof ApiError && (error.status === 403 || error.status === 404)) return false
+        return failureCount < 1
+      },
       refetchOnWindowFocus: false,
     },
   },
@@ -16,6 +23,8 @@ export const qk = {
   bundle: (id: string) => ['bundle', id] as const,
   subscription: (id: string) => ['subscription', id] as const,
   members: (id: string) => ['members', id] as const,
+  roles: (id: string) => ['roles', id] as const,
+  permissions: (id: string) => ['permissions', id] as const,
   branchActivity: (id: string) => ['branch-activity', id] as const,
   hqBranches: (id: string) => ['hq-branches', id] as const,
   catalogGroups: (id: string) => ['catalog-groups', id] as const,

@@ -51,6 +51,7 @@ import type {
   ProductDetailResponse,
   ProductsReportResponse,
   ReportSort,
+  RoleView,
   SalesReportResponse,
   Session,
   StaffReportResponse,
@@ -99,6 +100,18 @@ export class OrderUnavailableError extends ApiError {
     super(409, message)
     this.shortfalls = shortfalls
     this.name = 'OrderUnavailableError'
+  }
+}
+
+// DeleteRole's D8 refusal (409) — carries the assigned member count so the
+// console can word "reassign N members first" instead of a generic failure,
+// the same shape tenant.RoleAssignedError gives the Go layer.
+export class RoleAssignedError extends ApiError {
+  count: number
+  constructor(message: string, count: number) {
+    super(409, message)
+    this.count = count
+    this.name = 'RoleAssignedError'
   }
 }
 
@@ -332,12 +345,50 @@ export const api = {
   // Invite/revoke are owner-only server-side (403 for anyone else).
   listMembers: (tenantId: string) =>
     request<Member[] | null>(`/v1/tenants/${tenantId}/members`).then((r) => r ?? []),
-  inviteMember: (tenantId: string, email: string) =>
-    request<Member>(`/v1/tenants/${tenantId}/members`, post({ email })),
+  inviteMember: (tenantId: string, email: string, roleId: string, branchIds: string[]) =>
+    request<Member>(
+      `/v1/tenants/${tenantId}/members`,
+      post({ email, role_id: roleId, branch_ids: branchIds }),
+    ),
   revokeMember: (tenantId: string, memberId: string) =>
     request<{ status: string }>(`/v1/tenants/${tenantId}/members/${memberId}`, {
       method: 'DELETE',
     }),
+  // Reassign a member's role and branch allowlist (T109/T113). Owner-only
+  // server-side; the owner row and an unknown role/branch are plain error
+  // strings (ErrCannotModifyOwner/ErrUnknownRole/ErrUnknownBranch), no
+  // structured body, so this goes through the generic `request()` helper
+  // unlike deleteRole above.
+  assignMemberRole: (tenantId: string, memberId: string, roleId: string, branchIds: string[]) =>
+    request<Member>(`/v1/tenants/${tenantId}/members/${memberId}`, {
+      method: 'PATCH',
+      body: JSON.stringify({ role_id: roleId, branch_ids: branchIds }),
+    }),
+
+  // Roles (T112): reads are any member (the members table labels rows with
+  // a role name), writes are owner-only server-side (403 for anyone else).
+  listRoles: (tenantId: string) =>
+    request<RoleView[] | null>(`/v1/tenants/${tenantId}/roles`).then((r) => r ?? []),
+  permissions: (tenantId: string) =>
+    request<string[] | null>(`/v1/tenants/${tenantId}/permissions`).then((r) => r ?? []),
+  createRole: (tenantId: string, name: string, permissions: string[]) =>
+    request<RoleView>(`/v1/tenants/${tenantId}/roles`, post({ name, permissions })),
+  updateRole: (tenantId: string, roleId: string, name: string, permissions: string[]) =>
+    request<RoleView>(`/v1/tenants/${tenantId}/roles/${roleId}`, {
+      method: 'PUT',
+      body: JSON.stringify({ name, permissions }),
+    }),
+  // Bypasses the generic `request()` helper because a D8 refusal (409)
+  // carries a structured `count`, not just an `error` string — same
+  // reasoning as createOrder's shortfalls above.
+  async deleteRole(tenantId: string, roleId: string): Promise<void> {
+    const res = await rawFetch(`/v1/tenants/${tenantId}/roles/${roleId}`, { method: 'DELETE' })
+    if (res.status === 409) {
+      const body = (await res.json().catch(() => ({}))) as { error?: string; count?: number }
+      throw new RoleAssignedError(body.error ?? 'الدور مُسند إلى أعضاء', body.count ?? 0)
+    }
+    if (!res.ok) throw new ApiError(res.status, await parseError(res))
+  },
 
   // billing (Phase 10): bills + derived subscription state, read-only here —
   // recording/voiding bills is an admin-only action (admin app).

@@ -1,6 +1,7 @@
 import { NavLink, Outlet, useLocation, useParams } from 'react-router-dom'
 import { cn } from '@/lib/utils'
-import { useTenantEvents } from '@/lib/hooks'
+import { useBundle, useTenantEvents } from '@/lib/hooks'
+import { can, PERM, useScope } from '@/lib/perm'
 import { Brand } from '@/components/Brand'
 import { Breadcrumbs } from '@/components/Breadcrumbs'
 import { AccountMenu } from '@/components/AccountMenu'
@@ -28,6 +29,12 @@ interface NavItem {
   label: string
   icon: IconComponent
   end?: boolean
+  // The D3 `view` code gating this section's nav entry. Absent means always
+  // visible (spec D3: نظرة عامة/تنزيل التطبيق/الإعدادات need no code, and
+  // النشاط التجاري has no `view` code at all — company.manage gates only
+  // the edit form (T115), never the page, so a member without it still
+  // reaches the read-only company profile).
+  code?: string
 }
 
 export function AppShell() {
@@ -38,19 +45,38 @@ export function AppShell() {
   // Live branch events for every console page under this shell.
   useTenantEvents(tenantId)
 
+  // Single scope read for this render; every nav item below is checked
+  // against it via the plain `can()` function rather than calling a hook
+  // per item.
+  const scope = useScope(tenantId)
+
+  // T123 — the persistent scope banner. `useBundle` is already fetched by
+  // `SetupGate` above this shell (same tenant id, same query key), so this
+  // costs no extra request; it's read here only for branch *names* to put
+  // next to the ids the scope already carries.
+  const { data: bundle } = useBundle(tenantId)
+  const scopedBranchNames =
+    scope && scope.branch_ids.length > 0
+      ? scope.branch_ids
+          .map((id) => bundle?.Branches?.find((b) => b.ID === id)?.Name)
+          .filter((n): n is string => !!n)
+      : []
+
+  // Nav rule (spec D3): a nav item renders iff its `view` permission
+  // resolves true — never a greyed-out entry that 403s on click.
   const nav: NavItem[] = [
     { to: base, label: 'نظرة عامة', icon: DashboardIcon, end: true },
-    { to: `${base}/branches`, label: 'الفروع', icon: BranchIcon },
-    { to: `${base}/catalog`, label: 'الكتالوج', icon: CatalogIcon },
-    { to: `${base}/inventory`, label: 'المخزون', icon: InventoryIcon },
-    { to: `${base}/customers`, label: 'العملاء', icon: UsersIcon },
-    { to: `${base}/suppliers`, label: 'الموردون', icon: SupplierIcon },
-    { to: `${base}/orders`, label: 'الطلبات', icon: OrdersIcon },
-    { to: `${base}/reports`, label: 'التقارير', icon: ReportsIcon },
+    { to: `${base}/branches`, label: 'الفروع', icon: BranchIcon, code: PERM.BranchesView },
+    { to: `${base}/catalog`, label: 'الكتالوج', icon: CatalogIcon, code: PERM.CatalogView },
+    { to: `${base}/inventory`, label: 'المخزون', icon: InventoryIcon, code: PERM.InventoryView },
+    { to: `${base}/customers`, label: 'العملاء', icon: UsersIcon, code: PERM.CustomersView },
+    { to: `${base}/suppliers`, label: 'الموردون', icon: SupplierIcon, code: PERM.SuppliersView },
+    { to: `${base}/orders`, label: 'الطلبات', icon: OrdersIcon, code: PERM.OrdersView },
+    { to: `${base}/reports`, label: 'التقارير', icon: ReportsIcon, code: PERM.ReportsView },
     { to: `${base}/company`, label: 'النشاط التجاري', icon: CompanyIcon },
     { to: `${base}/download`, label: 'تنزيل التطبيق', icon: DownloadIcon },
     { to: `${base}/settings`, label: 'الإعدادات', icon: SettingsIcon },
-  ]
+  ].filter((item) => !item.code || can(scope, item.code))
 
   // Reachable only via deep-link (the notifications bell / Overview alerts) —
   // deliberately absent from `nav` so it has no sidebar entry, but still
@@ -150,6 +176,19 @@ export function AppShell() {
             <AccountMenu />
           </div>
         </header>
+
+        {/* T123 — quiet persistent scope indicator (spec D4/D5): a scoped
+            member sees this on every screen so a branch-filtered number is
+            never mistaken for a company total. Lives outside the scroll
+            container so it never scrolls away, and renders nothing at all
+            for an unscoped member (owner or unscoped role) — no behaviour
+            change for that case. */}
+        {scopedBranchNames.length > 0 && (
+          <div className="shrink-0 border-b border-info/30 bg-info/10 px-5 py-2 text-xs text-info">
+            أنت ترى بيانات {scopedBranchNames.length === 1 ? 'فرع' : 'فروع'} محددة فقط:{' '}
+            <span className="font-medium">{scopedBranchNames.join('، ')}</span>
+          </div>
+        )}
 
         {/* The scroll container is this full-width box rather than `<main>`, so
             the scrollbar rides the window edge instead of the centered column's.

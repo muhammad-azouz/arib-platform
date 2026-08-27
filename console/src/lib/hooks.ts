@@ -18,6 +18,7 @@ import type {
   NewSupplierInput,
   PriceChangeInput,
   ReportSort,
+  RoleView,
   SupplierDebtFilter,
   SupplierEditInput,
   Tenant,
@@ -74,11 +75,24 @@ export function useMembers(tenantId: string | undefined) {
   })
 }
 
-/** Invite a member by email (`POST …/members`). Owner-only. */
+/**
+ * Invite a member by email (`POST …/members`). Owner-only. As of T125,
+ * role and branches are sent up front (the API's own role_id/branch_ids
+ * stay optional server-side — T124 — but the dialog always makes both
+ * required so a new member has real access from their first sign-in).
+ */
 export function useInviteMember(tenantId: string) {
   const qc = useQueryClient()
   return useMutation({
-    mutationFn: (email: string) => api.inviteMember(tenantId, email),
+    mutationFn: ({
+      email,
+      roleId,
+      branchIds,
+    }: {
+      email: string
+      roleId: string
+      branchIds: string[]
+    }) => api.inviteMember(tenantId, email, roleId, branchIds),
     onSuccess: (member) => {
       qc.setQueryData<Member[]>(qk.members(tenantId), (prev) =>
         prev ? [...prev, member] : prev,
@@ -98,6 +112,110 @@ export function useRevokeMember(tenantId: string) {
         prev?.filter((m) => m.id !== memberId),
       )
       void qc.invalidateQueries({ queryKey: qk.members(tenantId) })
+    },
+  })
+}
+
+/**
+ * Reassign a member's role (+ branch allowlist, unchanged here — T123 owns
+ * the picker) via `PATCH …/members/{id}`. Owner-only. Patches the one row in
+ * the `qk.members` cache directly rather than invalidating, so the table
+ * updates without a full refetch (T113's first acceptance criterion) — the
+ * change still only takes effect for the member themselves on their next
+ * request (D7), nothing to do client-side for that.
+ */
+export function useAssignMemberRole(tenantId: string) {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: ({
+      memberId,
+      roleId,
+      branchIds,
+    }: {
+      memberId: string
+      roleId: string
+      branchIds: string[]
+    }) => api.assignMemberRole(tenantId, memberId, roleId, branchIds),
+    onSuccess: (member) => {
+      qc.setQueryData<Member[]>(qk.members(tenantId), (prev) =>
+        prev?.map((m) => (m.id === member.id ? member : m)),
+      )
+    },
+  })
+}
+
+/** Custom roles for this tenant, with assigned-member counts (T112). */
+export function useRoles(tenantId: string | undefined) {
+  return useQuery({
+    queryKey: qk.roles(tenantId ?? ''),
+    queryFn: () => api.listRoles(tenantId as string),
+    enabled: !!tenantId,
+  })
+}
+
+/** The full permission-code catalog for the role editor's grid (T112). */
+export function usePermissions(tenantId: string | undefined) {
+  return useQuery({
+    queryKey: qk.permissions(tenantId ?? ''),
+    queryFn: () => api.permissions(tenantId as string),
+    enabled: !!tenantId,
+  })
+}
+
+/** Create a role — owner-only server-side (`POST …/roles`). */
+export function useCreateRole(tenantId: string) {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: ({ name, permissions }: { name: string; permissions: string[] }) =>
+      api.createRole(tenantId, name, permissions),
+    onSuccess: (role) => {
+      qc.setQueryData<RoleView[]>(qk.roles(tenantId), (prev) =>
+        prev ? [...prev, role] : prev,
+      )
+      void qc.invalidateQueries({ queryKey: qk.roles(tenantId) })
+    },
+  })
+}
+
+/** Rename/re-permission a role — owner-only server-side (`PUT …/roles/{id}`). */
+export function useUpdateRole(tenantId: string) {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: ({
+      roleId,
+      name,
+      permissions,
+    }: {
+      roleId: string
+      name: string
+      permissions: string[]
+    }) => api.updateRole(tenantId, roleId, name, permissions),
+    onSuccess: (role) => {
+      qc.setQueryData<RoleView[]>(qk.roles(tenantId), (prev) =>
+        prev?.map((r) => (r.id === role.id ? role : r)),
+      )
+      void qc.invalidateQueries({ queryKey: qk.roles(tenantId) })
+      // A member holding this role picks up the new permission set on their
+      // next request — the bundle (and therefore useScope/useCan) is keyed
+      // per-tenant, not per-role, so it has no reason to know this changed.
+      void qc.invalidateQueries({ queryKey: qk.bundle(tenantId) })
+    },
+  })
+}
+
+/**
+ * Delete a role — owner-only server-side, refused (409, `RoleAssignedError`)
+ * while any member still holds it (D8: reassign first, no cascade).
+ */
+export function useDeleteRole(tenantId: string) {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: (roleId: string) => api.deleteRole(tenantId, roleId),
+    onSuccess: (_status, roleId) => {
+      qc.setQueryData<RoleView[]>(qk.roles(tenantId), (prev) =>
+        prev?.filter((r) => r.id !== roleId),
+      )
+      void qc.invalidateQueries({ queryKey: qk.roles(tenantId) })
     },
   })
 }

@@ -1,6 +1,7 @@
 import { Link, useParams } from 'react-router-dom'
 import { useConflicts, useHqBranches, useInventoryAttention, useSubscription } from '@/lib/hooks'
 import { deriveAlerts } from '@/lib/alerts'
+import { can, PERM, useScope } from '@/lib/perm'
 import { toArabicDigits } from '@/lib/format'
 import { BellIcon, DangerIcon, InfoIcon, SuccessIcon } from '@/components/icon'
 import { Button } from '@/components/ui/button'
@@ -17,21 +18,29 @@ import {
  * Bell + count badge in the AppShell header. Mounts the same three queries as
  * Overview's alerts panel (all cached/shared keys, SSE-live) and feeds them
  * through the same `deriveAlerts`, so the badge count always equals the
- * Overview panel's row count by construction.
+ * Overview panel's row count by construction — including which sections are
+ * gated off, since both read the same `useScope`/`can` (T114, spec D10):
+ * the unread count can never include a conflict or stock alert the member
+ * has no permission to open.
  */
 export function NotificationsBell() {
   const { tenantId } = useParams<'tenantId'>()
-  const { data: hq } = useHqBranches(tenantId)
-  const { data: attention } = useInventoryAttention(tenantId, {})
-  const { data: conflicts } = useConflicts(tenantId, {})
+  const scope = useScope(tenantId)
+  const canBranches = can(scope, PERM.BranchesView)
+  const canInventory = can(scope, PERM.InventoryView)
+  const canConflicts = can(scope, PERM.ConflictsView)
+
+  const hqQuery = useHqBranches(canBranches ? tenantId : undefined)
+  const attentionQuery = useInventoryAttention(canInventory ? tenantId : undefined, {})
+  const conflictsQuery = useConflicts(canConflicts ? tenantId : undefined, {})
   const { data: subscription } = useSubscription(tenantId)
 
-  if (!tenantId || !hq) return null
+  if (!tenantId) return null
 
   const alerts = deriveAlerts(tenantId, {
-    branches: hq.branches,
-    attention: attention?.data.counts,
-    conflictsUnacked: conflicts?.data.unacked,
+    branches: canBranches ? hqQuery.data?.branches : undefined,
+    attention: canInventory ? attentionQuery.data?.data.counts : undefined,
+    conflictsUnacked: canConflicts ? conflictsQuery.data?.data.unacked : undefined,
     subscription: subscription?.summary,
   })
   const hasConflictAlert = alerts.some((a) => a.key === 'conflicts')

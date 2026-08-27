@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { useNavigate, useParams, useSearchParams } from 'react-router-dom'
 import { ApiError } from '@/lib/api'
 import { useBundle, useCatalogGroups, useCatalogProducts } from '@/lib/hooks'
+import { PERM, useCanUnscoped } from '@/lib/perm'
 import { toArabicDigits } from '@/lib/format'
 import type { CatalogProduct } from '@/lib/types'
 import { CreateProductDialog } from '@/components/CreateProductDialog'
@@ -28,6 +29,10 @@ const PAGE_SIZE = 25
 export function Catalog() {
   const { tenantId } = useParams<'tenantId'>()
   const { data: bundle } = useBundle(tenantId)
+  // POST /hq/catalog/products is D5c-unscoped (a Tier-A write that lands at
+  // every branch), so the create affordance requires an unscoped member, not
+  // just catalog.manage — a scoped manager still sees the read path below.
+  const canManage = useCanUnscoped(tenantId, PERM.CatalogManage)
   // The command palette's "بحث في الكتالوج…" row deep-links here with
   // ?search= — honor it as the initial value only (not kept in sync with
   // the URL afterwards, same as every other filter on this page).
@@ -79,14 +84,16 @@ export function Catalog() {
         title="الكتالوج"
         description="المجموعات والأصناف والأسعار عبر كل الفروع."
         actions={
-          <Button onClick={() => setCreateOpen(true)}>
-            <AddIcon className="size-4" />
-            منتج جديد
-          </Button>
+          canManage ? (
+            <Button onClick={() => setCreateOpen(true)}>
+              <AddIcon className="size-4" />
+              منتج جديد
+            </Button>
+          ) : undefined
         }
       />
 
-      {tenantId && (
+      {tenantId && canManage && (
         <CreateProductDialog tenantId={tenantId} open={createOpen} onOpenChange={setCreateOpen} />
       )}
 

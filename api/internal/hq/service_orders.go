@@ -57,7 +57,7 @@ type OrderAvailabilityEnvelope struct {
 // figures for one branch in a single gateway call (T17) — never one call
 // per line, however large the cart.
 func (s *Service) OrderAvailability(ctx context.Context, accountID, tenantID, branchID string, productIDs []string) (*OrderAvailabilityEnvelope, error) {
-	t, shard, err := s.resolveGateway(ctx, accountID, tenantID)
+	t, shard, _, err := s.resolveGateway(ctx, accountID, tenantID)
 	if err != nil {
 		return nil, err
 	}
@@ -103,7 +103,7 @@ type DeliveryFeeEnvelope struct {
 // console can show the resolved number before the operator saves. Returns
 // ErrNotFound when the branch or the customer doesn't exist.
 func (s *Service) DeliveryFee(ctx context.Context, accountID, tenantID, branchID, partnerID string) (*DeliveryFeeEnvelope, error) {
-	t, shard, err := s.resolveGateway(ctx, accountID, tenantID)
+	t, shard, _, err := s.resolveGateway(ctx, accountID, tenantID)
 	if err != nil {
 		return nil, err
 	}
@@ -153,7 +153,11 @@ type OrdersEnvelope struct {
 // Orders returns one page of the order list. params carries
 // status/branch_id/search/page/page_size straight through to the gateway.
 func (s *Service) Orders(ctx context.Context, accountID, tenantID string, params url.Values) (*OrdersEnvelope, error) {
-	t, shard, err := s.resolveGateway(ctx, accountID, tenantID)
+	t, shard, scope, err := s.resolveGateway(ctx, accountID, tenantID)
+	if err != nil {
+		return nil, err
+	}
+	params, err = applyScope(params, scope)
 	if err != nil {
 		return nil, err
 	}
@@ -233,14 +237,19 @@ type OrderDetailEnvelope struct {
 }
 
 // OrderDetail fetches one order's full detail, including its transfer
-// history. Returns ErrNotFound for an unknown id.
+// history. Returns ErrNotFound for an unknown id, and, for a scoped caller,
+// for an order at a branch outside the allowlist (spec D5b, T120) — the two
+// cases are deliberately indistinguishable to the caller.
 func (s *Service) OrderDetail(ctx context.Context, accountID, tenantID, orderID string) (*OrderDetailEnvelope, error) {
-	t, shard, err := s.resolveGateway(ctx, accountID, tenantID)
+	t, shard, scope, err := s.resolveGateway(ctx, accountID, tenantID)
 	if err != nil {
 		return nil, err
 	}
 	var detail OrderDetail
 	if err := s.getJSON(ctx, shard.GatewayURL+"/hq/orders/"+orderID, t.DBName, &detail); err != nil {
+		return nil, err
+	}
+	if err := hideOutOfScopeRow(scope, detail.BranchID); err != nil {
 		return nil, err
 	}
 	source, asOf := s.tenantFreshness(ctx, tenantID)
@@ -302,8 +311,11 @@ func (e *OrderUnavailableError) Error() string { return "one or more lines excee
 // partner/product, *OrderUnavailableError for a D16 stock refusal, or
 // ErrMissingAccountOperand for a missing OQ1 posting-account mapping.
 func (s *Service) CreateOrder(ctx context.Context, accountID, tenantID string, input NewOrder) (*NewOrderResult, error) {
-	t, shard, err := s.resolveGateway(ctx, accountID, tenantID)
+	t, shard, scope, err := s.resolveGateway(ctx, accountID, tenantID)
 	if err != nil {
+		return nil, err
+	}
+	if err := requireBranchInScope(scope, input.BranchID); err != nil {
 		return nil, err
 	}
 	tok, err := s.tokens.IssueHQToken(t.DBName)
@@ -374,12 +386,22 @@ type CancelOrderResult struct {
 // CancelOrder cancels a still-New order (D4: HQ's cancel authority is
 // New-only, stricter than the assigned branch's own — see
 // CancelOrderAsync's doc comment in HqApi.cs). Returns ErrNotFound for an
-// unknown id or *OrderNotCancellableError once the order has moved past
-// New or was already delivered.
+// unknown id, for an order at a branch outside a scoped caller's allowlist
+// (spec D5b, T120), or *OrderNotCancellableError once the order has moved
+// past New or was already delivered.
 func (s *Service) CancelOrder(ctx context.Context, accountID, tenantID, orderID string, reason *string) (*CancelOrderResult, error) {
-	t, shard, err := s.resolveGateway(ctx, accountID, tenantID)
+	t, shard, scope, err := s.resolveGateway(ctx, accountID, tenantID)
 	if err != nil {
 		return nil, err
+	}
+	if scope != nil && !scope.IsUnscoped() {
+		branchID, err := s.rowBranchID(ctx, shard, t.DBName, "/hq/orders/"+orderID)
+		if err != nil {
+			return nil, err
+		}
+		if err := hideOutOfScopeRow(scope, branchID); err != nil {
+			return nil, err
+		}
 	}
 	tok, err := s.tokens.IssueHQToken(t.DBName)
 	if err != nil {
@@ -433,12 +455,27 @@ type TransferOrderResult struct {
 
 // TransferOrder closes the order at its current branch and reissues it at
 // toBranchID under the same Ref (D7), ensuring the customer exists there
-// (D8/OQ1). Same D4 New-only gate as CancelOrder. Returns ErrNotFound,
-// *OrderNotTransferableError, *InvalidCustomerInputError (unknown
-// toBranchID), or ErrMissingAccountOperand.
+// (D8/OQ1). Same D4 New-only gate as CancelOrder. Returns ErrNotFound for
+// an unknown id or, for a scoped caller, an order at a branch outside the
+// allowlist; ErrForbiddenScope if toBranchID (the destination) is outside
+// the allowlist (spec D5b, T120); *OrderNotTransferableError;
+// *InvalidCustomerInputError (unknown toBranchID); or
+// ErrMissingAccountOperand.
 func (s *Service) TransferOrder(ctx context.Context, accountID, tenantID, orderID, toBranchID string) (*TransferOrderResult, error) {
-	t, shard, err := s.resolveGateway(ctx, accountID, tenantID)
+	t, shard, scope, err := s.resolveGateway(ctx, accountID, tenantID)
 	if err != nil {
+		return nil, err
+	}
+	if scope != nil && !scope.IsUnscoped() {
+		branchID, err := s.rowBranchID(ctx, shard, t.DBName, "/hq/orders/"+orderID)
+		if err != nil {
+			return nil, err
+		}
+		if err := hideOutOfScopeRow(scope, branchID); err != nil {
+			return nil, err
+		}
+	}
+	if err := requireBranchInScope(scope, toBranchID); err != nil {
 		return nil, err
 	}
 	tok, err := s.tokens.IssueHQToken(t.DBName)

@@ -1,9 +1,11 @@
 package hq
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
+	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -12,14 +14,18 @@ import (
 	"time"
 
 	"github.com/aribpos/license-api/internal/model"
+	"github.com/aribpos/license-api/internal/perm"
 	mongostore "github.com/aribpos/license-api/internal/store/mongo"
 )
 
 // fakeStore serves one tenant, one shard and its branches from memory.
+// memberCalls counts MemberByAccount invocations — T105's acceptance that a
+// context-cached perm.Scope costs zero further membership reads.
 type fakeStore struct {
-	tenant   model.Tenant
-	shard    model.Shard
-	branches []model.Branch
+	tenant      model.Tenant
+	shard       model.Shard
+	branches    []model.Branch
+	memberCalls int
 }
 
 func (f *fakeStore) BranchesByTenant(_ context.Context, tenantID string) ([]model.Branch, error) {
@@ -45,11 +51,12 @@ func (f *fakeStore) ShardByID(_ context.Context, id string) (*model.Shard, error
 	return &s, nil
 }
 
-func (f *fakeStore) MemberRole(_ context.Context, tenantID, accountID string) (model.MemberRole, error) {
+func (f *fakeStore) MemberByAccount(_ context.Context, tenantID, accountID string) (*model.TenantMember, error) {
+	f.memberCalls++
 	if tenantID != f.tenant.ID || accountID != f.tenant.AccountID {
-		return "", mongostore.ErrNotFound
+		return nil, mongostore.ErrNotFound
 	}
-	return model.RoleOwner, nil
+	return &model.TenantMember{TenantID: tenantID, AccountID: accountID, Role: model.RoleOwner}, nil
 }
 
 type fakeTokens struct{ minted string }
@@ -1479,5 +1486,783 @@ func TestImportCustomers_ForwardsBodyAndDecodesResult(t *testing.T) {
 	}
 	if result.Created != 1 || len(result.Errors) != 1 || result.Errors[0].Message != "branch not found" {
 		t.Fatalf("import result wrong: %+v", result)
+	}
+}
+
+// --- T105: resolveGateway reads the resolved Scope from context ---
+
+// TestResolveGateway_ContextScopeAvoidsSecondMembershipRead is T105's core
+// acceptance: httpapi's requirePerm middleware (T104) already spends one
+// MemberByAccount read resolving a perm.Scope; a service call that reuses
+// that same request context must not spend a second one.
+func TestResolveGateway_ContextScopeAvoidsSecondMembershipRead(t *testing.T) {
+	fs := testStore("http://unused")
+	s := &Service{store: fs}
+	scope := &perm.Scope{
+		AccountID: fs.tenant.AccountID, TenantID: fs.tenant.ID,
+		Role: string(model.RoleOwner), Permissions: perm.All,
+	}
+	ctx := perm.WithScope(context.Background(), scope)
+
+	_, _, got, err := s.resolveGateway(ctx, fs.tenant.AccountID, fs.tenant.ID)
+	if err != nil {
+		t.Fatalf("resolveGateway: %v", err)
+	}
+	if fs.memberCalls != 0 {
+		t.Fatalf("MemberByAccount called %d times, want 0 — the Scope was already in context", fs.memberCalls)
+	}
+	if got != scope {
+		t.Fatalf("resolveGateway returned a different Scope than the one stashed in context")
+	}
+}
+
+// TestResolveGateway_EmptyContextFallsBackToOneMembershipRead proves T105's
+// other half: a non-HTTP caller (or any test using context.Background(), as
+// every other test in this file does) still resolves correctly — one
+// MemberByAccount read, same as before T105 — so nothing outside the
+// requirePerm chain silently breaks.
+func TestResolveGateway_EmptyContextFallsBackToOneMembershipRead(t *testing.T) {
+	fs := testStore("http://unused")
+	s := &Service{store: fs}
+
+	_, _, got, err := s.resolveGateway(context.Background(), fs.tenant.AccountID, fs.tenant.ID)
+	if err != nil {
+		t.Fatalf("resolveGateway: %v", err)
+	}
+	if fs.memberCalls != 1 {
+		t.Fatalf("MemberByAccount called %d times, want exactly 1", fs.memberCalls)
+	}
+	if got == nil || got.Role != string(model.RoleOwner) || got.TenantID != fs.tenant.ID {
+		t.Fatalf("resolved scope = %+v, want owner scope for %s", got, fs.tenant.ID)
+	}
+}
+
+// TestResolveGateway_ScopeForAnotherTenantIsIgnored guards the safety check
+// in membership.RequireScope: a context carrying a Scope resolved for a
+// different tenant (impossible in the single-tenant-per-request HTTP path,
+// but cheap to make impossible in code too) must not be trusted — the call
+// falls back to a fresh read instead of leaking access across tenants.
+func TestResolveGateway_ScopeForAnotherTenantIsIgnored(t *testing.T) {
+	fs := testStore("http://unused")
+	s := &Service{store: fs}
+	staleScope := &perm.Scope{AccountID: fs.tenant.AccountID, TenantID: "tnt_other", Role: string(model.RoleOwner), Permissions: perm.All}
+	ctx := perm.WithScope(context.Background(), staleScope)
+
+	_, _, got, err := s.resolveGateway(ctx, fs.tenant.AccountID, fs.tenant.ID)
+	if err != nil {
+		t.Fatalf("resolveGateway: %v", err)
+	}
+	if fs.memberCalls != 1 {
+		t.Fatalf("MemberByAccount called %d times, want 1 — a scope for a different tenant must not short-circuit", fs.memberCalls)
+	}
+	if got == staleScope || got.TenantID != fs.tenant.ID {
+		t.Fatalf("resolveGateway trusted a scope resolved for a different tenant: %+v", got)
+	}
+}
+
+// TestCheckOwnership_ContextScopeAvoidsSecondMembershipRead covers
+// CheckOwnership's switch from membership.Require to membership.RequireScope
+// (T105, widened to the full Scope by T122) — the SSE endpoint's one-time
+// ownership check also benefits.
+func TestCheckOwnership_ContextScopeAvoidsSecondMembershipRead(t *testing.T) {
+	fs := testStore("http://unused")
+	s := &Service{store: fs}
+	scope := &perm.Scope{AccountID: fs.tenant.AccountID, TenantID: fs.tenant.ID, Role: string(model.RoleOwner), Permissions: perm.All}
+	ctx := perm.WithScope(context.Background(), scope)
+
+	got, err := s.CheckOwnership(ctx, fs.tenant.AccountID, fs.tenant.ID)
+	if err != nil {
+		t.Fatalf("CheckOwnership: %v", err)
+	}
+	if got != scope {
+		t.Fatalf("CheckOwnership returned a different Scope than the one already in context: %+v", got)
+	}
+	if fs.memberCalls != 0 {
+		t.Fatalf("MemberByAccount called %d times, want 0 — the Scope was already in context", fs.memberCalls)
+	}
+}
+
+// --- T119: branch scoping — a scoped member's request never crosses their
+// branch allowlist, and an unscoped caller's request is byte-identical to
+// pre-T119 behaviour. ---
+
+// scopedCtx stashes a member Scope in context (as httpapi's requirePerm
+// middleware would have already done for a real request), so resolveGateway
+// picks it up without a MemberByAccount read — same technique the T105
+// tests above use. A nil/empty branchIDs models an unscoped member (D4).
+func scopedCtx(fs *fakeStore, branchIDs []string) context.Context {
+	return perm.WithScope(context.Background(), &perm.Scope{
+		AccountID: fs.tenant.AccountID, TenantID: fs.tenant.ID,
+		Role: "member", Permissions: perm.All, BranchIDs: branchIDs,
+	})
+}
+
+// sameSet reports whether got holds exactly the values in want, any order —
+// applyScope injects the allowlist as a Go map iterated in random order.
+func sameSet(got []string, want ...string) bool {
+	if len(got) != len(want) {
+		return false
+	}
+	set := make(map[string]bool, len(want))
+	for _, w := range want {
+		set[w] = true
+	}
+	for _, g := range got {
+		if !set[g] {
+			return false
+		}
+	}
+	return true
+}
+
+func TestApplyScope_UnscopedIsANoOp(t *testing.T) {
+	params := url.Values{"search": {"x"}}
+
+	t.Run("nil scope", func(t *testing.T) {
+		out, err := applyScope(params, nil)
+		if err != nil || out.Encode() != params.Encode() {
+			t.Fatalf("got %v, %v", out, err)
+		}
+	})
+	t.Run("owner (empty allowlist)", func(t *testing.T) {
+		owner := &perm.Scope{Role: string(model.RoleOwner), Permissions: perm.All}
+		out, err := applyScope(params, owner)
+		if err != nil || out.Encode() != params.Encode() {
+			t.Fatalf("got %v, %v", out, err)
+		}
+	})
+}
+
+func TestApplyScope_InjectsAllowlistWhenCallerSuppliesNoBranchID(t *testing.T) {
+	scope := &perm.Scope{Role: "member", Permissions: perm.All, BranchIDs: []string{"b2", "b7"}}
+	out, err := applyScope(url.Values{"search": {"x"}}, scope)
+	if err != nil {
+		t.Fatalf("applyScope: %v", err)
+	}
+	if !sameSet(out["branch_id"], "b2", "b7") {
+		t.Fatalf("branch_id = %v, want exactly [b2 b7]", out["branch_id"])
+	}
+	if out.Get("search") != "x" {
+		t.Fatalf("other params lost: %v", out)
+	}
+}
+
+func TestApplyScope_RefusesOutOfAllowlistBranchID(t *testing.T) {
+	scope := &perm.Scope{Role: "member", Permissions: perm.All, BranchIDs: []string{"b2", "b7"}}
+	_, err := applyScope(url.Values{"branch_id": {"b9"}}, scope)
+	if !errors.Is(err, ErrForbiddenScope) {
+		t.Fatalf("expected ErrForbiddenScope, got %v", err)
+	}
+	// Even one bad id among several must refuse the whole request, not
+	// silently narrow to the allowed subset.
+	_, err = applyScope(url.Values{"branch_id": {"b2", "b9"}}, scope)
+	if !errors.Is(err, ErrForbiddenScope) {
+		t.Fatalf("expected ErrForbiddenScope for a partially-out-of-scope filter, got %v", err)
+	}
+}
+
+func TestApplyScope_AllowsInAllowlistBranchIDUnchanged(t *testing.T) {
+	scope := &perm.Scope{Role: "member", Permissions: perm.All, BranchIDs: []string{"b2", "b7"}}
+	params := url.Values{"branch_id": {"b2"}}
+	out, err := applyScope(params, scope)
+	if err != nil || out.Encode() != params.Encode() {
+		t.Fatalf("got %v, %v — a caller-chosen in-allowlist branch_id must pass through as-is", out, err)
+	}
+}
+
+func TestInventoryProducts_ScopedMemberInjectsAllowlistWhenUnfiltered(t *testing.T) {
+	var gotQuery url.Values
+	gw := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotQuery = r.URL.Query()
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"total":0,"page":1,"page_size":50,"items":[]}`))
+	}))
+	defer gw.Close()
+
+	fs := testStore(gw.URL)
+	s := New(fs, &fakeTokens{}, nil)
+	ctx := scopedCtx(fs, []string{"b2", "b7"})
+
+	if _, err := s.InventoryProducts(ctx, fs.tenant.AccountID, fs.tenant.ID, url.Values{"status": {"low"}}); err != nil {
+		t.Fatalf("inventory products: %v", err)
+	}
+	if !sameSet(gotQuery["branch_id"], "b2", "b7") {
+		t.Fatalf("gateway saw branch_id=%v, want exactly [b2 b7]", gotQuery["branch_id"])
+	}
+	if gotQuery.Get("status") != "low" {
+		t.Fatalf("other params lost: %v", gotQuery)
+	}
+}
+
+func TestInventoryProducts_ScopedMemberRefusedOutOfAllowlist(t *testing.T) {
+	called := false
+	gw := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		called = true
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer gw.Close()
+
+	fs := testStore(gw.URL)
+	s := New(fs, &fakeTokens{}, nil)
+	ctx := scopedCtx(fs, []string{"b2", "b7"})
+
+	_, err := s.InventoryProducts(ctx, fs.tenant.AccountID, fs.tenant.ID, url.Values{"branch_id": {"b9"}})
+	if !errors.Is(err, ErrForbiddenScope) {
+		t.Fatalf("expected ErrForbiddenScope, got %v", err)
+	}
+	if called {
+		t.Fatalf("gateway must not be called once the filter is refused")
+	}
+}
+
+func TestInventoryProducts_UnscopedMemberRequestUnchanged(t *testing.T) {
+	var gotQuery url.Values
+	gw := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotQuery = r.URL.Query()
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"total":0,"page":1,"page_size":50,"items":[]}`))
+	}))
+	defer gw.Close()
+
+	fs := testStore(gw.URL)
+	s := New(fs, &fakeTokens{}, nil)
+	ctx := scopedCtx(fs, nil) // a member with an empty allowlist — unscoped per D4
+
+	if _, err := s.InventoryProducts(ctx, fs.tenant.AccountID, fs.tenant.ID, url.Values{"search": {"x"}}); err != nil {
+		t.Fatalf("inventory products: %v", err)
+	}
+	if _, ok := gotQuery["branch_id"]; ok {
+		t.Fatalf("gateway saw an injected branch_id for an unscoped caller: %v", gotQuery)
+	}
+	if gotQuery.Get("search") != "x" {
+		t.Fatalf("search param lost: %v", gotQuery)
+	}
+}
+
+func TestInventoryAttention_ScopedMemberFiltersStaleBranchMergeToo(t *testing.T) {
+	fresh := time.Now().UTC().Add(-2 * time.Minute)
+	stale := time.Now().UTC().Add(-2 * time.Hour)
+	gw := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"total":0,"page":1,"page_size":50,"counts":{"negative":0,"out":0,"low":0},"items":[]}`))
+	}))
+	defer gw.Close()
+
+	fs := testStore(gw.URL)
+	fs.branches = []model.Branch{
+		{ID: "b1", TenantID: "tnt_1", Name: "وسط البلد", Status: model.BranchActive, LastSyncAt: &fresh},
+		{ID: "b2", TenantID: "tnt_1", Name: "المعادي", Status: model.BranchActive, LastSyncAt: &stale}, // out of scope, stale
+		{ID: "b3", TenantID: "tnt_1", Name: "مدينة نصر", Status: model.BranchActive, LastSyncAt: &stale},
+	}
+	s := New(fs, &fakeTokens{}, nil)
+	ctx := scopedCtx(fs, []string{"b1", "b3"})
+
+	env, err := s.InventoryAttention(ctx, fs.tenant.AccountID, fs.tenant.ID, url.Values{})
+	if err != nil {
+		t.Fatalf("inventory attention: %v", err)
+	}
+	if len(env.Data.StaleBranches) != 1 || env.Data.StaleBranches[0].BranchID != "b3" {
+		t.Fatalf("stale_branches = %+v, want exactly b3 (b2 is out of scope)", env.Data.StaleBranches)
+	}
+}
+
+func TestOrders_ScopedMemberInjectsAllowlist(t *testing.T) {
+	var gotQuery url.Values
+	gw := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotQuery = r.URL.Query()
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"total":0,"page":1,"page_size":50,"items":[]}`))
+	}))
+	defer gw.Close()
+
+	fs := testStore(gw.URL)
+	s := New(fs, &fakeTokens{}, nil)
+	ctx := scopedCtx(fs, []string{"b2", "b7"})
+
+	if _, err := s.Orders(ctx, fs.tenant.AccountID, fs.tenant.ID, url.Values{"status": {"1"}}); err != nil {
+		t.Fatalf("orders: %v", err)
+	}
+	if !sameSet(gotQuery["branch_id"], "b2", "b7") {
+		t.Fatalf("gateway saw branch_id=%v, want exactly [b2 b7]", gotQuery["branch_id"])
+	}
+	if gotQuery.Get("status") != "1" {
+		t.Fatalf("status param lost: %v", gotQuery)
+	}
+}
+
+func TestOrders_ScopedMemberRefusedOutOfAllowlist(t *testing.T) {
+	fs := testStore("http://127.0.0.1:1")
+	s := New(fs, &fakeTokens{}, nil)
+	ctx := scopedCtx(fs, []string{"b2", "b7"})
+
+	_, err := s.Orders(ctx, fs.tenant.AccountID, fs.tenant.ID, url.Values{"branch_id": {"b9"}})
+	if !errors.Is(err, ErrForbiddenScope) {
+		t.Fatalf("expected ErrForbiddenScope, got %v", err)
+	}
+}
+
+func TestExportCustomers_ScopedMemberInjectsAllowlist(t *testing.T) {
+	var gotQuery url.Values
+	gw := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotQuery = r.URL.Query()
+		w.Header().Set("Content-Type", "text/csv; charset=utf-8")
+		_, _ = w.Write([]byte("code,name\n"))
+	}))
+	defer gw.Close()
+
+	fs := testStore(gw.URL)
+	s := New(fs, &fakeTokens{}, nil)
+	ctx := scopedCtx(fs, []string{"b2", "b7"})
+
+	rec := httptest.NewRecorder()
+	if err := s.ExportCustomers(ctx, fs.tenant.AccountID, fs.tenant.ID, url.Values{}, rec); err != nil {
+		t.Fatalf("export customers: %v", err)
+	}
+	if !sameSet(gotQuery["branch_id"], "b2", "b7") {
+		t.Fatalf("export gateway saw branch_id=%v, want exactly [b2 b7]", gotQuery["branch_id"])
+	}
+}
+
+func TestCatalogProductDetail_ScopedMemberFiltersAvailabilityRows(t *testing.T) {
+	fresh := time.Now().UTC().Add(-2 * time.Minute)
+	gw := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"p1","code":100,"name":"كولا","kind":1,"is_active":true,"re_order":0,"is_expire":false,` +
+			`"created_at":"2026-01-01T00:00:00Z","units":[],` +
+			`"availability":[` +
+			`{"branch_id":"b1","warehouse_id":"w1","warehouse_name":"الرئيسي","total_qty":10,"unit_cost":2.5},` +
+			`{"branch_id":"b2","warehouse_id":"w2","warehouse_name":"فرع","total_qty":4,"unit_cost":2.5}]}`))
+	}))
+	defer gw.Close()
+
+	fs := testStore(gw.URL)
+	fs.branches = []model.Branch{
+		{ID: "b1", TenantID: "tnt_1", Name: "وسط البلد", Status: model.BranchActive, LastSyncAt: &fresh},
+		{ID: "b2", TenantID: "tnt_1", Name: "المعادي", Status: model.BranchActive, LastSyncAt: &fresh},
+	}
+	s := New(fs, &fakeTokens{}, nil)
+	ctx := scopedCtx(fs, []string{"b1"})
+
+	env, err := s.CatalogProductDetail(ctx, fs.tenant.AccountID, fs.tenant.ID, "p1")
+	if err != nil {
+		t.Fatalf("catalog product detail: %v", err)
+	}
+	if len(env.Data.Availability) != 1 || env.Data.Availability[0].BranchID != "b1" {
+		t.Fatalf("availability = %+v, want only b1 — a scoped member's product detail must drop out-of-scope rows", env.Data.Availability)
+	}
+}
+
+func TestReportBranches_ScopedMemberFiltersBranchList(t *testing.T) {
+	recent := time.Now().UTC().Add(-2 * time.Minute)
+	gw := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"branches":[` +
+			`{"branch_id":"b1","sales_total":900,"sales_count":9,"refunds_total":0,"refunds_count":0,"profit":300},` +
+			`{"branch_id":"b2","sales_total":100,"sales_count":1,"refunds_total":0,"refunds_count":0,"profit":10}]}`))
+	}))
+	defer gw.Close()
+
+	fs := testStore(gw.URL)
+	fs.branches = []model.Branch{
+		{ID: "b1", TenantID: "tnt_1", Name: "وسط البلد", LastSyncAt: &recent},
+		{ID: "b2", TenantID: "tnt_1", Name: "المعادي", LastSyncAt: &recent},
+	}
+	s := New(fs, &fakeTokens{}, nil)
+	ctx := scopedCtx(fs, []string{"b1"})
+
+	env, err := s.ReportBranches(ctx, fs.tenant.AccountID, fs.tenant.ID, url.Values{})
+	if err != nil {
+		t.Fatalf("report branches: %v", err)
+	}
+	if len(env.Data.Branches) != 1 || env.Data.Branches[0].BranchID != "b1" {
+		t.Fatalf("branches = %+v, want only b1 (this report has no gateway-side branch filter, so scoping is a local merge)", env.Data.Branches)
+	}
+}
+
+func TestBranchActivity_ScopedMemberFiltersBranches(t *testing.T) {
+	recent := time.Now().UTC().Add(-2 * time.Minute)
+	gw := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"branches":[` +
+			`{"branch_id":"b1","last_sync_at":"` + recent.Format(time.RFC3339Nano) + `"},` +
+			`{"branch_id":"b2","last_sync_at":"` + recent.Format(time.RFC3339Nano) + `"}]}`))
+	}))
+	defer gw.Close()
+
+	fs := testStore(gw.URL)
+	s := New(fs, &fakeTokens{}, nil)
+	ctx := scopedCtx(fs, []string{"b2"})
+
+	got, err := s.BranchActivity(ctx, fs.tenant.AccountID, fs.tenant.ID)
+	if err != nil {
+		t.Fatalf("branch activity: %v", err)
+	}
+	if len(got) != 1 || got[0].Data.BranchID != "b2" {
+		t.Fatalf("got %+v, want exactly branch b2", got)
+	}
+}
+
+func TestBranches_ScopedMemberFiltersBranchesAndTotals(t *testing.T) {
+	gw := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"branches":[` +
+			`{"branch_id":"b1","today_sales_total":1000,"today_sales_count":10,"today_refunds_total":0,"open_shift_count":1},` +
+			`{"branch_id":"b2","today_sales_total":50,"today_sales_count":1,"today_refunds_total":0,"open_shift_count":0}]}`))
+	}))
+	defer gw.Close()
+
+	fresh := time.Now().UTC().Add(-2 * time.Minute)
+	fs := testStore(gw.URL)
+	fs.branches = []model.Branch{
+		{ID: "b1", TenantID: "tnt_1", Name: "وسط البلد", Status: model.BranchActive, LastSyncAt: &fresh},
+		{ID: "b2", TenantID: "tnt_1", Name: "المعادي", Status: model.BranchActive, LastSyncAt: &fresh},
+	}
+	s := New(fs, &fakeTokens{}, nil)
+	ctx := scopedCtx(fs, []string{"b1"})
+
+	res, err := s.Branches(ctx, fs.tenant.AccountID, fs.tenant.ID)
+	if err != nil {
+		t.Fatalf("branches: %v", err)
+	}
+	if len(res.Branches) != 1 || res.Branches[0].ID != "b1" {
+		t.Fatalf("branches = %+v, want only b1", res.Branches)
+	}
+	if res.Totals.SalesTotal != 1000 || res.Totals.SalesCount != 10 {
+		t.Fatalf("totals leaked out-of-scope branch b2: %+v", res.Totals)
+	}
+}
+
+func TestInventoryByBranch_ScopedMemberFiltersBranchesAndTotals(t *testing.T) {
+	fresh := time.Now().UTC().Add(-2 * time.Minute)
+	gw := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"branches":[` +
+			`{"branch_id":"b1","sku_count":10,"stock_value":500,"negative_count":1,"out_count":0,"low_count":0,"warehouses":[]},` +
+			`{"branch_id":"b2","sku_count":5,"stock_value":80,"negative_count":0,"out_count":0,"low_count":0,"warehouses":[]}]}`))
+	}))
+	defer gw.Close()
+
+	fs := testStore(gw.URL)
+	fs.branches = []model.Branch{
+		{ID: "b1", TenantID: "tnt_1", Name: "وسط البلد", Status: model.BranchActive, LastSyncAt: &fresh},
+		{ID: "b2", TenantID: "tnt_1", Name: "المعادي", Status: model.BranchActive, LastSyncAt: &fresh},
+	}
+	s := New(fs, &fakeTokens{}, nil)
+	ctx := scopedCtx(fs, []string{"b1"})
+
+	env, err := s.InventoryByBranch(ctx, fs.tenant.AccountID, fs.tenant.ID)
+	if err != nil {
+		t.Fatalf("inventory by branch: %v", err)
+	}
+	if len(env.Data.Branches) != 1 || env.Data.Branches[0].BranchID != "b1" {
+		t.Fatalf("branches = %+v, want only b1", env.Data.Branches)
+	}
+	if env.Data.Totals.StockValue != 500 {
+		t.Fatalf("totals leaked out-of-scope branch b2: %+v", env.Data.Totals)
+	}
+}
+
+// --- T120: row-level 404s, write-target checks, and the D5c
+// unscoped-write refusal. Every case below gates on scopedCtx(fs, ...) vs.
+// context.Background() (unscoped/owner) exactly as T119's tests do — an
+// unscoped caller is already covered by every pre-existing test in this
+// file and pays none of the new checks (confirmed by the untouched owner
+// tests above still passing byte-for-byte). ---
+
+func multipartBranchID(branchID string) (string, *bytes.Buffer) {
+	var buf bytes.Buffer
+	w := multipart.NewWriter(&buf)
+	_ = w.WriteField("branch_id", branchID)
+	_ = w.Close()
+	return w.FormDataContentType(), &buf
+}
+
+func TestChangeProductPrices_ScopedMemberRefusedUnscoped(t *testing.T) {
+	called := false
+	gw := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		called = true
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"written_at":"2026-08-27T10:00:00Z"}`))
+	}))
+	defer gw.Close()
+
+	fs := testStore(gw.URL)
+	s := New(fs, &fakeTokens{}, nil)
+	ctx := scopedCtx(fs, []string{"b1"})
+
+	if _, err := s.ChangeProductPrices(ctx, fs.tenant.AccountID, fs.tenant.ID, "p1", nil); !errors.Is(err, ErrForbiddenUnscoped) {
+		t.Fatalf("expected ErrForbiddenUnscoped, got %v", err)
+	}
+	if called {
+		t.Fatalf("gateway must never be called for a scoped member's price change")
+	}
+
+	// An unscoped (owner) caller is unaffected — D5c only bites a scoped member.
+	if _, err := s.ChangeProductPrices(context.Background(), fs.tenant.AccountID, fs.tenant.ID, "p1", nil); err != nil {
+		t.Fatalf("unscoped price change should succeed, got %v", err)
+	}
+}
+
+func TestCreateProduct_ScopedMemberRefusedUnscoped(t *testing.T) {
+	called := false
+	gw := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		called = true
+		w.WriteHeader(http.StatusCreated)
+	}))
+	defer gw.Close()
+
+	fs := testStore(gw.URL)
+	s := New(fs, &fakeTokens{}, nil)
+	ctx := scopedCtx(fs, []string{"b1"})
+
+	if _, err := s.CreateProduct(ctx, fs.tenant.AccountID, fs.tenant.ID, NewProduct{Name: "منتج"}); !errors.Is(err, ErrForbiddenUnscoped) {
+		t.Fatalf("expected ErrForbiddenUnscoped, got %v", err)
+	}
+	if called {
+		t.Fatalf("gateway must never be called for a scoped member's product create")
+	}
+}
+
+func TestCustomerDetail_ScopedMemberOutOfAllowlistIsNotFound(t *testing.T) {
+	gw := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/hq/customers/c1":
+			_, _ = w.Write([]byte(`{"id":"c1","branch_id":"b1","name":"محمد","phone1":"0100"}`))
+		case "/hq/customers/c2":
+			_, _ = w.Write([]byte(`{"id":"c2","branch_id":"b2","name":"سارة","phone1":"0200"}`))
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer gw.Close()
+
+	fs := testStore(gw.URL)
+	s := New(fs, &fakeTokens{}, nil)
+	ctx := scopedCtx(fs, []string{"b1"})
+
+	if _, err := s.CustomerDetail(ctx, fs.tenant.AccountID, fs.tenant.ID, "c1"); err != nil {
+		t.Fatalf("in-allowlist customer should succeed, got %v", err)
+	}
+	if _, err := s.CustomerDetail(ctx, fs.tenant.AccountID, fs.tenant.ID, "c2"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("expected ErrNotFound for an out-of-allowlist customer, got %v", err)
+	}
+}
+
+func TestCustomerPurchases_ScopedMemberOutOfAllowlistIsNotFound(t *testing.T) {
+	purchasesCalled := false
+	gw := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/hq/customers/c1":
+			_, _ = w.Write([]byte(`{"branch_id":"b1"}`))
+		case "/hq/customers/c2":
+			_, _ = w.Write([]byte(`{"branch_id":"b2"}`))
+		case "/hq/customers/c1/purchases":
+			purchasesCalled = true
+			_, _ = w.Write([]byte(`{"total":0,"page":1,"page_size":50,"items":[]}`))
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer gw.Close()
+
+	fs := testStore(gw.URL)
+	s := New(fs, &fakeTokens{}, nil)
+	ctx := scopedCtx(fs, []string{"b1"})
+
+	if _, err := s.CustomerPurchases(ctx, fs.tenant.AccountID, fs.tenant.ID, "c1", url.Values{}); err != nil {
+		t.Fatalf("in-allowlist customer purchases should succeed, got %v", err)
+	}
+	if !purchasesCalled {
+		t.Fatalf("expected the gateway's purchases endpoint to be reached for an in-allowlist customer")
+	}
+	if _, err := s.CustomerPurchases(ctx, fs.tenant.AccountID, fs.tenant.ID, "c2", url.Values{}); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("expected ErrNotFound for an out-of-allowlist customer, got %v", err)
+	}
+}
+
+func TestCustomerLedger_ScopedMemberOutOfAllowlistIsNotFound(t *testing.T) {
+	gw := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/hq/customers/c2":
+			_, _ = w.Write([]byte(`{"branch_id":"b2"}`))
+		case "/hq/customers/c2/ledger":
+			w.WriteHeader(http.StatusInternalServerError)
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer gw.Close()
+
+	fs := testStore(gw.URL)
+	s := New(fs, &fakeTokens{}, nil)
+	ctx := scopedCtx(fs, []string{"b1"})
+
+	if _, err := s.CustomerLedger(ctx, fs.tenant.AccountID, fs.tenant.ID, "c2", url.Values{}); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("expected ErrNotFound for an out-of-allowlist customer, got %v", err)
+	}
+}
+
+func TestCreateCustomer_ScopedMemberTargetBranchChecked(t *testing.T) {
+	called := false
+	gw := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		called = true
+		w.WriteHeader(http.StatusCreated)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"c1","num":1,"written_at":"2026-08-27T10:00:00Z"}`))
+	}))
+	defer gw.Close()
+
+	fs := testStore(gw.URL)
+	s := New(fs, &fakeTokens{}, nil)
+	ctx := scopedCtx(fs, []string{"b1"})
+
+	if _, err := s.CreateCustomer(ctx, fs.tenant.AccountID, fs.tenant.ID, NewCustomer{Name: "محمد", Phone1: "0100", BranchID: "b2"}); !errors.Is(err, ErrForbiddenScope) {
+		t.Fatalf("expected ErrForbiddenScope for an out-of-allowlist target branch, got %v", err)
+	}
+	if called {
+		t.Fatalf("gateway must never be called for an out-of-allowlist create")
+	}
+	if _, err := s.CreateCustomer(ctx, fs.tenant.AccountID, fs.tenant.ID, NewCustomer{Name: "محمد", Phone1: "0100", BranchID: "b1"}); err != nil {
+		t.Fatalf("in-allowlist create should succeed, got %v", err)
+	}
+	if !called {
+		t.Fatalf("expected the gateway to be reached for an in-allowlist create")
+	}
+}
+
+func TestUpdateCustomer_ScopedMemberOutOfAllowlistIsNotFound(t *testing.T) {
+	putCalled := false
+	gw := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/hq/customers/c1":
+			_, _ = w.Write([]byte(`{"branch_id":"b1"}`))
+		case r.Method == http.MethodGet && r.URL.Path == "/hq/customers/c2":
+			_, _ = w.Write([]byte(`{"branch_id":"b2"}`))
+		case r.Method == http.MethodPut && r.URL.Path == "/hq/customers/c1":
+			putCalled = true
+			_, _ = w.Write([]byte(`{"written_at":"2026-08-27T10:00:00Z"}`))
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer gw.Close()
+
+	fs := testStore(gw.URL)
+	s := New(fs, &fakeTokens{}, nil)
+	ctx := scopedCtx(fs, []string{"b1"})
+	active := true
+
+	if _, err := s.UpdateCustomer(ctx, fs.tenant.AccountID, fs.tenant.ID, "c2", CustomerEdit{IsActive: &active}); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("expected ErrNotFound for an out-of-allowlist customer, got %v", err)
+	}
+	if putCalled {
+		t.Fatalf("gateway's PUT must never be reached for an out-of-allowlist update")
+	}
+	if _, err := s.UpdateCustomer(ctx, fs.tenant.AccountID, fs.tenant.ID, "c1", CustomerEdit{IsActive: &active}); err != nil {
+		t.Fatalf("in-allowlist update should succeed, got %v", err)
+	}
+	if !putCalled {
+		t.Fatalf("expected the gateway's PUT to be reached for an in-allowlist update")
+	}
+}
+
+func TestBulkUpdateCustomers_ScopedMemberRefusedWhenAnyRowOutOfScope(t *testing.T) {
+	bulkCalled := false
+	gw := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/hq/customers/c1":
+			_, _ = w.Write([]byte(`{"branch_id":"b1"}`))
+		case "/hq/customers/c2":
+			_, _ = w.Write([]byte(`{"branch_id":"b2"}`))
+		case "/hq/customers/bulk":
+			bulkCalled = true
+			_, _ = w.Write([]byte(`{"updated":1,"written_at":"2026-08-27T10:00:00Z"}`))
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer gw.Close()
+
+	fs := testStore(gw.URL)
+	s := New(fs, &fakeTokens{}, nil)
+	ctx := scopedCtx(fs, []string{"b1"})
+	group := "g1"
+
+	if _, err := s.BulkUpdateCustomers(ctx, fs.tenant.AccountID, fs.tenant.ID, []string{"c1", "c2"}, &group, nil); !errors.Is(err, ErrForbiddenScope) {
+		t.Fatalf("expected ErrForbiddenScope when any row is out of scope, got %v", err)
+	}
+	if bulkCalled {
+		t.Fatalf("gateway's bulk write must never be reached when any row is out of scope")
+	}
+	if _, err := s.BulkUpdateCustomers(ctx, fs.tenant.AccountID, fs.tenant.ID, []string{"c1"}, &group, nil); err != nil {
+		t.Fatalf("bulk update over an entirely in-scope set should succeed, got %v", err)
+	}
+	if !bulkCalled {
+		t.Fatalf("expected the gateway's bulk write to be reached once every row is in scope")
+	}
+}
+
+func TestImportCustomers_ScopedMemberBranchFieldChecked(t *testing.T) {
+	importCalled := false
+	gw := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		importCalled = true
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"created":1,"errors":[]}`))
+	}))
+	defer gw.Close()
+
+	fs := testStore(gw.URL)
+	s := New(fs, &fakeTokens{}, nil)
+	ctx := scopedCtx(fs, []string{"b1"})
+
+	ct, body := multipartBranchID("b2")
+	if _, err := s.ImportCustomers(ctx, fs.tenant.AccountID, fs.tenant.ID, ct, body); !errors.Is(err, ErrForbiddenScope) {
+		t.Fatalf("expected ErrForbiddenScope for an out-of-allowlist import branch_id, got %v", err)
+	}
+	if importCalled {
+		t.Fatalf("gateway must never be called for an out-of-allowlist import")
+	}
+
+	ct, body = multipartBranchID("b1")
+	if _, err := s.ImportCustomers(ctx, fs.tenant.AccountID, fs.tenant.ID, ct, body); err != nil {
+		t.Fatalf("in-allowlist import should succeed, got %v", err)
+	}
+	if !importCalled {
+		t.Fatalf("expected the gateway to be reached for an in-allowlist import")
+	}
+}
+
+func TestConflicts_NotBranchFiltered(t *testing.T) {
+	// Spec OQ2: ConflictLog has no branch column, so conflicts are visible
+	// to any conflicts.view holder regardless of the caller's allowlist —
+	// deliberately the one branch-dimensioned-looking read T119/T120 never
+	// touch.
+	gw := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"items":[` +
+			`{"id":1,"branch_id":"b1","kind":"stock","message":"x","occurred_at":"2026-08-01T00:00:00Z"},` +
+			`{"id":2,"branch_id":"b2","kind":"stock","message":"y","occurred_at":"2026-08-01T00:00:00Z"}]}`))
+	}))
+	defer gw.Close()
+
+	fs := testStore(gw.URL)
+	fs.branches = []model.Branch{
+		{ID: "b1", TenantID: "tnt_1", Name: "وسط البلد", Status: model.BranchActive},
+		{ID: "b2", TenantID: "tnt_1", Name: "المعادي", Status: model.BranchActive},
+	}
+	s := New(fs, &fakeTokens{}, nil)
+	ctx := scopedCtx(fs, []string{"b1"})
+
+	env, err := s.Conflicts(ctx, fs.tenant.AccountID, fs.tenant.ID, url.Values{})
+	if err != nil {
+		t.Fatalf("conflicts: %v", err)
+	}
+	if len(env.Data.Items) != 2 {
+		t.Fatalf("expected both branches' conflicts unfiltered, got %d items", len(env.Data.Items))
 	}
 }

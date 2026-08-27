@@ -31,6 +31,7 @@ type Server struct {
 	hq      *hq.Service
 	events  *hq.EventBus // in-memory: single API instance (see hq.EventBus)
 	log     *slog.Logger
+	store   scopeResolver // console-RBAC scope resolution only (T104); every other handler goes through a *Service
 
 	corsOrigins []string
 	otpLimiter  *keyedLimiter
@@ -45,7 +46,7 @@ type Server struct {
 // root of the Velopack update feed served at /updates/*; empty disables it.
 // updatesAuth turns on the feed entitlement gate, verifying license tokens
 // with tokenVerifier (the same RSA keypair that signs them).
-func New(authSvc *auth.Service, deviceSvc *device.Service, adminSvc *admin.Service, tenantSvc *tenant.Service, billingSvc *billing.Service, rolloutSvc *rollout.Service, hqSvc *hq.Service, corsOrigins []string, log *slog.Logger, updatesDir string, updatesAuth bool, tokenVerifier *licensetoken.Signer) *Server {
+func New(authSvc *auth.Service, deviceSvc *device.Service, adminSvc *admin.Service, tenantSvc *tenant.Service, billingSvc *billing.Service, rolloutSvc *rollout.Service, hqSvc *hq.Service, store scopeResolver, corsOrigins []string, log *slog.Logger, updatesDir string, updatesAuth bool, tokenVerifier *licensetoken.Signer) *Server {
 	return &Server{
 		auth:          authSvc,
 		device:        deviceSvc,
@@ -56,6 +57,7 @@ func New(authSvc *auth.Service, deviceSvc *device.Service, adminSvc *admin.Servi
 		hq:            hqSvc,
 		events:        hq.NewEventBus(),
 		log:           log,
+		store:         store,
 		corsOrigins:   corsOrigins,
 		otpLimiter:    newKeyedLimiter(rateEvery(time.Minute), 3),
 		updatesDir:    updatesDir,
@@ -137,6 +139,7 @@ func (s *Server) Router() http.Handler {
 				r.Post("/", s.handleTenantCreate)
 				r.Get("/", s.handleTenantList)
 				r.Route("/{id}", func(r chi.Router) {
+					r.Use(s.requirePerm)
 					r.Get("/", s.handleTenantBundle)
 					r.Put("/company", s.handleTenantSetCompany)
 					r.Post("/branches", s.handleBranchAdd)
@@ -151,6 +154,16 @@ func (s *Server) Router() http.Handler {
 					r.Get("/members", s.handleMemberList)
 					r.Post("/members", s.handleMemberInvite)
 					r.Delete("/members/{memberId}", s.handleMemberRevoke)
+					r.Patch("/members/{memberId}", s.handleMemberAssignRole)
+
+					// Roles (console RBAC, spec-console-rbac T107): reads are
+					// any member (the members table labels each row with its
+					// role name), writes are owner-only.
+					r.Get("/roles", s.handleRoleList)
+					r.Post("/roles", s.handleRoleCreate)
+					r.Put("/roles/{roleId}", s.handleRoleUpdate)
+					r.Delete("/roles/{roleId}", s.handleRoleDelete)
+					r.Get("/permissions", s.handleRolePermissions)
 
 					// HQ reads: business data from the tenant's central DB,
 					// proxied via the sync gateway (freshness-enveloped).

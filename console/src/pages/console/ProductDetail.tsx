@@ -2,6 +2,7 @@ import { useState, type ReactNode } from 'react'
 import { Link, useLocation, useParams } from 'react-router-dom'
 import { ApiError } from '@/lib/api'
 import { useBundle, useCatalogProduct, useHqBranches, useProductMovements } from '@/lib/hooks'
+import { PERM, useCanUnscoped } from '@/lib/perm'
 import { fmtDateTime, relative, toArabicDigits } from '@/lib/format'
 import { cn } from '@/lib/utils'
 import type { BranchHealth, MovementRow, ProductUnit } from '@/lib/types'
@@ -248,6 +249,11 @@ export function ProductDetail() {
   const { data: bundle } = useBundle(tenantId)
   const productQuery = useCatalogProduct(tenantId, productId)
   const { data: hqBranches } = useHqBranches(tenantId)
+  // PUT /hq/catalog/products/{id}/prices is D5c-unscoped (Tier-A — lands at
+  // every branch), so the edit affordance requires an unscoped member, not
+  // just catalog.manage — a scoped manager still sees the read-only prices
+  // table.
+  const canManage = useCanUnscoped(tenantId, PERM.CatalogManage)
 
   const [editingUnit, setEditingUnit] = useState<ProductUnit | null>(null)
   // Session-scoped (v1: honesty over persistence, per the plan) — resets on
@@ -352,7 +358,7 @@ export function ProductDetail() {
                     <th className="px-4 py-1.5 text-start font-medium">البيع</th>
                     <th className="px-4 py-1.5 text-start font-medium">أسعار أخرى</th>
                     <th className="px-4 py-1.5 text-start font-medium">الباركود</th>
-                    <th className="px-4 py-1.5" />
+                    {canManage && <th className="px-4 py-1.5" />}
                   </tr>
                 </thead>
                 <tbody>
@@ -378,17 +384,19 @@ export function ProductDetail() {
                             '—'
                           )}
                         </td>
-                        <td className="px-4 py-2 text-end">
-                          <Button
-                            type="button"
-                            variant="ghost"
-                            size="sm"
-                            onClick={() => setEditingUnit(u)}
-                          >
-                            <EditIcon className="size-4" />
-                            تعديل
-                          </Button>
-                        </td>
+                        {canManage && (
+                          <td className="px-4 py-2 text-end">
+                            <Button
+                              type="button"
+                              variant="ghost"
+                              size="sm"
+                              onClick={() => setEditingUnit(u)}
+                            >
+                              <EditIcon className="size-4" />
+                              تعديل
+                            </Button>
+                          </td>
+                        )}
                       </tr>
                     )
                   })}
@@ -460,7 +468,7 @@ export function ProductDetail() {
         />
       </div>
 
-      {tenantId && productId && (
+      {tenantId && productId && canManage && (
         <EditUnitPriceDialog
           tenantId={tenantId}
           productId={productId}

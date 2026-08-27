@@ -4,6 +4,7 @@ import { toast } from 'sonner'
 import { ApiError } from '@/lib/api'
 import { errorMessage } from '@/lib/auth'
 import { useBundle, useCancelOrder, useOrderDetail, useTransferOrder } from '@/lib/hooks'
+import { PERM, useCan } from '@/lib/perm'
 import {
   fmtDateTime,
   orderChannelLabel,
@@ -247,6 +248,8 @@ function Timeline({ order }: { order: OrderDetailData }) {
 export function OrderDetail() {
   const { tenantId, orderId } = useParams<'tenantId' | 'orderId'>()
   const query = useOrderDetail(tenantId, orderId)
+  const canManage = useCan(tenantId, PERM.OrdersManage)
+  const canViewCustomers = useCan(tenantId, PERM.CustomersView)
   const [cancelOpen, setCancelOpen] = useState(false)
   const [transferOpen, setTransferOpen] = useState(false)
 
@@ -311,7 +314,7 @@ export function OrderDetail() {
           <Badge tone={orderStatusTone(o.status)}>{orderStatusLabel(o.status)}</Badge>
           <Badge tone="muted">{orderChannelLabel(o.channel)}</Badge>
           <Freshness source={query.data.source} asOf={query.data.as_of} />
-          {isNew && (
+          {isNew && canManage && (
             <div className="ms-auto flex items-center gap-2">
               <Button variant="outline" size="sm" onClick={() => setTransferOpen(true)}>
                 <TransferIcon className="size-4" />
@@ -331,7 +334,17 @@ export function OrderDetail() {
         </div>
         <div className="flex flex-wrap items-center gap-x-6 gap-y-1 text-sm text-muted-foreground">
           <span>
-            العميل: <span className="font-medium text-foreground">{o.customer_name || 'تعامل نقدى'}</span>
+            العميل:{' '}
+            {canViewCustomers && o.partner_id ? (
+              <Link
+                to={`/tenants/${tenantId}/customers/${o.partner_id}`}
+                className="font-medium text-primary hover:underline"
+              >
+                {o.customer_name || 'تعامل نقدى'}
+              </Link>
+            ) : (
+              <span className="font-medium text-foreground">{o.customer_name || 'تعامل نقدى'}</span>
+            )}
           </span>
           {o.phone && (
             <span className="flex items-center gap-1.5">
@@ -459,7 +472,7 @@ export function OrderDetail() {
         </div>
       </div>
 
-      {tenantId && orderId && (
+      {tenantId && orderId && canManage && (
         <CancelOrderDialog
           tenantId={tenantId}
           orderId={orderId}
@@ -467,7 +480,7 @@ export function OrderDetail() {
           onOpenChange={setCancelOpen}
         />
       )}
-      {tenantId && (
+      {tenantId && canManage && (
         <TransferOrderDialog
           tenantId={tenantId}
           order={o}

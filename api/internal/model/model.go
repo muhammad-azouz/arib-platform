@@ -225,6 +225,11 @@ type Tenant struct {
 	RolloutError    string        `bson:"rollout_error,omitempty"`    // last failure detail
 	RolloutAttempts int           `bson:"rollout_attempts,omitempty"` // failed-migrate counter
 	RolloutAt       time.Time     `bson:"rollout_at,omitempty"`       // last rollout touch
+
+	// Roles are the tenant's owner-authored custom roles for invited members
+	// (console RBAC, spec-console-rbac D1). Embedded rather than a separate
+	// collection — see TenantRole's doc comment for why.
+	Roles []TenantRole `bson:"roles,omitempty"`
 }
 
 // MemberRole is a TenantMember's permission level within a tenant.
@@ -242,13 +247,41 @@ const (
 // exactly one RoleOwner row, created alongside the Tenant itself
 // (tenant.Service.Register) or, for tenants that predate this model,
 // backfilled once from Tenant.AccountID (tenant.Service.BackfillOwnerMembers).
+//
+// RoleID, BranchIDs, InvitedAt and AcceptedAt support console RBAC (spec
+// tasks/spec-console-rbac.md, D1/D4/D6). They are empty for the owner row,
+// which stays the hard-coded RoleOwner constant — always every permission,
+// unscoped, never assigned a TenantRole.
 type TenantMember struct {
 	ID        string     `bson:"_id"` // mem_...
 	TenantID  string     `bson:"tenant_id"`
 	AccountID string     `bson:"account_id"`
 	Role      MemberRole `bson:"role"`
+	RoleID    string     `bson:"role_id,omitempty"`    // Tenant.Roles[i].ID this member is assigned; empty for owner
+	BranchIDs []string   `bson:"branch_ids,omitempty"` // allowlist; empty = every branch (D4)
 	InvitedBy string     `bson:"invited_by,omitempty"` // account id of the inviting owner; empty for the owner row itself
 	CreatedAt time.Time  `bson:"created_at"`
+	InvitedAt time.Time  `bson:"invited_at,omitempty"`
+	// AcceptedAt is nil until the member's first authenticated request on
+	// this tenant (D6) — "pending" is derived from AcceptedAt == nil rather
+	// than tracked as a separate status field.
+	AcceptedAt *time.Time `bson:"accepted_at,omitempty"`
+}
+
+// TenantRole is an owner-authored, per-tenant permission set (spec
+// tasks/spec-console-rbac.md, D1/D3), embedded on Tenant.Roles rather than
+// stored in its own collection: a tenant has a handful of roles, they are
+// never queried independently of their tenant, and both authorization
+// choke points (tenant.owned, hq.resolveGateway) already load the tenant
+// document on every request, so embedding costs nothing beyond what is
+// already fetched. Name uniqueness is an application check, not a unique
+// index, since the array has no index of its own.
+type TenantRole struct {
+	ID          string    `bson:"id"`          // rol_...
+	Name        string    `bson:"name"`        // owner-authored, unique per tenant (app-checked)
+	Permissions []string  `bson:"permissions"` // codes from the perm package's catalog (spec D3); >= 1
+	CreatedAt   time.Time `bson:"created_at"`
+	UpdatedAt   time.Time `bson:"updated_at"`
 }
 
 // BillStatus is the lifecycle of a recorded subscription payment.

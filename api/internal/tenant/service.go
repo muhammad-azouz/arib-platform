@@ -11,7 +11,9 @@ import (
 	"encoding/pem"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
+	"os"
 	"strings"
 	"time"
 
@@ -40,6 +42,16 @@ var (
 	// creation is an owner-signup path, not something an account that was
 	// ever invited as a member (see model.Account.HasBeenMember) gets to do.
 	ErrMembersCannotCreateTenant = errors.New("accounts invited as a member cannot create their own tenant")
+	// ErrForbiddenScope means a scoped member targeted a branch outside
+	// their allowlist on a control-plane route (rename/bind/release — spec
+	// D5d, T121). Mirrors hq.ErrForbiddenScope's contract and error code so
+	// the console renders the same "not this branch" message regardless of
+	// which package served the request.
+	ErrForbiddenScope = errors.New("forbidden_scope")
+	// ErrForbiddenUnscoped means a scoped member attempted an operation with
+	// no branch identity of its own — company edit, branch creation (spec
+	// D5c, T123). Mirrors hq.ErrForbiddenUnscoped's contract and error code.
+	ErrForbiddenUnscoped = errors.New("forbidden_unscoped")
 )
 
 // GatewayError marks a failure that came back from a shard gateway rather than
@@ -52,12 +64,22 @@ type GatewayError struct{ Err error }
 func (e *GatewayError) Error() string { return e.Err.Error() }
 func (e *GatewayError) Unwrap() error { return e.Err }
 
+// Mailer sends the transactional email InviteMember needs (T124) — a local
+// interface, mirroring auth.Mailer's SendOTP, rather than importing
+// *mail.Sender directly, so tests can substitute a fake that reports a send
+// failure without spinning up SMTP.
+type Mailer interface {
+	SendInvite(ctx context.Context, to, tenantName string) error
+}
+
 // Service coordinates the registry store and the sync-token signer.
 type Service struct {
 	store   *mongostore.Store
 	syncKey *rsa.PrivateKey
 	syncTTL time.Duration
 	http    *http.Client
+	mailer  Mailer
+	log     *slog.Logger
 }
 
 // New builds a tenant Service. syncKey signs sync tokens (RS256 — the gateway
@@ -65,20 +87,31 @@ type Service struct {
 // syncTTL is their lifetime. The gateway URL for each tenant is resolved at
 // token-issuance time from the shard registry stored in Mongo. httpClient is
 // used for gateway admin calls (e.g. dropping a tenant's central DB on
-// deletion); a nil value gets a default with a generous timeout.
-func New(store *mongostore.Store, syncKey *rsa.PrivateKey, syncTTL time.Duration, httpClient *http.Client) *Service {
+// deletion); a nil value gets a default with a generous timeout. mailer sends
+// invite emails (T124); a nil mailer is only safe for callers that never
+// invite a member (e.g. the sync-token-signer reuse in rollout's integration
+// test). log defaults to slog.Default() when nil — InviteMember uses it to
+// record a best-effort invite-email failure without failing the request.
+func New(store *mongostore.Store, syncKey *rsa.PrivateKey, syncTTL time.Duration, httpClient *http.Client, mailer Mailer, log *slog.Logger) *Service {
 	if httpClient == nil {
 		httpClient = &http.Client{Timeout: 2 * time.Minute}
 	}
-	return &Service{store: store, syncKey: syncKey, syncTTL: syncTTL, http: httpClient}
+	if log == nil {
+		log = slog.New(slog.NewTextHandler(os.Stderr, nil))
+	}
+	return &Service{store: store, syncKey: syncKey, syncTTL: syncTTL, http: httpClient, mailer: mailer, log: log}
 }
 
 // Bundle is everything the app needs at activation/login: the tenant plus its
-// cloud-authoritative company (exactly one per tenant, D15) and branches.
+// cloud-authoritative company (exactly one per tenant, D15), branches, and
+// the caller's own role/permissions/branch allowlist (Me — spec-console-rbac
+// T108), so the console can render nav, routes, tiles, and buttons without a
+// second request.
 type Bundle struct {
 	Tenant   model.Tenant
 	Company  *model.Company // nil until the company is registered
 	Branches []model.Branch
+	Me       MeView `json:"me"`
 }
 
 // SyncClaims is the JWT a bound device presents to the DMS gateway.
@@ -188,10 +221,20 @@ func (s *Service) Tenants(ctx context.Context, accountID string) ([]model.Tenant
 }
 
 // GetBundle returns the tenant with its companies and branches, enforcing
-// ownership.
+// ownership, plus the caller's own Scope as `me` (T108). Resolves the
+// membership row itself — via RequireScope, not owned()/memberRole() — so
+// the full Scope (permissions, branch allowlist) that `me` needs is the same
+// single read as a bare ownership check, never a second one on top of it.
 func (s *Service) GetBundle(ctx context.Context, accountID, tenantID string) (*Bundle, error) {
-	t, err := s.owned(ctx, accountID, tenantID)
+	t, err := s.store.TenantByID(ctx, tenantID)
 	if err != nil {
+		return nil, err
+	}
+	scope, err := membership.RequireScope(ctx, s.store, t, accountID)
+	if err != nil {
+		if errors.Is(err, membership.ErrForbidden) {
+			return nil, ErrForbidden
+		}
 		return nil, err
 	}
 	company, err := s.store.CompanyByTenant(ctx, tenantID)
@@ -211,7 +254,7 @@ func (s *Service) GetBundle(ctx context.Context, accountID, tenantID string) (*B
 		}
 		branches[i].ActiveDevices = int(n)
 	}
-	return &Bundle{Tenant: *t, Company: company, Branches: branches}, nil
+	return &Bundle{Tenant: *t, Company: company, Branches: branches, Me: meView(t, scope)}, nil
 }
 
 // --- company ---
@@ -231,7 +274,7 @@ type CompanyInput struct {
 // per tenant). Updates always target the existing company; supplying a
 // different GUID once one exists is rejected.
 func (s *Service) SetCompany(ctx context.Context, accountID, tenantID string, in CompanyInput) (*model.Company, error) {
-	if _, err := s.owned(ctx, accountID, tenantID); err != nil {
+	if _, err := s.ownedUnscoped(ctx, accountID, tenantID); err != nil {
 		return nil, err
 	}
 	if strings.TrimSpace(in.Name) == "" {
@@ -298,7 +341,7 @@ type BranchInput struct {
 
 // AddBranch creates a branch under the tenant's company (a licensing event).
 func (s *Service) AddBranch(ctx context.Context, accountID, tenantID string, in BranchInput) (*model.Branch, error) {
-	if _, err := s.owned(ctx, accountID, tenantID); err != nil {
+	if _, err := s.ownedUnscoped(ctx, accountID, tenantID); err != nil {
 		return nil, err
 	}
 	if strings.TrimSpace(in.Name) == "" {
@@ -452,7 +495,11 @@ func (s *Service) BindDevice(ctx context.Context, accountID, tenantID, branchID,
 	return d, nil
 }
 
-// ReleaseDevice frees a branch seat.
+// ReleaseDevice frees a branch seat. The URL carries only a device id, not a
+// branch, so a scoped caller's allowlist is checked against the device's own
+// BranchID (spec D5d, T121) — never a client-supplied one, which would let a
+// scoped member release a device at a branch they cannot otherwise touch by
+// simply omitting a branch from the request.
 func (s *Service) ReleaseDevice(ctx context.Context, accountID, tenantID, deviceID string) error {
 	d, err := s.store.BranchDeviceByID(ctx, deviceID)
 	if errors.Is(err, mongostore.ErrNotFound) {
@@ -464,8 +511,19 @@ func (s *Service) ReleaseDevice(ctx context.Context, accountID, tenantID, device
 	if d.TenantID != tenantID {
 		return ErrForbidden
 	}
-	if _, err := s.owned(ctx, accountID, tenantID); err != nil {
+	t, err := s.store.TenantByID(ctx, tenantID)
+	if err != nil {
 		return err
+	}
+	scope, err := membership.RequireScope(ctx, s.store, t, accountID)
+	if err != nil {
+		if errors.Is(err, membership.ErrForbidden) {
+			return ErrForbidden
+		}
+		return err
+	}
+	if !scope.AllowsBranch(d.BranchID) {
+		return ErrForbiddenScope
 	}
 	if d.Status != model.DeviceActive {
 		return nil // already released; idempotent
@@ -490,6 +548,13 @@ type IssuedSyncToken struct {
 // tenant with a provisioned central DB and paid billing coverage (active,
 // expiring, or within the post-expiry grace week — see package billing), an
 // active branch, and an active device binding owned by the caller.
+//
+// Deliberately NOT branch-scoped (spec-console-rbac OQ4, T121): the caller
+// is the desktop app on an account session, not the console, and OQ4's
+// proposed interim rule (any member, but the device's branch must be in
+// their allowlist) has not been confirmed against the desktop activation
+// flow — gating it on a guess risks breaking activation for every member
+// account. Revisit once OQ4 has an answer.
 func (s *Service) IssueSyncToken(ctx context.Context, accountID, tenantID, deviceID string) (*IssuedSyncToken, error) {
 	t, err := s.activeTenant(ctx, accountID, tenantID)
 	if err != nil {
@@ -971,11 +1036,15 @@ func (s *Service) owned(ctx context.Context, accountID, tenantID string) (*model
 	return t, nil
 }
 
-// memberRole is the membership.Require call every tenant-scoped method goes
+// memberRole is the membership call every tenant-scoped method goes
 // through — owned() uses it for a bare access check; InviteMember/RevokeMember
 // (T14) also need the actual role to enforce their owner-only gate.
+// RequireRole (T105) prefers the perm.Scope httpapi's requirePerm
+// middleware already resolved for this request over a second
+// MemberByAccount read; a non-HTTP caller (or a test using
+// context.Background()) falls back to the same store read as before.
 func (s *Service) memberRole(ctx context.Context, tenantID, accountID string) (model.MemberRole, error) {
-	role, err := membership.Require(ctx, s.store, tenantID, accountID)
+	role, err := membership.RequireRole(ctx, s.store, tenantID, accountID)
 	if err != nil {
 		if errors.Is(err, membership.ErrForbidden) {
 			return "", ErrForbidden
@@ -996,8 +1065,23 @@ func (s *Service) activeTenant(ctx context.Context, accountID, tenantID string) 
 	return t, nil
 }
 
+// ownedBranch is the choke point for every control-plane branch route
+// (rename, contact, status, device bind — spec D5d, T121): it checks
+// membership the same way owned() does, and additionally refuses a branch
+// outside a scoped caller's allowlist with ErrForbiddenScope. Built on
+// membership.RequireScope directly (not owned()+RequireScope) so an HTTP
+// request that already ran through requirePerm pays for the membership
+// read once, matching hq.resolveGateway's T105 pattern.
 func (s *Service) ownedBranch(ctx context.Context, accountID, tenantID, branchID string) (*model.Branch, error) {
-	if _, err := s.owned(ctx, accountID, tenantID); err != nil {
+	t, err := s.store.TenantByID(ctx, tenantID)
+	if err != nil {
+		return nil, err
+	}
+	scope, err := membership.RequireScope(ctx, s.store, t, accountID)
+	if err != nil {
+		if errors.Is(err, membership.ErrForbidden) {
+			return nil, ErrForbidden
+		}
 		return nil, err
 	}
 	b, err := s.store.BranchByID(ctx, branchID)
@@ -1007,7 +1091,35 @@ func (s *Service) ownedBranch(ctx context.Context, accountID, tenantID, branchID
 	if b.TenantID != tenantID {
 		return nil, ErrForbidden
 	}
+	if !scope.AllowsBranch(b.ID) {
+		return nil, ErrForbiddenScope
+	}
 	return b, nil
+}
+
+// ownedUnscoped is owned() narrowed by spec D5c: an operation with no branch
+// identity of its own (company edit, branch creation — the branch could not
+// then be seen by whoever created it, per D4) cannot be authorized by a
+// branch allowlist, so it requires an unscoped member. Mirrors
+// hq.requireUnscoped's reasoning and error code, and ownedBranch's shape:
+// built on membership.RequireScope directly so an HTTP request that already
+// ran through requirePerm pays for the membership read once.
+func (s *Service) ownedUnscoped(ctx context.Context, accountID, tenantID string) (*model.Tenant, error) {
+	t, err := s.store.TenantByID(ctx, tenantID)
+	if err != nil {
+		return nil, err
+	}
+	scope, err := membership.RequireScope(ctx, s.store, t, accountID)
+	if err != nil {
+		if errors.Is(err, membership.ErrForbidden) {
+			return nil, ErrForbidden
+		}
+		return nil, err
+	}
+	if !scope.IsUnscoped() {
+		return nil, ErrForbiddenUnscoped
+	}
+	return t, nil
 }
 
 // normalizeGUID lowercases and validates a client-supplied GUID, or mints a

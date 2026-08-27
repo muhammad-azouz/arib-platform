@@ -11,6 +11,7 @@ import {
   useCustomerInsights,
   useCustomers,
 } from '@/lib/hooks'
+import { PERM, useCan } from '@/lib/perm'
 import { toArabicDigits } from '@/lib/format'
 import { cn } from '@/lib/utils'
 import type {
@@ -65,6 +66,7 @@ const VIEWS: { key: ViewKey; label: string }[] = [
 export function Customers() {
   const { tenantId } = useParams<'tenantId'>()
   const { data: bundle } = useBundle(tenantId)
+  const canManage = useCan(tenantId, PERM.CustomersManage)
   const [searchParams, setSearchParams] = useSearchParams()
 
   const view: ViewKey = (searchParams.get('view') as ViewKey | null) ?? 'list'
@@ -86,14 +88,16 @@ export function Customers() {
         title="العملاء"
         description="قائمة العملاء وتحليلات نشاطهم عبر كل الفروع."
         actions={
-          <Button onClick={() => setCreateOpen(true)}>
-            <AddIcon className="size-4" />
-            عميل جديد
-          </Button>
+          canManage ? (
+            <Button onClick={() => setCreateOpen(true)}>
+              <AddIcon className="size-4" />
+              عميل جديد
+            </Button>
+          ) : undefined
         }
       />
 
-      {tenantId && (
+      {tenantId && canManage && (
         <CreateCustomerDialog tenantId={tenantId} open={createOpen} onOpenChange={setCreateOpen} />
       )}
 
@@ -135,6 +139,7 @@ function ListView({
 }) {
   const navigate = useNavigate()
   const groupsQuery = useCustomerGroups(tenantId)
+  const canManage = useCan(tenantId, PERM.CustomersManage)
 
   const [search, setSearch] = useState('')
   const [debouncedSearch, setDebouncedSearch] = useState('')
@@ -266,9 +271,14 @@ function ListView({
       </div>
 
       <div className="mb-4 flex justify-end gap-2">
-        <Button type="button" variant="outline" size="sm" onClick={() => setImportOpen(true)}>
-          استيراد
-        </Button>
+        {canManage && (
+          <Button type="button" variant="outline" size="sm" onClick={() => setImportOpen(true)}>
+            استيراد
+          </Button>
+        )}
+        {/* Export stays available under `customers.view` alone — spec OQ3's
+            default ("view permits it unless resolved otherwise"), unresolved
+            as of T116, so no separate gate here. */}
         <Button
           type="button"
           variant="outline"
@@ -281,7 +291,7 @@ function ListView({
         </Button>
       </div>
 
-      {tenantId && (
+      {tenantId && canManage && (
         <ImportCustomersDialog tenantId={tenantId} open={importOpen} onOpenChange={setImportOpen} />
       )}
 
@@ -298,7 +308,7 @@ function ListView({
         />
       ) : (
         <>
-          {tenantId && selected.size > 0 && (
+          {tenantId && canManage && selected.size > 0 && (
             <BulkActionsBar
               tenantId={tenantId}
               selectedIds={[...selected]}
@@ -309,6 +319,7 @@ function ListView({
           <CustomersTable
             items={query.data?.data.items}
             isLoading={query.isLoading}
+            canSelect={canManage}
             selected={selected}
             onToggle={(id) =>
               setSelected((prev) => {
@@ -349,6 +360,7 @@ function ListView({
 function CustomersTable({
   items,
   isLoading,
+  canSelect,
   selected,
   onToggle,
   onToggleAll,
@@ -356,6 +368,7 @@ function CustomersTable({
 }: {
   items?: CustomerRow[]
   isLoading: boolean
+  canSelect: boolean
   selected: Set<string>
   onToggle: (id: string) => void
   onToggleAll: (ids: string[], checked: boolean) => void
@@ -377,14 +390,16 @@ function CustomersTable({
       <Table>
         <TableHeader>
           <TableRow>
-            <TableHead className="w-8">
-              <input
-                type="checkbox"
-                aria-label="تحديد كل العملاء في هذه الصفحة"
-                checked={allSelected}
-                onChange={(e) => onToggleAll(items.map((c) => c.id), e.target.checked)}
-              />
-            </TableHead>
+            {canSelect && (
+              <TableHead className="w-8">
+                <input
+                  type="checkbox"
+                  aria-label="تحديد كل العملاء في هذه الصفحة"
+                  checked={allSelected}
+                  onChange={(e) => onToggleAll(items.map((c) => c.id), e.target.checked)}
+                />
+              </TableHead>
+            )}
             <TableHead>الكود</TableHead>
             <TableHead>الاسم</TableHead>
             <TableHead>الفرع</TableHead>
@@ -406,14 +421,16 @@ function CustomersTable({
               }}
               className="cursor-pointer"
             >
-              <TableCell onClick={(e) => e.stopPropagation()}>
-                <input
-                  type="checkbox"
-                  aria-label={`تحديد ${c.name}`}
-                  checked={selected.has(c.id)}
-                  onChange={() => onToggle(c.id)}
-                />
-              </TableCell>
+              {canSelect && (
+                <TableCell onClick={(e) => e.stopPropagation()}>
+                  <input
+                    type="checkbox"
+                    aria-label={`تحديد ${c.name}`}
+                    checked={selected.has(c.id)}
+                    onChange={() => onToggle(c.id)}
+                  />
+                </TableCell>
+              )}
               <TableCell className="dir-ltr text-start font-mono text-xs">
                 {toArabicDigits(c.num)}
               </TableCell>

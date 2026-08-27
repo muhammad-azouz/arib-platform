@@ -7,6 +7,7 @@ import (
 
 	"github.com/aribpos/license-api/internal/hq"
 	"github.com/aribpos/license-api/internal/model"
+	"github.com/aribpos/license-api/internal/perm"
 	mongostore "github.com/aribpos/license-api/internal/store/mongo"
 	"github.com/aribpos/license-api/internal/tenant"
 	"github.com/go-chi/chi/v5"
@@ -275,13 +276,15 @@ func (s *Server) handleMemberList(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleMemberInvite(w http.ResponseWriter, r *http.Request) {
 	c := claimsFrom(r.Context())
 	var req struct {
-		Email string `json:"email"`
+		Email     string   `json:"email"`
+		RoleID    string   `json:"role_id"`
+		BranchIDs []string `json:"branch_ids"`
 	}
 	if err := decode(r, &req); err != nil {
 		writeErr(w, http.StatusBadRequest, "invalid body")
 		return
 	}
-	m, err := s.tenant.InviteMember(r.Context(), c.Subject, chi.URLParam(r, "id"), req.Email)
+	m, err := s.tenant.InviteMember(r.Context(), c.Subject, chi.URLParam(r, "id"), req.Email, req.RoleID, req.BranchIDs)
 	if err != nil {
 		s.writeTenantError(w, err)
 		return
@@ -298,6 +301,28 @@ func (s *Server) handleMemberRevoke(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "revoked"})
+}
+
+// handleMemberAssignRole reassigns a member's role and branch allowlist
+// (spec-console-rbac T109) — owner only, effective on the member's next
+// request with no session action of their own.
+func (s *Server) handleMemberAssignRole(w http.ResponseWriter, r *http.Request) {
+	c := claimsFrom(r.Context())
+	var req struct {
+		RoleID    string   `json:"role_id"`
+		BranchIDs []string `json:"branch_ids"`
+	}
+	if err := decode(r, &req); err != nil {
+		writeErr(w, http.StatusBadRequest, "invalid body")
+		return
+	}
+	m, err := s.tenant.AssignMemberRole(r.Context(), c.Subject,
+		chi.URLParam(r, "id"), chi.URLParam(r, "memberId"), req.RoleID, req.BranchIDs)
+	if err != nil {
+		s.writeTenantError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, m)
 }
 
 // --- client: sync token ---
@@ -395,6 +420,16 @@ func (s *Server) handleAdminBranchSeats(w http.ResponseWriter, r *http.Request) 
 
 func (s *Server) writeTenantError(w http.ResponseWriter, err error) {
 	switch {
+	case errors.Is(err, tenant.ErrForbiddenScope):
+		writeJSON(w, http.StatusForbidden, map[string]string{
+			"code":  "forbidden_scope",
+			"error": "هذا الفرع خارج نطاق صلاحياتك",
+		})
+	case errors.Is(err, tenant.ErrForbiddenUnscoped):
+		writeJSON(w, http.StatusForbidden, map[string]string{
+			"code":  "forbidden_unscoped",
+			"error": "هذه العملية تشمل كل الفروع ولا يمكن تنفيذها من حساب مقيّد بفرع",
+		})
 	case errors.Is(err, tenant.ErrForbidden):
 		writeErr(w, http.StatusForbidden, "resource does not belong to this account")
 	case errors.Is(err, tenant.ErrTenantSuspended):
@@ -422,8 +457,28 @@ func (s *Server) writeTenantError(w http.ResponseWriter, err error) {
 		writeErr(w, http.StatusConflict, "this email is already a member of the tenant")
 	case errors.Is(err, tenant.ErrCannotRemoveOwner):
 		writeErr(w, http.StatusConflict, "the tenant owner cannot be removed")
+	case errors.Is(err, tenant.ErrCannotModifyOwner):
+		writeErr(w, http.StatusConflict, "the tenant owner's role and branches cannot be changed")
+	case errors.Is(err, tenant.ErrUnknownRole):
+		writeErr(w, http.StatusBadRequest, "no such role on this tenant")
+	case errors.Is(err, tenant.ErrUnknownBranch):
+		writeErr(w, http.StatusBadRequest, "branch does not belong to this tenant")
 	case errors.Is(err, tenant.ErrInvalidEmail):
 		writeErr(w, http.StatusBadRequest, "invalid email")
+	case errors.Is(err, tenant.ErrInvalidRoleName):
+		writeErr(w, http.StatusBadRequest, "role name is required")
+	case errors.Is(err, perm.ErrUnknownCode), errors.Is(err, perm.ErrEmptyPermissions):
+		writeErr(w, http.StatusBadRequest, err.Error())
+	case errors.Is(err, tenant.ErrDuplicateRoleName):
+		writeErr(w, http.StatusConflict, "a role with this name already exists on this tenant")
+	case errors.As(err, new(*tenant.RoleAssignedError)):
+		var roleErr *tenant.RoleAssignedError
+		errors.As(err, &roleErr)
+		writeJSON(w, http.StatusConflict, map[string]any{
+			"code":  "role_assigned",
+			"error": roleErr.Error(),
+			"count": roleErr.Count,
+		})
 	case errors.Is(err, tenant.ErrMembersCannotCreateTenant):
 		writeJSON(w, http.StatusForbidden, map[string]string{
 			"code":  "members_cannot_create_tenant",

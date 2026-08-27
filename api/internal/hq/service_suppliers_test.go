@@ -240,3 +240,220 @@ func TestImportSuppliers_ForwardsBodyAndDecodesResult(t *testing.T) {
 		t.Fatalf("import result wrong: %+v", result)
 	}
 }
+
+// --- T120: same row-level 404s / write-target checks as
+// service_test.go's Customer suite, mirrored for Suppliers. ---
+
+func TestSupplierDetail_ScopedMemberOutOfAllowlistIsNotFound(t *testing.T) {
+	gw := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/hq/suppliers/s1":
+			_, _ = w.Write([]byte(`{"id":"s1","branch_id":"b1","name":"مورد","phone1":"0100"}`))
+		case "/hq/suppliers/s2":
+			_, _ = w.Write([]byte(`{"id":"s2","branch_id":"b2","name":"مورد آخر","phone1":"0200"}`))
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer gw.Close()
+
+	fs := testStore(gw.URL)
+	s := New(fs, &fakeTokens{}, nil)
+	ctx := scopedCtx(fs, []string{"b1"})
+
+	if _, err := s.SupplierDetail(ctx, fs.tenant.AccountID, fs.tenant.ID, "s1"); err != nil {
+		t.Fatalf("in-allowlist supplier should succeed, got %v", err)
+	}
+	if _, err := s.SupplierDetail(ctx, fs.tenant.AccountID, fs.tenant.ID, "s2"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("expected ErrNotFound for an out-of-allowlist supplier, got %v", err)
+	}
+}
+
+func TestSupplierPurchases_ScopedMemberOutOfAllowlistIsNotFound(t *testing.T) {
+	purchasesCalled := false
+	gw := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/hq/suppliers/s1":
+			_, _ = w.Write([]byte(`{"branch_id":"b1"}`))
+		case "/hq/suppliers/s2":
+			_, _ = w.Write([]byte(`{"branch_id":"b2"}`))
+		case "/hq/suppliers/s1/purchases":
+			purchasesCalled = true
+			_, _ = w.Write([]byte(`{"total":0,"page":1,"page_size":50,"items":[]}`))
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer gw.Close()
+
+	fs := testStore(gw.URL)
+	s := New(fs, &fakeTokens{}, nil)
+	ctx := scopedCtx(fs, []string{"b1"})
+
+	if _, err := s.SupplierPurchases(ctx, fs.tenant.AccountID, fs.tenant.ID, "s1", url.Values{}); err != nil {
+		t.Fatalf("in-allowlist supplier purchases should succeed, got %v", err)
+	}
+	if !purchasesCalled {
+		t.Fatalf("expected the gateway's purchases endpoint to be reached for an in-allowlist supplier")
+	}
+	if _, err := s.SupplierPurchases(ctx, fs.tenant.AccountID, fs.tenant.ID, "s2", url.Values{}); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("expected ErrNotFound for an out-of-allowlist supplier, got %v", err)
+	}
+}
+
+func TestSupplierLedger_ScopedMemberOutOfAllowlistIsNotFound(t *testing.T) {
+	gw := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/hq/suppliers/s2":
+			_, _ = w.Write([]byte(`{"branch_id":"b2"}`))
+		case "/hq/suppliers/s2/ledger":
+			w.WriteHeader(http.StatusInternalServerError)
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer gw.Close()
+
+	fs := testStore(gw.URL)
+	s := New(fs, &fakeTokens{}, nil)
+	ctx := scopedCtx(fs, []string{"b1"})
+
+	if _, err := s.SupplierLedger(ctx, fs.tenant.AccountID, fs.tenant.ID, "s2", url.Values{}); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("expected ErrNotFound for an out-of-allowlist supplier, got %v", err)
+	}
+}
+
+func TestCreateSupplier_ScopedMemberTargetBranchChecked(t *testing.T) {
+	called := false
+	gw := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		called = true
+		w.WriteHeader(http.StatusCreated)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"s1","num":1,"written_at":"2026-08-27T10:00:00Z"}`))
+	}))
+	defer gw.Close()
+
+	fs := testStore(gw.URL)
+	s := New(fs, &fakeTokens{}, nil)
+	ctx := scopedCtx(fs, []string{"b1"})
+
+	if _, err := s.CreateSupplier(ctx, fs.tenant.AccountID, fs.tenant.ID, NewSupplier{Name: "مورد", Phone1: "0100", BranchID: "b2"}); !errors.Is(err, ErrForbiddenScope) {
+		t.Fatalf("expected ErrForbiddenScope for an out-of-allowlist target branch, got %v", err)
+	}
+	if called {
+		t.Fatalf("gateway must never be called for an out-of-allowlist create")
+	}
+	if _, err := s.CreateSupplier(ctx, fs.tenant.AccountID, fs.tenant.ID, NewSupplier{Name: "مورد", Phone1: "0100", BranchID: "b1"}); err != nil {
+		t.Fatalf("in-allowlist create should succeed, got %v", err)
+	}
+	if !called {
+		t.Fatalf("expected the gateway to be reached for an in-allowlist create")
+	}
+}
+
+func TestUpdateSupplier_ScopedMemberOutOfAllowlistIsNotFound(t *testing.T) {
+	putCalled := false
+	gw := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/hq/suppliers/s1":
+			_, _ = w.Write([]byte(`{"branch_id":"b1"}`))
+		case r.Method == http.MethodGet && r.URL.Path == "/hq/suppliers/s2":
+			_, _ = w.Write([]byte(`{"branch_id":"b2"}`))
+		case r.Method == http.MethodPut && r.URL.Path == "/hq/suppliers/s1":
+			putCalled = true
+			_, _ = w.Write([]byte(`{"written_at":"2026-08-27T10:00:00Z"}`))
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer gw.Close()
+
+	fs := testStore(gw.URL)
+	s := New(fs, &fakeTokens{}, nil)
+	ctx := scopedCtx(fs, []string{"b1"})
+	active := true
+
+	if _, err := s.UpdateSupplier(ctx, fs.tenant.AccountID, fs.tenant.ID, "s2", SupplierEdit{IsActive: &active}); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("expected ErrNotFound for an out-of-allowlist supplier, got %v", err)
+	}
+	if putCalled {
+		t.Fatalf("gateway's PUT must never be reached for an out-of-allowlist update")
+	}
+	if _, err := s.UpdateSupplier(ctx, fs.tenant.AccountID, fs.tenant.ID, "s1", SupplierEdit{IsActive: &active}); err != nil {
+		t.Fatalf("in-allowlist update should succeed, got %v", err)
+	}
+	if !putCalled {
+		t.Fatalf("expected the gateway's PUT to be reached for an in-allowlist update")
+	}
+}
+
+func TestBulkUpdateSuppliers_ScopedMemberRefusedWhenAnyRowOutOfScope(t *testing.T) {
+	bulkCalled := false
+	gw := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/hq/suppliers/s1":
+			_, _ = w.Write([]byte(`{"branch_id":"b1"}`))
+		case "/hq/suppliers/s2":
+			_, _ = w.Write([]byte(`{"branch_id":"b2"}`))
+		case "/hq/suppliers/bulk":
+			bulkCalled = true
+			_, _ = w.Write([]byte(`{"updated":1,"written_at":"2026-08-27T10:00:00Z"}`))
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer gw.Close()
+
+	fs := testStore(gw.URL)
+	s := New(fs, &fakeTokens{}, nil)
+	ctx := scopedCtx(fs, []string{"b1"})
+	group := "g1"
+
+	if _, err := s.BulkUpdateSuppliers(ctx, fs.tenant.AccountID, fs.tenant.ID, []string{"s1", "s2"}, &group, nil); !errors.Is(err, ErrForbiddenScope) {
+		t.Fatalf("expected ErrForbiddenScope when any row is out of scope, got %v", err)
+	}
+	if bulkCalled {
+		t.Fatalf("gateway's bulk write must never be reached when any row is out of scope")
+	}
+	if _, err := s.BulkUpdateSuppliers(ctx, fs.tenant.AccountID, fs.tenant.ID, []string{"s1"}, &group, nil); err != nil {
+		t.Fatalf("bulk update over an entirely in-scope set should succeed, got %v", err)
+	}
+	if !bulkCalled {
+		t.Fatalf("expected the gateway's bulk write to be reached once every row is in scope")
+	}
+}
+
+func TestImportSuppliers_ScopedMemberBranchFieldChecked(t *testing.T) {
+	importCalled := false
+	gw := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		importCalled = true
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"created":1,"errors":[]}`))
+	}))
+	defer gw.Close()
+
+	fs := testStore(gw.URL)
+	s := New(fs, &fakeTokens{}, nil)
+	ctx := scopedCtx(fs, []string{"b1"})
+
+	ct, body := multipartBranchID("b2")
+	if _, err := s.ImportSuppliers(ctx, fs.tenant.AccountID, fs.tenant.ID, ct, body); !errors.Is(err, ErrForbiddenScope) {
+		t.Fatalf("expected ErrForbiddenScope for an out-of-allowlist import branch_id, got %v", err)
+	}
+	if importCalled {
+		t.Fatalf("gateway must never be called for an out-of-allowlist import")
+	}
+
+	ct, body = multipartBranchID("b1")
+	if _, err := s.ImportSuppliers(ctx, fs.tenant.AccountID, fs.tenant.ID, ct, body); err != nil {
+		t.Fatalf("in-allowlist import should succeed, got %v", err)
+	}
+	if !importCalled {
+		t.Fatalf("expected the gateway to be reached for an in-allowlist import")
+	}
+}

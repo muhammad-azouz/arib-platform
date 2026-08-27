@@ -4,7 +4,9 @@ import { zodResolver } from '@hookform/resolvers/zod'
 import { z } from 'zod'
 import { toast } from 'sonner'
 import { errorMessage } from '@/lib/auth'
-import { useBundle, useInviteMember, useRoles } from '@/lib/hooks'
+import { useAssignMemberRole, useBundle, useRoles } from '@/lib/hooks'
+import type { Member } from '@/lib/types'
+import { Button } from '@/components/ui/button'
 import {
   Dialog,
   DialogContent,
@@ -13,13 +15,10 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog'
-import { Button } from '@/components/ui/button'
-import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { LoadingState } from '@/components/States'
 
 const schema = z.object({
-  email: z.string().min(1, 'البريد الإلكتروني مطلوب').email('بريد إلكتروني غير صالح'),
   roleId: z.string().min(1, 'اختر دورًا'),
 })
 type Form = z.infer<typeof schema>
@@ -27,44 +26,47 @@ type Form = z.infer<typeof schema>
 const NO_BRANCHES_SELECTED = 'اختر فرعًا واحدًا على الأقل، أو فعّل «كل الفروع»'
 
 /**
- * Invite-by-email dialog (T14, `POST …/members`, owner-only server-side).
- * The invited email gets a bare Account now if it doesn't have one yet
- * (tenant/service_members.go InviteMember) — they reach the console with the
- * existing OTP sign-in flow, unchanged; there is no separate accept step.
+ * Role + branch-allowlist reassignment dialog for one member row (T113 role
+ * picker; T123 adds the branch picker). One instance per open dialog
+ * (Settings.tsx only renders this when a member is selected), so `member`
+ * is always the current target — no create/edit mode split like
+ * `RoleFormDialog`.
  *
- * T125 makes role + branches mandatory here (the same picker as
- * `AssignRoleDialog`), so a new member has real access on their very first
- * sign-in instead of landing with zero permissions until a separate
- * `AssignRoleDialog` pass — the API's role_id/branch_ids stay optional
- * server-side (T124) for other callers, but this dialog never sends them
- * empty.
+ * The branch picker is a mode toggle, not a bare multi-select: "كل الفروع"
+ * on means the allowlist is empty (D4 — unscoped, sees every branch,
+ * including ones created later); off means exactly the ticked ids, and at
+ * least one must be ticked (an empty *scoped* selection would be
+ * indistinguishable on the wire from "all branches", so the client refuses
+ * to send it rather than let a mis-click silently unscope someone).
  */
-export function InviteMemberDialog({
+export function AssignRoleDialog({
   tenantId,
+  member,
   open,
   onOpenChange,
 }: {
   tenantId: string
+  member: Member
   open: boolean
   onOpenChange: (open: boolean) => void
 }) {
-  const invite = useInviteMember(tenantId)
   const rolesQuery = useRoles(tenantId)
   const { data: bundle } = useBundle(tenantId)
+  const assign = useAssignMemberRole(tenantId)
 
-  const [allBranches, setAllBranches] = useState(true)
-  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
+  const [allBranches, setAllBranches] = useState(member.branch_ids.length === 0)
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set(member.branch_ids))
   const [branchError, setBranchError] = useState<string | null>(null)
 
   const form = useForm<Form>({
     resolver: zodResolver(schema),
-    defaultValues: { email: '', roleId: '' },
+    defaultValues: { roleId: member.role_id ?? '' },
   })
 
   const reset = () => {
-    form.reset({ email: '', roleId: '' })
-    setAllBranches(true)
-    setSelectedIds(new Set())
+    form.reset({ roleId: member.role_id ?? '' })
+    setAllBranches(member.branch_ids.length === 0)
+    setSelectedIds(new Set(member.branch_ids))
     setBranchError(null)
   }
 
@@ -84,19 +86,19 @@ export function InviteMemberDialog({
     }
     setBranchError(null)
     try {
-      await invite.mutateAsync({
-        email: values.email,
+      await assign.mutateAsync({
+        memberId: member.id,
         roleId: values.roleId,
         branchIds: allBranches ? [] : [...selectedIds],
       })
-      toast.success('تم إرسال الدعوة')
-      reset()
+      toast.success('تم تحديث دور العضو')
       onOpenChange(false)
     } catch (err) {
       toast.error(errorMessage(err))
     }
   })
 
+  const name = [member.first_name, member.last_name].filter(Boolean).join(' ') || member.email
   const branches = bundle?.Branches ?? []
 
   return (
@@ -109,40 +111,19 @@ export function InviteMemberDialog({
     >
       <DialogContent>
         <DialogHeader>
-          <DialogTitle>دعوة عضو جديد</DialogTitle>
-          <DialogDescription>
-            يمكن للعضو المدعو الدخول إلى لوحة التحكم لهذا النشاط برمز تحقق يُرسل
-            إلى بريده الإلكتروني.
-          </DialogDescription>
+          <DialogTitle>تعيين دور</DialogTitle>
+          <DialogDescription>{name}</DialogDescription>
         </DialogHeader>
         <form onSubmit={submit} className="space-y-4" noValidate>
           <div className="space-y-1.5">
-            <Label htmlFor="member-email">
-              البريد الإلكتروني<span className="text-danger"> *</span>
-            </Label>
-            <Input
-              id="member-email"
-              type="email"
-              dir="ltr"
-              className="text-start"
-              autoFocus
-              placeholder="name@example.com"
-              {...form.register('email')}
-            />
-            {form.formState.errors.email && (
-              <p className="text-xs text-danger">{form.formState.errors.email.message}</p>
-            )}
-          </div>
-
-          <div className="space-y-1.5">
-            <Label htmlFor="invite-role-id">
+            <Label htmlFor="assign-role-id">
               الدور<span className="text-danger"> *</span>
             </Label>
             {rolesQuery.isLoading ? (
               <LoadingState rows={1} />
             ) : (
               <select
-                id="invite-role-id"
+                id="assign-role-id"
                 className="flex h-9 w-full rounded-md border border-input bg-background/40 px-3 py-1 text-sm shadow-sm transition-colors focus-visible:outline-none focus-visible:border-ring focus-visible:ring-2 focus-visible:ring-ring/30"
                 {...form.register('roleId')}
               >
@@ -196,11 +177,18 @@ export function InviteMemberDialog({
               )}
             </div>
             {branchError && <p className="text-xs text-danger">{branchError}</p>}
+            {/* D4 — fail-closed by design, and worth saying so: an unscoped
+                allowlist auto-includes every future branch, a scoped one
+                never does. */}
+            <p className="text-xs text-muted-foreground">
+              فرع يُنشأ لاحقًا لا يُضاف تلقائيًا إلى تعيين محدد الفروع — العضو المحدد
+              يرى فقط الفروع المختارة أعلاه، حتى بعد إضافة فروع جديدة.
+            </p>
           </div>
 
           <DialogFooter>
-            <Button type="submit" disabled={form.formState.isSubmitting}>
-              إرسال الدعوة
+            <Button type="submit" disabled={assign.isPending}>
+              حفظ
             </Button>
           </DialogFooter>
         </form>

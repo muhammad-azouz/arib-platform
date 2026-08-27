@@ -11,6 +11,7 @@ import {
   useSupplierInsights,
   useSuppliers,
 } from '@/lib/hooks'
+import { PERM, useCan } from '@/lib/perm'
 import { toArabicDigits } from '@/lib/format'
 import { cn } from '@/lib/utils'
 import type {
@@ -65,6 +66,7 @@ const VIEWS: { key: ViewKey; label: string }[] = [
 export function Suppliers() {
   const { tenantId } = useParams<'tenantId'>()
   const { data: bundle } = useBundle(tenantId)
+  const canManage = useCan(tenantId, PERM.SuppliersManage)
   const [searchParams, setSearchParams] = useSearchParams()
 
   const view: ViewKey = (searchParams.get('view') as ViewKey | null) ?? 'list'
@@ -86,14 +88,16 @@ export function Suppliers() {
         title="الموردون"
         description="قائمة الموردين وتحليلات نشاطهم عبر كل الفروع."
         actions={
-          <Button onClick={() => setCreateOpen(true)}>
-            <AddIcon className="size-4" />
-            مورد جديد
-          </Button>
+          canManage ? (
+            <Button onClick={() => setCreateOpen(true)}>
+              <AddIcon className="size-4" />
+              مورد جديد
+            </Button>
+          ) : undefined
         }
       />
 
-      {tenantId && (
+      {tenantId && canManage && (
         <CreateSupplierDialog tenantId={tenantId} open={createOpen} onOpenChange={setCreateOpen} />
       )}
 
@@ -135,6 +139,7 @@ function ListView({
 }) {
   const navigate = useNavigate()
   const groupsQuery = useCustomerGroups(tenantId)
+  const canManage = useCan(tenantId, PERM.SuppliersManage)
 
   const [search, setSearch] = useState('')
   const [debouncedSearch, setDebouncedSearch] = useState('')
@@ -266,9 +271,13 @@ function ListView({
       </div>
 
       <div className="mb-4 flex justify-end gap-2">
-        <Button type="button" variant="outline" size="sm" onClick={() => setImportOpen(true)}>
-          استيراد
-        </Button>
+        {canManage && (
+          <Button type="button" variant="outline" size="sm" onClick={() => setImportOpen(true)}>
+            استيراد
+          </Button>
+        )}
+        {/* Export stays available under `suppliers.view` alone, mirroring
+            customers — spec OQ3's default, unresolved as of T116. */}
         <Button
           type="button"
           variant="outline"
@@ -281,7 +290,7 @@ function ListView({
         </Button>
       </div>
 
-      {tenantId && (
+      {tenantId && canManage && (
         <ImportSuppliersDialog tenantId={tenantId} open={importOpen} onOpenChange={setImportOpen} />
       )}
 
@@ -298,7 +307,7 @@ function ListView({
         />
       ) : (
         <>
-          {tenantId && selected.size > 0 && (
+          {tenantId && canManage && selected.size > 0 && (
             <SupplierBulkActionsBar
               tenantId={tenantId}
               selectedIds={[...selected]}
@@ -309,6 +318,7 @@ function ListView({
           <SuppliersTable
             items={query.data?.data.items}
             isLoading={query.isLoading}
+            canSelect={canManage}
             selected={selected}
             onToggle={(id) =>
               setSelected((prev) => {
@@ -349,6 +359,7 @@ function ListView({
 function SuppliersTable({
   items,
   isLoading,
+  canSelect,
   selected,
   onToggle,
   onToggleAll,
@@ -356,6 +367,7 @@ function SuppliersTable({
 }: {
   items?: SupplierRow[]
   isLoading: boolean
+  canSelect: boolean
   selected: Set<string>
   onToggle: (id: string) => void
   onToggleAll: (ids: string[], checked: boolean) => void
@@ -377,14 +389,16 @@ function SuppliersTable({
       <Table>
         <TableHeader>
           <TableRow>
-            <TableHead className="w-8">
-              <input
-                type="checkbox"
-                aria-label="تحديد كل الموردين في هذه الصفحة"
-                checked={allSelected}
-                onChange={(e) => onToggleAll(items.map((c) => c.id), e.target.checked)}
-              />
-            </TableHead>
+            {canSelect && (
+              <TableHead className="w-8">
+                <input
+                  type="checkbox"
+                  aria-label="تحديد كل الموردين في هذه الصفحة"
+                  checked={allSelected}
+                  onChange={(e) => onToggleAll(items.map((c) => c.id), e.target.checked)}
+                />
+              </TableHead>
+            )}
             <TableHead>الكود</TableHead>
             <TableHead>الاسم</TableHead>
             <TableHead>الفرع</TableHead>
@@ -406,14 +420,16 @@ function SuppliersTable({
               }}
               className="cursor-pointer"
             >
-              <TableCell onClick={(e) => e.stopPropagation()}>
-                <input
-                  type="checkbox"
-                  aria-label={`تحديد ${c.name}`}
-                  checked={selected.has(c.id)}
-                  onChange={() => onToggle(c.id)}
-                />
-              </TableCell>
+              {canSelect && (
+                <TableCell onClick={(e) => e.stopPropagation()}>
+                  <input
+                    type="checkbox"
+                    aria-label={`تحديد ${c.name}`}
+                    checked={selected.has(c.id)}
+                    onChange={() => onToggle(c.id)}
+                  />
+                </TableCell>
+              )}
               <TableCell className="dir-ltr text-start font-mono text-xs">
                 {toArabicDigits(c.num)}
               </TableCell>

@@ -9,6 +9,7 @@ import {
   useSupplierPurchases,
   useUpdateSupplier,
 } from '@/lib/hooks'
+import { PERM, useCan } from '@/lib/perm'
 import { fmtDateTime, relative, toArabicDigits } from '@/lib/format'
 import { cn } from '@/lib/utils'
 import { Breadcrumbs } from '@/components/Breadcrumbs'
@@ -237,6 +238,7 @@ export function SupplierDetail() {
   const { tenantId, supplierId } = useParams<'tenantId' | 'supplierId'>()
   const query = useSupplier(tenantId, supplierId)
   const update = useUpdateSupplier(tenantId ?? '')
+  const canManage = useCan(tenantId, PERM.SuppliersManage)
   const [editOpen, setEditOpen] = useState(false)
 
   const crumbs = [
@@ -312,20 +314,22 @@ export function SupplierDetail() {
             {c.is_active ? 'مُفعّل' : 'مُعطّل'}
           </Badge>
           <Freshness source={query.data.source} asOf={query.data.as_of} />
-          <div className="ms-auto flex items-center gap-2">
-            <Button variant="outline" size="sm" onClick={() => setEditOpen(true)}>
-              <EditIcon className="size-4" />
-              تعديل
-            </Button>
-            <Button
-              variant="outline"
-              size="sm"
-              disabled={update.isPending}
-              onClick={toggleActive}
-            >
-              {c.is_active ? 'تعطيل المورد' : 'تفعيل المورد'}
-            </Button>
-          </div>
+          {canManage && (
+            <div className="ms-auto flex items-center gap-2">
+              <Button variant="outline" size="sm" onClick={() => setEditOpen(true)}>
+                <EditIcon className="size-4" />
+                تعديل
+              </Button>
+              <Button
+                variant="outline"
+                size="sm"
+                disabled={update.isPending}
+                onClick={toggleActive}
+              >
+                {c.is_active ? 'تعطيل المورد' : 'تفعيل المورد'}
+              </Button>
+            </div>
+          )}
         </div>
         <div className="flex flex-wrap items-center gap-x-6 gap-y-1 text-sm text-muted-foreground">
           <span>
@@ -390,7 +394,7 @@ export function SupplierDetail() {
         </Section>
       </div>
 
-      {tenantId && (
+      {tenantId && canManage && (
         <EditSupplierDialog
           tenantId={tenantId}
           supplier={c}

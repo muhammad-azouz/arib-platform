@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState, type KeyboardEvent as ReactKeyboardEvent 
 import * as DialogPrimitive from '@radix-ui/react-dialog'
 import { useNavigate, useParams } from 'react-router-dom'
 import { useBundle, useCatalogProducts } from '@/lib/hooks'
+import { can, PERM, useScope } from '@/lib/perm'
 import { cn } from '@/lib/utils'
 import { DialogOverlay, DialogTitle, DialogDescription } from '@/components/ui/dialog'
 import { Button } from '@/components/ui/button'
@@ -110,9 +111,15 @@ function PaletteBody({ onClose }: { onClose: () => void }) {
   }, [query])
 
   const { data: bundle } = useBundle(tenantId)
+  const scope = useScope(tenantId)
+  // Composition gating (T114, spec D10): the palette searches across
+  // sections the same way Overview composes them — a category is absent,
+  // and its query never fires, without that section's own `view` code.
+  const canCatalog = can(scope, PERM.CatalogView)
+  const canBranches = can(scope, PERM.BranchesView)
   const productSearch = debouncedQuery.length >= 2 ? debouncedQuery : undefined
   const productsQuery = useCatalogProducts(
-    productSearch ? tenantId : undefined,
+    productSearch && canCatalog ? tenantId : undefined,
     { search: productSearch, page: 1, pageSize: 8 },
   )
 
@@ -135,17 +142,19 @@ function PaletteBody({ onClose }: { onClose: () => void }) {
     ].filter((p) => matches(p.label))
     if (pages.length > 0) result.push({ key: 'pages', label: 'الصفحات', items: pages })
 
-    const branches: PaletteItem[] = (bundle?.Branches ?? [])
-      .filter((b) => matches(b.Name))
-      .map((b) => ({
-        id: `branch-${b.ID}`,
-        label: b.Name,
-        icon: BranchIcon,
-        to: `${base}/branches/${b.ID}`,
-      }))
+    const branches: PaletteItem[] = canBranches
+      ? (bundle?.Branches ?? [])
+          .filter((b) => matches(b.Name))
+          .map((b) => ({
+            id: `branch-${b.ID}`,
+            label: b.Name,
+            icon: BranchIcon,
+            to: `${base}/branches/${b.ID}`,
+          }))
+      : []
     if (branches.length > 0) result.push({ key: 'branches', label: 'الفروع', items: branches })
 
-    if (productSearch) {
+    if (productSearch && canCatalog) {
       const items = productsQuery.data?.data.items ?? []
       const products: PaletteItem[] = items.map((p) => ({
         id: `product-${p.id}`,
@@ -171,7 +180,7 @@ function PaletteBody({ onClose }: { onClose: () => void }) {
     if (actions.length > 0) result.push({ key: 'actions', label: 'إجراءات', items: actions })
 
     return result
-  }, [base, bundle, productSearch, productsQuery.data, q])
+  }, [base, bundle, canBranches, canCatalog, productSearch, productsQuery.data, q])
 
   const flat = useMemo(() => sections.flatMap((s) => s.items), [sections])
 

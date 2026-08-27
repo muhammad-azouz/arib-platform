@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { Link, useNavigate, useParams } from 'react-router-dom'
 import { ApiError } from '@/lib/api'
 import { useBundle, useOrders } from '@/lib/hooks'
+import { PERM, useCan } from '@/lib/perm'
 import {
   fmtDateTime,
   orderChannelLabel,
@@ -50,6 +51,7 @@ export function Orders() {
   const { tenantId } = useParams<'tenantId'>()
   const { data: bundle } = useBundle(tenantId)
   const navigate = useNavigate()
+  const canManage = useCan(tenantId, PERM.OrdersManage)
 
   const [search, setSearch] = useState('')
   const [debouncedSearch, setDebouncedSearch] = useState('')
@@ -101,12 +103,14 @@ export function Orders() {
         actions={
           <>
             {query.data && <Freshness source={query.data.source} asOf={query.data.as_of} />}
-            <Button asChild>
-              <Link to="new">
-                <AddIcon className="size-4" />
-                طلب جديد
-              </Link>
-            </Button>
+            {canManage && (
+              <Button asChild>
+                <Link to="new">
+                  <AddIcon className="size-4" />
+                  طلب جديد
+                </Link>
+              </Button>
+            )}
           </>
         }
       />

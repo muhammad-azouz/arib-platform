@@ -9,6 +9,7 @@ import {
   useCustomerPurchases,
   useUpdateCustomer,
 } from '@/lib/hooks'
+import { PERM, useCan } from '@/lib/perm'
 import { fmtDateTime, relative, toArabicDigits } from '@/lib/format'
 import { cn } from '@/lib/utils'
 import { Breadcrumbs } from '@/components/Breadcrumbs'
@@ -232,6 +233,7 @@ export function CustomerDetail() {
   const { tenantId, customerId } = useParams<'tenantId' | 'customerId'>()
   const query = useCustomer(tenantId, customerId)
   const update = useUpdateCustomer(tenantId ?? '')
+  const canManage = useCan(tenantId, PERM.CustomersManage)
   const [editOpen, setEditOpen] = useState(false)
 
   const crumbs = [
@@ -307,20 +309,22 @@ export function CustomerDetail() {
             {c.is_active ? 'مُفعّل' : 'مُعطّل'}
           </Badge>
           <Freshness source={query.data.source} asOf={query.data.as_of} />
-          <div className="ms-auto flex items-center gap-2">
-            <Button variant="outline" size="sm" onClick={() => setEditOpen(true)}>
-              <EditIcon className="size-4" />
-              تعديل
-            </Button>
-            <Button
-              variant="outline"
-              size="sm"
-              disabled={update.isPending}
-              onClick={toggleActive}
-            >
-              {c.is_active ? 'تعطيل العميل' : 'تفعيل العميل'}
-            </Button>
-          </div>
+          {canManage && (
+            <div className="ms-auto flex items-center gap-2">
+              <Button variant="outline" size="sm" onClick={() => setEditOpen(true)}>
+                <EditIcon className="size-4" />
+                تعديل
+              </Button>
+              <Button
+                variant="outline"
+                size="sm"
+                disabled={update.isPending}
+                onClick={toggleActive}
+              >
+                {c.is_active ? 'تعطيل العميل' : 'تفعيل العميل'}
+              </Button>
+            </div>
+          )}
         </div>
         <div className="flex flex-wrap items-center gap-x-6 gap-y-1 text-sm text-muted-foreground">
           <span>
@@ -385,7 +389,7 @@ export function CustomerDetail() {
         </Section>
       </div>
 
-      {tenantId && (
+      {tenantId && canManage && (
         <EditCustomerDialog
           tenantId={tenantId}
           customer={c}

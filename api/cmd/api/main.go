@@ -98,7 +98,12 @@ func main() {
 		}
 	}
 
-	tenantSvc := tenant.New(store, syncKey, cfg.SyncTokenTTL, nil)
+	mailer := mail.New(mail.Config{
+		Host: cfg.SMTPHost, Port: cfg.SMTPPort,
+		Username: cfg.SMTPUsername, Password: cfg.SMTPPassword, From: cfg.SMTPFrom,
+	}, log)
+
+	tenantSvc := tenant.New(store, syncKey, cfg.SyncTokenTTL, nil, mailer, log)
 	// T13: backfill owner TenantMember rows for tenants registered before the
 	// membership model existed. Idempotent — cheap to run on every boot.
 	if n, err := tenantSvc.BackfillOwnerMembers(ctx); err != nil {
@@ -115,14 +120,18 @@ func main() {
 	} else if n > 0 {
 		log.Info("backfilled has-been-member", "count", n)
 	}
+	// T103: seed the default console-RBAC roles on every tenant and point
+	// every pre-existing member row at «وصول كامل» so access is preserved,
+	// not narrowed. Idempotent — cheap to run on every boot.
+	if roles, members, err := store.BackfillRolesAndMembers(ctx); err != nil {
+		log.Error("backfill roles and members", "err", err)
+		os.Exit(1)
+	} else if roles > 0 || members > 0 {
+		log.Info("backfilled console roles", "roles_seeded", roles, "members_updated", members)
+	}
 	billingSvc := billing.New(store, tenantSvc)
 	rolloutSvc := rollout.New(store, tenantSvc, nil)
 	hqSvc := hq.New(store, tenantSvc, nil)
-
-	mailer := mail.New(mail.Config{
-		Host: cfg.SMTPHost, Port: cfg.SMTPPort,
-		Username: cfg.SMTPUsername, Password: cfg.SMTPPassword, From: cfg.SMTPFrom,
-	}, log)
 
 	tokenMgr := auth.NewTokenManager(cfg.JWTSecret, cfg.AccessTokenTTL, cfg.RefreshTokenTTL)
 	oauth := auth.NewOAuth(cfg.PublicBaseURL, cfg.JWTSecret,
@@ -135,7 +144,7 @@ func main() {
 		OTPTTL: cfg.OTPTTL, OTPMaxAttempts: cfg.OTPMaxAttempts,
 	})
 
-	srv := httpapi.New(authSvc, deviceSvc, adminSvc, tenantSvc, billingSvc, rolloutSvc, hqSvc, cfg.DashboardOrigins, log, cfg.UpdatesDir, cfg.UpdatesAuth, signer)
+	srv := httpapi.New(authSvc, deviceSvc, adminSvc, tenantSvc, billingSvc, rolloutSvc, hqSvc, store, cfg.DashboardOrigins, log, cfg.UpdatesDir, cfg.UpdatesAuth, signer)
 
 	httpServer := &http.Server{
 		Addr:              cfg.HTTPAddr,

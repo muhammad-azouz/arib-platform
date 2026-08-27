@@ -14,12 +14,16 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"mime"
+	"mime/multipart"
 	"net/http"
 	"net/url"
+	"strings"
 	"time"
 
 	"github.com/aribpos/license-api/internal/membership"
 	"github.com/aribpos/license-api/internal/model"
+	"github.com/aribpos/license-api/internal/perm"
 )
 
 // Service errors surfaced to the HTTP layer.
@@ -35,6 +39,21 @@ var (
 	// AccountOperands["Customers"] row a customer create needs to wire its
 	// ledger account — a server-side misconfiguration, not a client mistake.
 	ErrMissingAccountOperand = errors.New("tenant is missing the Customers account mapping")
+	// ErrForbiddenScope means a caller-supplied branch_id filter names a
+	// branch outside the caller's allowlist (spec D4/D5b, T119) — refused
+	// outright rather than silently narrowed to the intersection or widened
+	// to the full allowlist, so a scoped member never mistakes "no rows"
+	// for "no access".
+	ErrForbiddenScope = errors.New("forbidden_scope")
+	// ErrForbiddenUnscoped means a scoped caller attempted an operation that
+	// carries no branch identity of its own — a Tier-A write (price change,
+	// product create) or a bulk/import op touching at least one row outside
+	// the allowlist (spec D5c, T120). A branch allowlist cannot authorize an
+	// operation it has no way to check, so these are refused for anyone but
+	// an unscoped member, distinct from ErrForbiddenScope's "not *this*
+	// branch" so the console can render "you can't do this" rather than
+	// "you can't do this here".
+	ErrForbiddenUnscoped = errors.New("forbidden_unscoped")
 )
 
 // DuplicateBarcodeError is returned by CreateProduct when a requested
@@ -63,7 +82,7 @@ type Store interface {
 	TenantByID(ctx context.Context, id string) (*model.Tenant, error)
 	ShardByID(ctx context.Context, id string) (*model.Shard, error)
 	BranchesByTenant(ctx context.Context, tenantID string) ([]model.Branch, error)
-	MemberRole(ctx context.Context, tenantID, accountID string) (model.MemberRole, error)
+	MemberByAccount(ctx context.Context, tenantID, accountID string) (*model.TenantMember, error)
 }
 
 // TokenIssuer mints the HQ token the gateway's /hq endpoints require.
@@ -106,32 +125,168 @@ type BranchActivityEnvelope struct {
 
 // resolveGateway loads the owned, sync-subscribed tenant and its shard — the
 // first step of every HQ-gateway call (T6's chain, reused by every later
-// slice: session ownership check, subscription check, shard lookup).
-func (s *Service) resolveGateway(ctx context.Context, accountID, tenantID string) (*model.Tenant, *model.Shard, error) {
+// slice: session ownership check, subscription check, shard lookup). The
+// returned Scope (T105) is the same one httpapi's requirePerm middleware
+// already resolved for this request when available — RequireScope only
+// falls back to a fresh MemberByAccount read (plus t.Roles, already in
+// hand here, so never a second TenantByID) for a non-HTTP caller or a test
+// using context.Background(). No caller reads it yet; it's plumbed through
+// now so T119/T120's branch scoping gets the allowlist for free.
+func (s *Service) resolveGateway(ctx context.Context, accountID, tenantID string) (*model.Tenant, *model.Shard, *perm.Scope, error) {
 	t, err := s.store.TenantByID(ctx, tenantID)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
-	if _, err := membership.Require(ctx, s.store, tenantID, accountID); err != nil {
+	scope, err := membership.RequireScope(ctx, s.store, t, accountID)
+	if err != nil {
 		if errors.Is(err, membership.ErrForbidden) {
-			return nil, nil, ErrForbidden
+			return nil, nil, nil, ErrForbidden
 		}
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 	if t.DBName == "" || t.ShardID == "" {
-		return nil, nil, ErrNotSubscribed
+		return nil, nil, nil, ErrNotSubscribed
 	}
 	shard, err := s.store.ShardByID(ctx, t.ShardID)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
-	return t, shard, nil
+	return t, shard, scope, nil
+}
+
+// applyScope reconciles a caller-supplied branch_id query filter with
+// scope's branch allowlist before a request reaches the gateway (T119). An
+// unscoped scope (the owner, or a member with an empty allowlist per spec
+// D4) is a no-op — params passes through untouched, so an unscoped member's
+// request stays byte-identical to pre-T119 behaviour. A scoped member who
+// supplies no branch_id gets the allowlist injected as the filter (repeated
+// branch_id params — BranchScope.From on the gateway side, T118, treats
+// that exactly like a caller who typed them all in). A scoped member who
+// does supply branch_id values is refused ErrForbiddenScope if any of them
+// falls outside the allowlist, never silently narrowed to the intersection
+// or widened to the full allowlist.
+func applyScope(params url.Values, scope *perm.Scope) (url.Values, error) {
+	if scope == nil || scope.IsUnscoped() {
+		return params, nil
+	}
+	if requested := params["branch_id"]; len(requested) > 0 {
+		for _, id := range requested {
+			if !scope.AllowsBranch(id) {
+				return nil, ErrForbiddenScope
+			}
+		}
+		return params, nil
+	}
+	out := make(url.Values, len(params)+1)
+	for k, v := range params {
+		out[k] = v
+	}
+	out["branch_id"] = append([]string(nil), scope.BranchIDs...)
+	return out, nil
+}
+
+// branchAllowed reports whether id is among ids, or true when ids is empty
+// — "no filter" means every branch matches, the same "empty means
+// unscoped" contract perm.Scope.AllowsBranch uses. Callers that already
+// went through applyScope pass its resulting branch_id values here, so a
+// local list merge (e.g. InventoryAttention's stale-branch list) narrows
+// exactly the same way the gateway query it's paired with did.
+func branchAllowed(ids []string, id string) bool {
+	if len(ids) == 0 {
+		return true
+	}
+	for _, x := range ids {
+		if x == id {
+			return true
+		}
+	}
+	return false
+}
+
+// requireBranchInScope refuses a write whose explicit target branch (order
+// create, a transfer's destination, customer/supplier create, an import's
+// one branch_id field) falls outside a scoped caller's allowlist (spec
+// D5b, T120) — the same "never silently widened or narrowed" contract
+// applyScope's caller-supplied branch_id case uses, applied to a single
+// explicit target rather than a filter. A nil/unscoped scope is a no-op.
+func requireBranchInScope(scope *perm.Scope, branchID string) error {
+	if scope != nil && !scope.IsUnscoped() && !scope.AllowsBranch(branchID) {
+		return ErrForbiddenScope
+	}
+	return nil
+}
+
+// hideOutOfScopeRow turns "found, but at a branch outside the allowlist"
+// into ErrNotFound (spec D5b, T120) for a row-level read or an existing-row
+// write (cancel, an order transfer's own current branch, a bulk id) — a
+// scoped member must not be able to tell "doesn't exist" apart from "exists
+// somewhere I can't see" by probing ids, so this is always 404, never
+// ErrForbiddenScope's 403. A nil/unscoped scope is a no-op.
+func hideOutOfScopeRow(scope *perm.Scope, branchID string) error {
+	if scope != nil && !scope.IsUnscoped() && !scope.AllowsBranch(branchID) {
+		return ErrNotFound
+	}
+	return nil
+}
+
+// requireUnscoped refuses an operation that carries no branch identity of
+// its own — a Tier-A write that lands at every branch, a company/branch
+// edit — for anyone but an unscoped member (spec D5c). A branch allowlist
+// cannot authorize an operation it has no way to check against. A
+// nil/unscoped scope is a no-op.
+func requireUnscoped(scope *perm.Scope) error {
+	if scope != nil && !scope.IsUnscoped() {
+		return ErrForbiddenUnscoped
+	}
+	return nil
+}
+
+// rowBranchID fetches just the branch_id field of a customer, supplier, or
+// order row — used to row-scope a sub-resource (/purchases, /ledger) or an
+// existing-row write (cancel, transfer's origin, a bulk id) without
+// duplicating each endpoint's own full detail decode. Only ever called for
+// a scoped caller; an unscoped caller never pays this extra gateway round
+// trip (T120).
+func (s *Service) rowBranchID(ctx context.Context, shard *model.Shard, dbName, path string) (string, error) {
+	var raw struct {
+		BranchID string `json:"branch_id"`
+	}
+	if err := s.getJSON(ctx, shard.GatewayURL+path, dbName, &raw); err != nil {
+		return "", err
+	}
+	return raw.BranchID, nil
+}
+
+// importFormBranchID extracts the "branch_id" multipart field a
+// customer/supplier CSV import applies to every row in the file — the
+// gateway (Program.cs) deliberately keeps branch_id out of the CSV itself
+// (a console user has no way to know a branch's GUID) and instead takes one
+// form field applied uniformly, so a scoped import is checked the same
+// single-explicit-target way CreateCustomer's BranchID is (D5c, T120).
+// Returns "" on any parse failure or a missing field, which never matches a
+// real branch id and so is refused the same as an explicit invalid one.
+func importFormBranchID(contentType string, body []byte) string {
+	_, params, err := mime.ParseMediaType(contentType)
+	if err != nil {
+		return ""
+	}
+	mr := multipart.NewReader(bytes.NewReader(body), params["boundary"])
+	for {
+		part, err := mr.NextPart()
+		if err != nil {
+			return ""
+		}
+		if part.FormName() == "branch_id" {
+			v, _ := io.ReadAll(part)
+			return strings.TrimSpace(string(v))
+		}
+	}
 }
 
 // BranchActivity returns every branch's last completed sync round for an
 // owned, sync-subscribed tenant, wrapped in freshness envelopes.
 func (s *Service) BranchActivity(ctx context.Context, accountID, tenantID string) ([]BranchActivityEnvelope, error) {
-	t, shard, err := s.resolveGateway(ctx, accountID, tenantID)
+	t, shard, scope, err := s.resolveGateway(ctx, accountID, tenantID)
 	if err != nil {
 		return nil, err
 	}
@@ -146,6 +301,9 @@ func (s *Service) BranchActivity(ctx context.Context, accountID, tenantID string
 	now := time.Now().UTC()
 	out := make([]BranchActivityEnvelope, 0, len(resp.Branches))
 	for _, b := range resp.Branches {
+		if !scope.AllowsBranch(b.BranchID) {
+			continue
+		}
 		asOf := b.LastSyncAt
 		source := "synced"
 		if now.Sub(asOf) > offlineAfter {
@@ -274,7 +432,8 @@ func (s *Service) Branches(ctx context.Context, accountID, tenantID string) (*Br
 	if err != nil {
 		return nil, err
 	}
-	if _, err := membership.Require(ctx, s.store, tenantID, accountID); err != nil {
+	scope, err := membership.RequireScope(ctx, s.store, t, accountID)
+	if err != nil {
 		if errors.Is(err, membership.ErrForbidden) {
 			return nil, ErrForbidden
 		}
@@ -307,6 +466,9 @@ func (s *Service) Branches(ctx context.Context, accountID, tenantID string) (*Br
 	res := &BranchesResult{Branches: make([]BranchView, 0, len(branches))}
 	for i := range branches {
 		b := &branches[i]
+		if !scope.AllowsBranch(b.ID) {
+			continue
+		}
 		health := healthTier(b.LastSyncAt, now)
 		v := BranchView{
 			ID:         b.ID,
@@ -345,19 +507,23 @@ func (s *Service) Branches(ctx context.Context, accountID, tenantID string) (*Br
 	return res, nil
 }
 
-// CheckOwnership verifies the tenant belongs to the account (the SSE endpoint
-// authorises once at subscribe time, so it needs the bare check).
-func (s *Service) CheckOwnership(ctx context.Context, accountID, tenantID string) error {
-	if _, err := s.store.TenantByID(ctx, tenantID); err != nil {
-		return err
+// CheckOwnership verifies the tenant belongs to the account and returns the
+// caller's Scope (the SSE endpoint authorises once at subscribe time — T122
+// uses the Scope's branch allowlist to filter the stream at that same
+// point, never re-checking membership per event).
+func (s *Service) CheckOwnership(ctx context.Context, accountID, tenantID string) (*perm.Scope, error) {
+	t, err := s.store.TenantByID(ctx, tenantID)
+	if err != nil {
+		return nil, err
 	}
-	if _, err := membership.Require(ctx, s.store, tenantID, accountID); err != nil {
+	scope, err := membership.RequireScope(ctx, s.store, t, accountID)
+	if err != nil {
 		if errors.Is(err, membership.ErrForbidden) {
-			return ErrForbidden
+			return nil, ErrForbidden
 		}
-		return err
+		return nil, err
 	}
-	return nil
+	return scope, nil
 }
 
 // getJSON performs one HQ-token-authed gateway GET and decodes the body.
@@ -449,7 +615,7 @@ type CatalogGroupsEnvelope struct {
 // CatalogGroups returns every product group for an owned, sync-subscribed
 // tenant.
 func (s *Service) CatalogGroups(ctx context.Context, accountID, tenantID string) (*CatalogGroupsEnvelope, error) {
-	t, shard, err := s.resolveGateway(ctx, accountID, tenantID)
+	t, shard, _, err := s.resolveGateway(ctx, accountID, tenantID)
 	if err != nil {
 		return nil, err
 	}
@@ -498,7 +664,7 @@ type CatalogProductsEnvelope struct {
 // the console's search/group_id/page/page_size straight through to the
 // gateway, which owns defaulting and clamping.
 func (s *Service) CatalogProducts(ctx context.Context, accountID, tenantID string, params url.Values) (*CatalogProductsEnvelope, error) {
-	t, shard, err := s.resolveGateway(ctx, accountID, tenantID)
+	t, shard, _, err := s.resolveGateway(ctx, accountID, tenantID)
 	if err != nil {
 		return nil, err
 	}
@@ -569,7 +735,7 @@ type ProductDetailEnvelope struct {
 // ErrNotFound when the gateway has no such product (including the
 // never-synced-tenant case).
 func (s *Service) CatalogProductDetail(ctx context.Context, accountID, tenantID, productID string) (*ProductDetailEnvelope, error) {
-	t, shard, err := s.resolveGateway(ctx, accountID, tenantID)
+	t, shard, scope, err := s.resolveGateway(ctx, accountID, tenantID)
 	if err != nil {
 		return nil, err
 	}
@@ -611,6 +777,9 @@ func (s *Service) CatalogProductDetail(ctx context.Context, accountID, tenantID,
 	now := time.Now().UTC()
 	availability := make([]ProductAvailability, 0, len(raw.Availability))
 	for _, a := range raw.Availability {
+		if !scope.AllowsBranch(a.BranchID) {
+			continue
+		}
 		row := ProductAvailability{
 			BranchID: a.BranchID, Health: "never",
 			WarehouseID: a.WarehouseID, WarehouseName: a.WarehouseName,
@@ -670,8 +839,11 @@ type PriceChangeResult struct {
 // for an owned, sync-subscribed tenant. Returns ErrNotFound if the product
 // doesn't exist and ErrInvalidUnits if any unit_id isn't one of its units.
 func (s *Service) ChangeProductPrices(ctx context.Context, accountID, tenantID, productID string, changes []PriceChange) (*PriceChangeResult, error) {
-	t, shard, err := s.resolveGateway(ctx, accountID, tenantID)
+	t, shard, scope, err := s.resolveGateway(ctx, accountID, tenantID)
 	if err != nil {
+		return nil, err
+	}
+	if err := requireUnscoped(scope); err != nil {
 		return nil, err
 	}
 	var result PriceChangeResult
@@ -716,8 +888,11 @@ type NewProductResult struct {
 // *DuplicateBarcodeError, or ErrTenantNotProvisioned (subscribed but no
 // central DB yet — the tenant has never completed a first sync round).
 func (s *Service) CreateProduct(ctx context.Context, accountID, tenantID string, input NewProduct) (*NewProductResult, error) {
-	t, shard, err := s.resolveGateway(ctx, accountID, tenantID)
+	t, shard, scope, err := s.resolveGateway(ctx, accountID, tenantID)
 	if err != nil {
+		return nil, err
+	}
+	if err := requireUnscoped(scope); err != nil {
 		return nil, err
 	}
 
@@ -827,7 +1002,7 @@ type InventoryByBranchEnvelope struct {
 // branch (zeroed if the gateway reports no stock rows for it) decorated with
 // sync health, plus company-wide totals summed over them.
 func (s *Service) InventoryByBranch(ctx context.Context, accountID, tenantID string) (*InventoryByBranchEnvelope, error) {
-	t, shard, err := s.resolveGateway(ctx, accountID, tenantID)
+	t, shard, scope, err := s.resolveGateway(ctx, accountID, tenantID)
 	if err != nil {
 		return nil, err
 	}
@@ -859,6 +1034,9 @@ func (s *Service) InventoryByBranch(ctx context.Context, accountID, tenantID str
 	data := InventoryBranchesData{Branches: make([]InventoryBranchView, 0, len(branches))}
 	for i := range branches {
 		b := &branches[i]
+		if !scope.AllowsBranch(b.ID) {
+			continue
+		}
 		v := InventoryBranchView{
 			BranchID: b.ID, BranchName: b.Name,
 			Health: healthTier(b.LastSyncAt, now), LastSyncAt: b.LastSyncAt,
@@ -919,7 +1097,11 @@ type InventoryProductsEnvelope struct {
 // params carries search/group_id/branch_id/status/page/page_size straight
 // through to the gateway, which owns filtering, defaulting and clamping.
 func (s *Service) InventoryProducts(ctx context.Context, accountID, tenantID string, params url.Values) (*InventoryProductsEnvelope, error) {
-	t, shard, err := s.resolveGateway(ctx, accountID, tenantID)
+	t, shard, scope, err := s.resolveGateway(ctx, accountID, tenantID)
+	if err != nil {
+		return nil, err
+	}
+	params, err = applyScope(params, scope)
 	if err != nil {
 		return nil, err
 	}
@@ -997,7 +1179,11 @@ type AttentionEnvelope struct {
 // already computed API-side. params' branch_id (if any) scopes both the
 // gateway query and the stale-branch merge.
 func (s *Service) InventoryAttention(ctx context.Context, accountID, tenantID string, params url.Values) (*AttentionEnvelope, error) {
-	t, shard, err := s.resolveGateway(ctx, accountID, tenantID)
+	t, shard, scope, err := s.resolveGateway(ctx, accountID, tenantID)
+	if err != nil {
+		return nil, err
+	}
+	params, err = applyScope(params, scope)
 	if err != nil {
 		return nil, err
 	}
@@ -1055,11 +1241,11 @@ func (s *Service) InventoryAttention(ctx context.Context, accountID, tenantID st
 		items = append(items, item)
 	}
 
-	branchFilter := params.Get("branch_id")
+	branchFilter := params["branch_id"]
 	stale := []StaleBranch{}
 	for i := range branches {
 		b := &branches[i]
-		if branchFilter != "" && b.ID != branchFilter {
+		if !branchAllowed(branchFilter, b.ID) {
 			continue
 		}
 		if healthTier(b.LastSyncAt, now) == "stale" {
@@ -1121,7 +1307,7 @@ type ConflictsEnvelope struct {
 // decorated with its branch's registry name. params carries page/page_size/all
 // straight through to the gateway, which owns defaulting and clamping.
 func (s *Service) Conflicts(ctx context.Context, accountID, tenantID string, params url.Values) (*ConflictsEnvelope, error) {
-	t, shard, err := s.resolveGateway(ctx, accountID, tenantID)
+	t, shard, _, err := s.resolveGateway(ctx, accountID, tenantID)
 	if err != nil {
 		return nil, err
 	}
@@ -1164,7 +1350,7 @@ type AckConflictsResult struct {
 // AckConflicts acknowledges conflicts by explicit ids and/or everything up to
 // an id (inclusive). The handler guarantees at least one of the two is set.
 func (s *Service) AckConflicts(ctx context.Context, accountID, tenantID string, ids []int64, upToID *int64) (*AckConflictsResult, error) {
-	t, shard, err := s.resolveGateway(ctx, accountID, tenantID)
+	t, shard, _, err := s.resolveGateway(ctx, accountID, tenantID)
 	if err != nil {
 		return nil, err
 	}
@@ -1250,7 +1436,11 @@ type MovementsEnvelope struct {
 // Returns ErrNotFound when the product doesn't exist (including a
 // never-synced tenant, same as CatalogProductDetail).
 func (s *Service) ProductMovements(ctx context.Context, accountID, tenantID, productID string, params url.Values) (*MovementsEnvelope, error) {
-	t, shard, err := s.resolveGateway(ctx, accountID, tenantID)
+	t, shard, scope, err := s.resolveGateway(ctx, accountID, tenantID)
+	if err != nil {
+		return nil, err
+	}
+	params, err = applyScope(params, scope)
 	if err != nil {
 		return nil, err
 	}
@@ -1364,7 +1554,11 @@ type SalesReportEnvelope struct {
 // from/to/branch_id straight through to the gateway, which owns period
 // defaulting and clamping.
 func (s *Service) ReportSales(ctx context.Context, accountID, tenantID string, params url.Values) (*SalesReportEnvelope, error) {
-	t, shard, err := s.resolveGateway(ctx, accountID, tenantID)
+	t, shard, scope, err := s.resolveGateway(ctx, accountID, tenantID)
+	if err != nil {
+		return nil, err
+	}
+	params, err = applyScope(params, scope)
 	if err != nil {
 		return nil, err
 	}
@@ -1417,7 +1611,11 @@ type ProductsReportEnvelope struct {
 // carries from/to/branch_id/group_id/sort/page/page_size straight through to
 // the gateway.
 func (s *Service) ReportProducts(ctx context.Context, accountID, tenantID string, params url.Values) (*ProductsReportEnvelope, error) {
-	t, shard, err := s.resolveGateway(ctx, accountID, tenantID)
+	t, shard, scope, err := s.resolveGateway(ctx, accountID, tenantID)
+	if err != nil {
+		return nil, err
+	}
+	params, err = applyScope(params, scope)
 	if err != nil {
 		return nil, err
 	}
@@ -1467,7 +1665,7 @@ type BranchesReportEnvelope struct {
 // decorated with name/health/last_sync_at. params carries from/to straight
 // through to the gateway.
 func (s *Service) ReportBranches(ctx context.Context, accountID, tenantID string, params url.Values) (*BranchesReportEnvelope, error) {
-	t, shard, err := s.resolveGateway(ctx, accountID, tenantID)
+	t, shard, scope, err := s.resolveGateway(ctx, accountID, tenantID)
 	if err != nil {
 		return nil, err
 	}
@@ -1502,6 +1700,9 @@ func (s *Service) ReportBranches(ctx context.Context, accountID, tenantID string
 	data := BranchesReportData{Branches: make([]BranchReportRow, 0, len(branches))}
 	for i := range branches {
 		b := &branches[i]
+		if !scope.AllowsBranch(b.ID) {
+			continue
+		}
 		row := BranchReportRow{
 			BranchID: b.ID, BranchName: b.Name,
 			Health: healthTier(b.LastSyncAt, now), LastSyncAt: b.LastSyncAt,
@@ -1544,7 +1745,11 @@ type StaffReportEnvelope struct {
 // ReportStaff returns the period per-cashier report. params carries
 // from/to/branch_id straight through to the gateway.
 func (s *Service) ReportStaff(ctx context.Context, accountID, tenantID string, params url.Values) (*StaffReportEnvelope, error) {
-	t, shard, err := s.resolveGateway(ctx, accountID, tenantID)
+	t, shard, scope, err := s.resolveGateway(ctx, accountID, tenantID)
+	if err != nil {
+		return nil, err
+	}
+	params, err = applyScope(params, scope)
 	if err != nil {
 		return nil, err
 	}
@@ -1591,7 +1796,7 @@ type CustomerGroupsEnvelope struct {
 // CustomerGroups returns every customer group for an owned, sync-subscribed
 // tenant.
 func (s *Service) CustomerGroups(ctx context.Context, accountID, tenantID string) (*CustomerGroupsEnvelope, error) {
-	t, shard, err := s.resolveGateway(ctx, accountID, tenantID)
+	t, shard, _, err := s.resolveGateway(ctx, accountID, tenantID)
 	if err != nil {
 		return nil, err
 	}
@@ -1647,7 +1852,11 @@ type CustomersEnvelope struct {
 // defaulting and clamping (the handler pre-validates active/debt so an
 // unrecognized value never reaches here).
 func (s *Service) Customers(ctx context.Context, accountID, tenantID string, params url.Values) (*CustomersEnvelope, error) {
-	t, shard, err := s.resolveGateway(ctx, accountID, tenantID)
+	t, shard, scope, err := s.resolveGateway(ctx, accountID, tenantID)
+	if err != nil {
+		return nil, err
+	}
+	params, err = applyScope(params, scope)
 	if err != nil {
 		return nil, err
 	}
@@ -1749,9 +1958,11 @@ type CustomerDetailEnvelope struct {
 
 // CustomerDetail fetches one customer's full detail. Returns ErrNotFound
 // when the gateway has no such customer (unknown id, a Supplier/All row, or
-// a never-synced tenant).
+// a never-synced tenant) — and, for a scoped caller, when the customer
+// belongs to a branch outside the allowlist (spec D5b, T120): the two cases
+// are deliberately indistinguishable to the caller.
 func (s *Service) CustomerDetail(ctx context.Context, accountID, tenantID, customerID string) (*CustomerDetailEnvelope, error) {
-	t, shard, err := s.resolveGateway(ctx, accountID, tenantID)
+	t, shard, scope, err := s.resolveGateway(ctx, accountID, tenantID)
 	if err != nil {
 		return nil, err
 	}
@@ -1774,6 +1985,9 @@ func (s *Service) CustomerDetail(ctx context.Context, accountID, tenantID, custo
 		Stats       CustomerStats `json:"stats"`
 	}
 	if err := s.getJSON(ctx, shard.GatewayURL+"/hq/customers/"+customerID, t.DBName, &raw); err != nil {
+		return nil, err
+	}
+	if err := hideOutOfScopeRow(scope, raw.BranchID); err != nil {
 		return nil, err
 	}
 
@@ -1830,9 +2044,18 @@ type CustomerPurchasesEnvelope struct {
 // params carries page/page_size straight through. Returns ErrNotFound when
 // the customer doesn't exist.
 func (s *Service) CustomerPurchases(ctx context.Context, accountID, tenantID, customerID string, params url.Values) (*CustomerPurchasesEnvelope, error) {
-	t, shard, err := s.resolveGateway(ctx, accountID, tenantID)
+	t, shard, scope, err := s.resolveGateway(ctx, accountID, tenantID)
 	if err != nil {
 		return nil, err
+	}
+	if scope != nil && !scope.IsUnscoped() {
+		branchID, err := s.rowBranchID(ctx, shard, t.DBName, "/hq/customers/"+customerID)
+		if err != nil {
+			return nil, err
+		}
+		if err := hideOutOfScopeRow(scope, branchID); err != nil {
+			return nil, err
+		}
 	}
 	u := shard.GatewayURL + "/hq/customers/" + customerID + "/purchases"
 	if enc := params.Encode(); enc != "" {
@@ -1883,9 +2106,18 @@ type CustomerLedgerEnvelope struct {
 // params carries page/page_size straight through. Returns ErrNotFound when
 // the customer doesn't exist.
 func (s *Service) CustomerLedger(ctx context.Context, accountID, tenantID, customerID string, params url.Values) (*CustomerLedgerEnvelope, error) {
-	t, shard, err := s.resolveGateway(ctx, accountID, tenantID)
+	t, shard, scope, err := s.resolveGateway(ctx, accountID, tenantID)
 	if err != nil {
 		return nil, err
+	}
+	if scope != nil && !scope.IsUnscoped() {
+		branchID, err := s.rowBranchID(ctx, shard, t.DBName, "/hq/customers/"+customerID)
+		if err != nil {
+			return nil, err
+		}
+		if err := hideOutOfScopeRow(scope, branchID); err != nil {
+			return nil, err
+		}
 	}
 	u := shard.GatewayURL + "/hq/customers/" + customerID + "/ledger"
 	if enc := params.Encode(); enc != "" {
@@ -1969,7 +2201,11 @@ type CustomerInsightsEnvelope struct {
 // branch_id/from/to straight through to the gateway (from/to validated as
 // plain dates by the handler, same as the Reports slice's period params).
 func (s *Service) CustomerInsights(ctx context.Context, accountID, tenantID string, params url.Values) (*CustomerInsightsEnvelope, error) {
-	t, shard, err := s.resolveGateway(ctx, accountID, tenantID)
+	t, shard, scope, err := s.resolveGateway(ctx, accountID, tenantID)
+	if err != nil {
+		return nil, err
+	}
+	params, err = applyScope(params, scope)
 	if err != nil {
 		return nil, err
 	}
@@ -2035,8 +2271,11 @@ type NewCustomerResult struct {
 // ErrMissingAccountOperand if the tenant DB lacks the Customers ledger
 // account mapping.
 func (s *Service) CreateCustomer(ctx context.Context, accountID, tenantID string, input NewCustomer) (*NewCustomerResult, error) {
-	t, shard, err := s.resolveGateway(ctx, accountID, tenantID)
+	t, shard, scope, err := s.resolveGateway(ctx, accountID, tenantID)
 	if err != nil {
+		return nil, err
+	}
+	if err := requireBranchInScope(scope, input.BranchID); err != nil {
 		return nil, err
 	}
 	tok, err := s.tokens.IssueHQToken(t.DBName)
@@ -2105,9 +2344,18 @@ type UpdateCustomerResult struct {
 // *InvalidCustomerInputError for a rejected field value (e.g. negative
 // credit_limit, unknown group_id).
 func (s *Service) UpdateCustomer(ctx context.Context, accountID, tenantID, customerID string, input CustomerEdit) (*UpdateCustomerResult, error) {
-	t, shard, err := s.resolveGateway(ctx, accountID, tenantID)
+	t, shard, scope, err := s.resolveGateway(ctx, accountID, tenantID)
 	if err != nil {
 		return nil, err
+	}
+	if scope != nil && !scope.IsUnscoped() {
+		branchID, err := s.rowBranchID(ctx, shard, t.DBName, "/hq/customers/"+customerID)
+		if err != nil {
+			return nil, err
+		}
+		if err := hideOutOfScopeRow(scope, branchID); err != nil {
+			return nil, err
+		}
 	}
 	tok, err := s.tokens.IssueHQToken(t.DBName)
 	if err != nil {
@@ -2162,9 +2410,20 @@ type BulkUpdateCustomersResult struct {
 // *InvalidCustomerInputError for an id that doesn't belong to this tenant, an
 // unknown group_id, or neither field being provided.
 func (s *Service) BulkUpdateCustomers(ctx context.Context, accountID, tenantID string, ids []string, groupID *string, priceTier *int) (*BulkUpdateCustomersResult, error) {
-	t, shard, err := s.resolveGateway(ctx, accountID, tenantID)
+	t, shard, scope, err := s.resolveGateway(ctx, accountID, tenantID)
 	if err != nil {
 		return nil, err
+	}
+	if scope != nil && !scope.IsUnscoped() {
+		for _, id := range ids {
+			branchID, err := s.rowBranchID(ctx, shard, t.DBName, "/hq/customers/"+id)
+			if err != nil {
+				return nil, err
+			}
+			if !scope.AllowsBranch(branchID) {
+				return nil, ErrForbiddenScope
+			}
+		}
 	}
 	tok, err := s.tokens.IssueHQToken(t.DBName)
 	if err != nil {
@@ -2217,7 +2476,11 @@ func (s *Service) BulkUpdateCustomers(ctx context.Context, accountID, tenantID s
 // returns before writing anything to w, so the caller can still send its own
 // error response in that case.
 func (s *Service) ExportCustomers(ctx context.Context, accountID, tenantID string, params url.Values, w http.ResponseWriter) error {
-	t, shard, err := s.resolveGateway(ctx, accountID, tenantID)
+	t, shard, scope, err := s.resolveGateway(ctx, accountID, tenantID)
+	if err != nil {
+		return err
+	}
+	params, err = applyScope(params, scope)
 	if err != nil {
 		return err
 	}
@@ -2268,9 +2531,19 @@ type ImportCustomersResult struct {
 // original request's Content-Type header (carries the multipart boundary);
 // body is the (already size-limited) request body.
 func (s *Service) ImportCustomers(ctx context.Context, accountID, tenantID, contentType string, body io.Reader) (*ImportCustomersResult, error) {
-	t, shard, err := s.resolveGateway(ctx, accountID, tenantID)
+	t, shard, scope, err := s.resolveGateway(ctx, accountID, tenantID)
 	if err != nil {
 		return nil, err
+	}
+	if scope != nil && !scope.IsUnscoped() {
+		buf, err := io.ReadAll(body)
+		if err != nil {
+			return nil, err
+		}
+		if err := requireBranchInScope(scope, importFormBranchID(contentType, buf)); err != nil {
+			return nil, err
+		}
+		body = bytes.NewReader(buf)
 	}
 	tok, err := s.tokens.IssueHQToken(t.DBName)
 	if err != nil {
@@ -2358,7 +2631,11 @@ type SuppliersEnvelope struct {
 // its branch's name/health. params carries search/branch_id/group_id/active/
 // debt/page/page_size straight through to the gateway.
 func (s *Service) Suppliers(ctx context.Context, accountID, tenantID string, params url.Values) (*SuppliersEnvelope, error) {
-	t, shard, err := s.resolveGateway(ctx, accountID, tenantID)
+	t, shard, scope, err := s.resolveGateway(ctx, accountID, tenantID)
+	if err != nil {
+		return nil, err
+	}
+	params, err = applyScope(params, scope)
 	if err != nil {
 		return nil, err
 	}
@@ -2461,9 +2738,11 @@ type SupplierDetailEnvelope struct {
 
 // SupplierDetail fetches one supplier's full detail. Returns ErrNotFound
 // when the gateway has no such supplier (unknown id, a Customer/All row, or
-// a never-synced tenant).
+// a never-synced tenant) — and, for a scoped caller, when the supplier
+// belongs to a branch outside the allowlist (spec D5b, T120): the two cases
+// are deliberately indistinguishable to the caller.
 func (s *Service) SupplierDetail(ctx context.Context, accountID, tenantID, supplierID string) (*SupplierDetailEnvelope, error) {
-	t, shard, err := s.resolveGateway(ctx, accountID, tenantID)
+	t, shard, scope, err := s.resolveGateway(ctx, accountID, tenantID)
 	if err != nil {
 		return nil, err
 	}
@@ -2486,6 +2765,9 @@ func (s *Service) SupplierDetail(ctx context.Context, accountID, tenantID, suppl
 		Stats       SupplierStats `json:"stats"`
 	}
 	if err := s.getJSON(ctx, shard.GatewayURL+"/hq/suppliers/"+supplierID, t.DBName, &raw); err != nil {
+		return nil, err
+	}
+	if err := hideOutOfScopeRow(scope, raw.BranchID); err != nil {
 		return nil, err
 	}
 
@@ -2543,9 +2825,18 @@ type SupplierPurchasesEnvelope struct {
 // params carries page/page_size straight through. Returns ErrNotFound when
 // the supplier doesn't exist.
 func (s *Service) SupplierPurchases(ctx context.Context, accountID, tenantID, supplierID string, params url.Values) (*SupplierPurchasesEnvelope, error) {
-	t, shard, err := s.resolveGateway(ctx, accountID, tenantID)
+	t, shard, scope, err := s.resolveGateway(ctx, accountID, tenantID)
 	if err != nil {
 		return nil, err
+	}
+	if scope != nil && !scope.IsUnscoped() {
+		branchID, err := s.rowBranchID(ctx, shard, t.DBName, "/hq/suppliers/"+supplierID)
+		if err != nil {
+			return nil, err
+		}
+		if err := hideOutOfScopeRow(scope, branchID); err != nil {
+			return nil, err
+		}
 	}
 	u := shard.GatewayURL + "/hq/suppliers/" + supplierID + "/purchases"
 	if enc := params.Encode(); enc != "" {
@@ -2596,9 +2887,18 @@ type SupplierLedgerEnvelope struct {
 // params carries page/page_size straight through. Returns ErrNotFound when
 // the supplier doesn't exist.
 func (s *Service) SupplierLedger(ctx context.Context, accountID, tenantID, supplierID string, params url.Values) (*SupplierLedgerEnvelope, error) {
-	t, shard, err := s.resolveGateway(ctx, accountID, tenantID)
+	t, shard, scope, err := s.resolveGateway(ctx, accountID, tenantID)
 	if err != nil {
 		return nil, err
+	}
+	if scope != nil && !scope.IsUnscoped() {
+		branchID, err := s.rowBranchID(ctx, shard, t.DBName, "/hq/suppliers/"+supplierID)
+		if err != nil {
+			return nil, err
+		}
+		if err := hideOutOfScopeRow(scope, branchID); err != nil {
+			return nil, err
+		}
 	}
 	u := shard.GatewayURL + "/hq/suppliers/" + supplierID + "/ledger"
 	if enc := params.Encode(); enc != "" {
@@ -2642,7 +2942,11 @@ type SupplierInsightsEnvelope struct {
 // SupplierInsights returns the six-block insights payload. params carries
 // branch_id/from/to straight through to the gateway.
 func (s *Service) SupplierInsights(ctx context.Context, accountID, tenantID string, params url.Values) (*SupplierInsightsEnvelope, error) {
-	t, shard, err := s.resolveGateway(ctx, accountID, tenantID)
+	t, shard, scope, err := s.resolveGateway(ctx, accountID, tenantID)
+	if err != nil {
+		return nil, err
+	}
+	params, err = applyScope(params, scope)
 	if err != nil {
 		return nil, err
 	}
@@ -2707,8 +3011,11 @@ type NewSupplierResult struct {
 // ErrMissingAccountOperand if the tenant DB lacks the Vendor ledger account
 // mapping.
 func (s *Service) CreateSupplier(ctx context.Context, accountID, tenantID string, input NewSupplier) (*NewSupplierResult, error) {
-	t, shard, err := s.resolveGateway(ctx, accountID, tenantID)
+	t, shard, scope, err := s.resolveGateway(ctx, accountID, tenantID)
 	if err != nil {
+		return nil, err
+	}
+	if err := requireBranchInScope(scope, input.BranchID); err != nil {
 		return nil, err
 	}
 	tok, err := s.tokens.IssueHQToken(t.DBName)
@@ -2775,9 +3082,18 @@ type UpdateSupplierResult struct {
 // method. Returns ErrNotFound for an unknown supplier id or
 // *InvalidCustomerInputError for a rejected field value.
 func (s *Service) UpdateSupplier(ctx context.Context, accountID, tenantID, supplierID string, input SupplierEdit) (*UpdateSupplierResult, error) {
-	t, shard, err := s.resolveGateway(ctx, accountID, tenantID)
+	t, shard, scope, err := s.resolveGateway(ctx, accountID, tenantID)
 	if err != nil {
 		return nil, err
+	}
+	if scope != nil && !scope.IsUnscoped() {
+		branchID, err := s.rowBranchID(ctx, shard, t.DBName, "/hq/suppliers/"+supplierID)
+		if err != nil {
+			return nil, err
+		}
+		if err := hideOutOfScopeRow(scope, branchID); err != nil {
+			return nil, err
+		}
 	}
 	tok, err := s.tokens.IssueHQToken(t.DBName)
 	if err != nil {
@@ -2830,9 +3146,20 @@ type BulkUpdateSuppliersResult struct {
 // *InvalidCustomerInputError for an id that doesn't belong to this tenant, an
 // unknown group_id, or neither field being provided.
 func (s *Service) BulkUpdateSuppliers(ctx context.Context, accountID, tenantID string, ids []string, groupID *string, priceTier *int) (*BulkUpdateSuppliersResult, error) {
-	t, shard, err := s.resolveGateway(ctx, accountID, tenantID)
+	t, shard, scope, err := s.resolveGateway(ctx, accountID, tenantID)
 	if err != nil {
 		return nil, err
+	}
+	if scope != nil && !scope.IsUnscoped() {
+		for _, id := range ids {
+			branchID, err := s.rowBranchID(ctx, shard, t.DBName, "/hq/suppliers/"+id)
+			if err != nil {
+				return nil, err
+			}
+			if !scope.AllowsBranch(branchID) {
+				return nil, ErrForbiddenScope
+			}
+		}
 	}
 	tok, err := s.tokens.IssueHQToken(t.DBName)
 	if err != nil {
@@ -2884,7 +3211,11 @@ func (s *Service) BulkUpdateSuppliers(ctx context.Context, accountID, tenantID s
 // ExportCustomers. Every error path returns before writing anything to w, so
 // the caller can still send its own error response in that case.
 func (s *Service) ExportSuppliers(ctx context.Context, accountID, tenantID string, params url.Values, w http.ResponseWriter) error {
-	t, shard, err := s.resolveGateway(ctx, accountID, tenantID)
+	t, shard, scope, err := s.resolveGateway(ctx, accountID, tenantID)
+	if err != nil {
+		return err
+	}
+	params, err = applyScope(params, scope)
 	if err != nil {
 		return err
 	}
@@ -2935,9 +3266,19 @@ type ImportSuppliersResult struct {
 // original request's Content-Type header (carries the multipart boundary);
 // body is the (already size-limited) request body.
 func (s *Service) ImportSuppliers(ctx context.Context, accountID, tenantID, contentType string, body io.Reader) (*ImportSuppliersResult, error) {
-	t, shard, err := s.resolveGateway(ctx, accountID, tenantID)
+	t, shard, scope, err := s.resolveGateway(ctx, accountID, tenantID)
 	if err != nil {
 		return nil, err
+	}
+	if scope != nil && !scope.IsUnscoped() {
+		buf, err := io.ReadAll(body)
+		if err != nil {
+			return nil, err
+		}
+		if err := requireBranchInScope(scope, importFormBranchID(contentType, buf)); err != nil {
+			return nil, err
+		}
+		body = bytes.NewReader(buf)
 	}
 	tok, err := s.tokens.IssueHQToken(t.DBName)
 	if err != nil {

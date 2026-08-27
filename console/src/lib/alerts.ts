@@ -12,10 +12,13 @@ export interface Alert {
 }
 
 export interface DeriveAlertsInput {
-  branches: BranchView[]
-  // Undefined while the attention/conflicts/subscription queries haven't
-  // resolved yet — callers that mount cheaply (the bell) may omit them
-  // entirely rather than block on extra requests.
+  // All four inputs are optional for the same reason (T114, spec D10): each
+  // is sourced from a different section's own query (hq-branches,
+  // inventory-attention, conflicts), and a caller omits one entirely —
+  // rather than fetching it and discarding the result — when the member
+  // lacks that section's `view` permission or the query hasn't resolved
+  // yet. Omitted just means "contributes no alerts", never "denied".
+  branches?: BranchView[]
   attention?: AttentionCounts
   conflictsUnacked?: number
   subscription?: SubscriptionSummary
@@ -63,7 +66,7 @@ export function deriveAlerts(tenantId: string, input: DeriveAlertsInput): Alert[
     }
   }
 
-  for (const v of input.branches) {
+  for (const v of input.branches ?? []) {
     if (v.health === 'stale') {
       alerts.push({
         key: `stale-${v.id}`,
@@ -92,7 +95,7 @@ export function deriveAlerts(tenantId: string, input: DeriveAlertsInput): Alert[
     })
   }
 
-  for (const v of input.branches) {
+  for (const v of input.branches ?? []) {
     if (v.health === 'never') {
       alerts.push({
         key: `never-${v.id}`,
