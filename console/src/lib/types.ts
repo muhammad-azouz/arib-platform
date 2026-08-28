@@ -1089,6 +1089,186 @@ export interface OrdersPage {
 // GET /v1/tenants/{id}/hq/orders
 export type OrdersResponse = CatalogEnvelope<OrdersPage>
 
+// --- Promotions (spec-promotions.md, T137) --------------------------------
+
+// Mirrors AribONE.Data's PromotionLevel / PromotionScope / PromotionTargetKind
+// and the existing DiscountType. Persisted as ints, so the console must not
+// reorder them.
+export const PROMOTION_LEVEL = {
+  Item: 0,
+  Bill: 1,
+} as const
+export type PromotionLevelValue = (typeof PROMOTION_LEVEL)[keyof typeof PROMOTION_LEVEL]
+
+export const PROMOTION_SCOPE = {
+  AllProducts: 0,
+  Products: 1,
+  Groups: 2,
+} as const
+export type PromotionScopeValue = (typeof PROMOTION_SCOPE)[keyof typeof PROMOTION_SCOPE]
+
+export const PROMOTION_TARGET_KIND = {
+  Product: 0,
+  Group: 1,
+} as const
+export type PromotionTargetKindValue =
+  (typeof PROMOTION_TARGET_KIND)[keyof typeof PROMOTION_TARGET_KIND]
+
+export const DISCOUNT_TYPE = {
+  Percentage: 0,
+  Fixed: 1,
+} as const
+export type DiscountTypeValue = (typeof DISCOUNT_TYPE)[keyof typeof DISCOUNT_TYPE]
+
+/**
+ * A promotion's lifecycle state, **derived server-side** by the gateway
+ * (HqApi.PromotionStatusOf) and passed through untouched. The console must
+ * never recompute it from the dates: the till reads the same function, and a
+ * second client-side definition of "active" is a second thing that can
+ * disagree with what a cashier is actually getting (spec D8).
+ *
+ * The four are mutually exclusive and exhaustive, so filter tab counts add up
+ * to the unfiltered total. `paused` beats the dates — a switched-off future
+ * campaign is off, not scheduled.
+ */
+export type PromotionStatus = 'active' | 'scheduled' | 'expired' | 'paused'
+
+/** The `status` query filter, which additionally accepts 'all'. */
+export type PromotionStatusFilter = PromotionStatus | 'all'
+
+/** One product or group an item-level promotion applies to. */
+export interface PromotionTarget {
+  kind: PromotionTargetKindValue
+  ref_id: string
+  // null when the referenced row no longer resolves — the target is still
+  // listed rather than dropped, so the author can see and remove it.
+  name?: string | null
+}
+
+/** One row of the paged promotion list. */
+export interface Promotion {
+  id: string
+  name: string
+  level: PromotionLevelValue
+  scope: PromotionScopeValue
+  discount_type: DiscountTypeValue
+  value: number
+  // null = company-wide: applies at every branch (spec D2).
+  branch_id?: string | null
+  branch_name?: string | null
+  // Calendar dates, both bounds inclusive, evaluated in branch-local time
+  // (spec D8). Serialized as midnight UTC — the date is the payload, the
+  // time is not, so never render these through a timezone conversion.
+  starts_on: string
+  ends_on: string
+  is_active: boolean
+  min_qty?: number | null
+  min_bill_total?: number | null
+  created_at: string
+  status: PromotionStatus
+  target_count: number
+}
+
+/** A promotion plus its resolved target list. */
+export interface PromotionDetail extends Promotion {
+  targets: PromotionTarget[]
+}
+
+export interface PromotionsPage {
+  total: number
+  page: number
+  page_size: number
+  items: Promotion[]
+}
+
+// GET /v1/tenants/{id}/hq/promotions
+export type PromotionsResponse = CatalogEnvelope<PromotionsPage>
+
+// GET /v1/tenants/{id}/hq/promotions/{promotionId}
+export type PromotionResponse = CatalogEnvelope<PromotionDetail>
+
+/**
+ * The body of both POST and PUT — there is no partial-patch variant, because
+ * a promotion is a small wholly-authored rule and the form always sends the
+ * complete thing back.
+ */
+export interface PromotionInput {
+  name: string
+  level: PromotionLevelValue
+  scope: PromotionScopeValue
+  discount_type: DiscountTypeValue
+  value: number
+  branch_id: string | null
+  starts_on: string
+  ends_on: string
+  is_active: boolean
+  min_qty: number | null
+  min_bill_total: number | null
+  targets: { kind: PromotionTargetKindValue; ref_id: string }[]
+}
+
+export interface PromotionWriteResult {
+  id: string
+  written_at: string
+}
+
+// --- Promotion performance (spec-promotions.md, T151-T153) -----------------
+//
+// GET /v1/tenants/{id}/hq/promotions/{promotionId}/performance. Same
+// bills/items/amount triple at three grains (overall, per branch, per day) —
+// one shape, three slices.
+
+/** One branch's slice of a promotion's period. `branch_id` is never null
+ * here, unlike `Promotion.branch_id`: a `PromotionApplication` always names
+ * the real branch where the sale happened, so there is no company-wide row
+ * at this grain the way there is in the promotion list itself. */
+export interface PromotionPerformanceBranch {
+  branch_id: string
+  branch_name?: string | null
+  bills_count: number
+  items_count: number
+  total_amount: number
+}
+
+/** One local calendar day of the series — a date string, not an instant,
+ * same convention as `SalesDay`. */
+export interface PromotionPerformanceDay {
+  day: string
+  bills_count: number
+  items_count: number
+  total_amount: number
+}
+
+/**
+ * One promotion's applied history over a period. `bills_count` is distinct
+ * invoices touched, never row count — an item promotion hitting three lines
+ * on one bill is one bill and three items (`items_count`). `total_amount`
+ * sums both levels: it equals Σ PromotionApplications.Amount for the
+ * promotion over the same window (spec success criterion 7).
+ *
+ * `bills_discount_total` is Σ Invoice.ItemDiscount/BillDiscount — the WHOLE
+ * column, not this promotion's own slice of it — over exactly the invoices
+ * `bills_count` counts. `bills_discount_total - total_amount` is therefore
+ * how much OTHER discounting (a manual entry, or a different promotion)
+ * happened on those same bills: the reconciliation invariant (spec D6), read
+ * here rather than stored as a separate figure. Compute the split where it
+ * is displayed, not in a shared helper — it is one subtraction, and a helper
+ * would only hide that it is exactly the invariant and nothing more.
+ */
+export interface PromotionPerformance {
+  from: string
+  to: string
+  bills_count: number
+  items_count: number
+  total_amount: number
+  bills_discount_total: number
+  by_branch: PromotionPerformanceBranch[]
+  by_day: PromotionPerformanceDay[]
+}
+
+// GET /v1/tenants/{id}/hq/promotions/{promotionId}/performance
+export type PromotionPerformanceResponse = CatalogEnvelope<PromotionPerformance>
+
 // T21: new-order workspace (pages/console/NewOrder.tsx).
 
 export const ORDER_MODE = {

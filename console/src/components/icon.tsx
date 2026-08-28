@@ -21,6 +21,7 @@ import {
   AddCircle,
   PenNewSquare,
   TrashBinMinimalistic,
+  TicketSale,
   CheckCircle,
   DangerTriangle,
   InfoCircle,
@@ -91,6 +92,7 @@ export const HistoryIcon = History
 export const BellIcon = BellBing
 export const SupplierIcon = Delivery
 export const OrdersIcon = Bag4
+export const PromotionsIcon = TicketSale
 
 // New-order workspace (T21)
 export const CartIcon = CartLarge2

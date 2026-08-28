@@ -224,6 +224,16 @@ func (s *Server) Router() http.Handler {
 					r.Get("/hq/orders/{orderId}", s.handleHqOrderDetail)
 					r.Post("/hq/orders/{orderId}/cancel", s.handleHqOrderCancel)
 					r.Post("/hq/orders/{orderId}/transfer", s.handleHqOrderTransfer)
+
+					// Promotions (T135). /performance sits a segment deeper
+					// than {promotionId}, so there is nothing for it to
+					// shadow; it is a 501 placeholder until T151.
+					r.Get("/hq/promotions", s.handleHqPromotions)
+					r.Post("/hq/promotions", s.handleHqPromotionCreate)
+					r.Get("/hq/promotions/{promotionId}", s.handleHqPromotionDetail)
+					r.Put("/hq/promotions/{promotionId}", s.handleHqPromotionUpdate)
+					r.Delete("/hq/promotions/{promotionId}", s.handleHqPromotionDelete)
+					r.Get("/hq/promotions/{promotionId}/performance", s.handleHqPromotionPerformance)
 				})
 			})
 		})

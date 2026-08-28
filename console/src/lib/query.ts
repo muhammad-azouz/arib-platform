@@ -166,4 +166,26 @@ export const qk = {
   // customer preview for the order being built, not part of 'hq-orders'.
   deliveryFee: (id: string, branchId: string, partnerId: string) =>
     ['delivery-fee', id, branchId, partnerId] as const,
+  // Shared 'hq-promotions' prefix across list and detail, same as
+  // 'hq-orders' above: one invalidation after a write flips both, so an
+  // edit made from the detail page updates the list behind it.
+  promotions: (
+    id: string,
+    params: {
+      status?: string
+      level?: string
+      branchId?: string
+      page?: number
+      pageSize?: number
+    },
+  ) => ['hq-promotions', id, 'list', params] as const,
+  promotion: (id: string, promotionId: string) =>
+    ['hq-promotions', id, 'detail', promotionId] as const,
+  // Same 'hq-promotions' prefix, so a write's invalidation (a pause, an
+  // edited rate) also refreshes a currently-open performance panel.
+  promotionPerformance: (
+    id: string,
+    promotionId: string,
+    params: { from?: string; to?: string; branchId?: string },
+  ) => ['hq-promotions', id, 'performance', promotionId, params] as const,
 }

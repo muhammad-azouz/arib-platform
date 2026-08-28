@@ -1302,6 +1302,17 @@ func (s *Server) writeHqError(w http.ResponseWriter, err error) {
 		writeErr(w, http.StatusConflict, notTransferable.Error())
 		return
 	}
+	// The envelope stays flat {"error": "..."}; "field" is a SIBLING key, the
+	// same way RoleAssignedError adds "count". api.ts:152 reads body.error as a
+	// string, so a nested {code, message} would break every existing consumer.
+	var badPromotion *hq.PromotionInvalidError
+	if errors.As(err, &badPromotion) {
+		writeJSON(w, http.StatusBadRequest, map[string]string{
+			"error": badPromotion.Message,
+			"field": badPromotion.Field,
+		})
+		return
+	}
 	switch {
 	case errors.Is(err, hq.ErrForbiddenScope):
 		writeJSON(w, http.StatusForbidden, map[string]string{
@@ -1333,4 +1344,150 @@ func (s *Server) writeHqError(w http.ResponseWriter, err error) {
 		s.log.Error("hq.unhandled_error", "err", err.Error())
 		writeErr(w, http.StatusInternalServerError, "request failed")
 	}
+}
+
+// --- Promotions (T135): six routes over the gateway's /hq/promotions*.
+//     Reads are promotions.view, writes promotions.manage (permTable holds
+//     the split). Spec D14's branch-scoping lives one layer down, in
+//     hq.Service — a handler that made its own scope decisions would be a
+//     second place for them to drift. ---
+
+// promotionStatuses and promotionLevels are validated here rather than passed
+// through, matching the customers handler's active/debt pre-validation: the
+// gateway degrades an unrecognized filter to an empty page, which would show
+// the console "no promotions" for what is really a typo in a query string.
+var promotionStatuses = map[string]bool{
+	"active": true, "scheduled": true, "expired": true, "paused": true, "all": true,
+}
+
+var promotionLevels = map[string]bool{"item": true, "bill": true}
+
+func (s *Server) handleHqPromotions(w http.ResponseWriter, r *http.Request) {
+	c := claimsFrom(r.Context())
+	q := r.URL.Query()
+	params := url.Values{}
+
+	if v := q.Get("status"); v != "" {
+		if !promotionStatuses[v] {
+			writeErr(w, http.StatusBadRequest, "status must be one of active, scheduled, expired, paused, all")
+			return
+		}
+		params.Set("status", v)
+	}
+	if v := q.Get("level"); v != "" {
+		if !promotionLevels[v] {
+			writeErr(w, http.StatusBadRequest, "level must be item or bill")
+			return
+		}
+		params.Set("level", v)
+	}
+	for _, k := range []string{"page", "page_size"} {
+		if v := q.Get(k); v != "" {
+			params.Set(k, v)
+		}
+	}
+	// branch_id is repeated, not single-valued: applyScope reconciles the whole
+	// list against the member's allowlist, and collapsing it to the first value
+	// (Query().Get) would silently drop every branch after the first.
+	for _, v := range q["branch_id"] {
+		if v != "" {
+			params.Add("branch_id", v)
+		}
+	}
+
+	env, err := s.hq.Promotions(r.Context(), c.Subject, chi.URLParam(r, "id"), params)
+	if err != nil {
+		s.writeHqError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, env)
+}
+
+func (s *Server) handleHqPromotionDetail(w http.ResponseWriter, r *http.Request) {
+	c := claimsFrom(r.Context())
+	env, err := s.hq.PromotionDetail(r.Context(), c.Subject, chi.URLParam(r, "id"), chi.URLParam(r, "promotionId"))
+	if err != nil {
+		s.writeHqError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, env)
+}
+
+// handleHqPromotionPerformance (T152) fills the placeholder T135 registered.
+// from/to validate exactly like the reports handlers (validReportPeriod);
+// branch_id is repeated exactly like handleHqPromotions above, not
+// single-valued like the sales report — a scoped console session filtering
+// to a subset of its own branches needs every value passed through, not just
+// the first.
+func (s *Server) handleHqPromotionPerformance(w http.ResponseWriter, r *http.Request) {
+	if !validReportPeriod(w, r) {
+		return
+	}
+	c := claimsFrom(r.Context())
+	q := r.URL.Query()
+	params := url.Values{}
+	for _, k := range []string{"from", "to"} {
+		if v := q.Get(k); v != "" {
+			params.Set(k, v)
+		}
+	}
+	for _, v := range q["branch_id"] {
+		if v != "" {
+			params.Add("branch_id", v)
+		}
+	}
+
+	env, err := s.hq.PromotionPerformance(r.Context(), c.Subject, chi.URLParam(r, "id"), chi.URLParam(r, "promotionId"), params)
+	if err != nil {
+		s.writeHqError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, env)
+}
+
+func decodePromotionInput(w http.ResponseWriter, r *http.Request) (hq.PromotionInput, bool) {
+	var in hq.PromotionInput
+	if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
+		writeErr(w, http.StatusBadRequest, "invalid promotion body")
+		return in, false
+	}
+	return in, true
+}
+
+func (s *Server) handleHqPromotionCreate(w http.ResponseWriter, r *http.Request) {
+	in, ok := decodePromotionInput(w, r)
+	if !ok {
+		return
+	}
+	c := claimsFrom(r.Context())
+	res, err := s.hq.CreatePromotion(r.Context(), c.Subject, chi.URLParam(r, "id"), in)
+	if err != nil {
+		s.writeHqError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusCreated, res)
+}
+
+func (s *Server) handleHqPromotionUpdate(w http.ResponseWriter, r *http.Request) {
+	in, ok := decodePromotionInput(w, r)
+	if !ok {
+		return
+	}
+	c := claimsFrom(r.Context())
+	res, err := s.hq.UpdatePromotion(r.Context(), c.Subject, chi.URLParam(r, "id"), chi.URLParam(r, "promotionId"), in)
+	if err != nil {
+		s.writeHqError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, res)
+}
+
+func (s *Server) handleHqPromotionDelete(w http.ResponseWriter, r *http.Request) {
+	c := claimsFrom(r.Context())
+	res, err := s.hq.DeletePromotion(r.Context(), c.Subject, chi.URLParam(r, "id"), chi.URLParam(r, "promotionId"))
+	if err != nil {
+		s.writeHqError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, res)
 }

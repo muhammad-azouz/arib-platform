@@ -17,6 +17,7 @@ import {
   UsersIcon,
   SupplierIcon,
   OrdersIcon,
+  PromotionsIcon,
   ReportsIcon,
   DownloadIcon,
   SettingsIcon,
@@ -68,6 +69,14 @@ export function AppShell() {
     { to: base, label: 'نظرة عامة', icon: DashboardIcon, end: true },
     { to: `${base}/branches`, label: 'الفروع', icon: BranchIcon, code: PERM.BranchesView },
     { to: `${base}/catalog`, label: 'الكتالوج', icon: CatalogIcon, code: PERM.CatalogView },
+    // Catalog-adjacent, not a report: a promotion is authored against products
+    // and groups, so it sits next to الكتالوج rather than down with التقارير.
+    {
+      to: `${base}/promotions`,
+      label: 'العروض',
+      icon: PromotionsIcon,
+      code: PERM.PromotionsView,
+    },
     { to: `${base}/inventory`, label: 'المخزون', icon: InventoryIcon, code: PERM.InventoryView },
     { to: `${base}/customers`, label: 'العملاء', icon: UsersIcon, code: PERM.CustomersView },
     { to: `${base}/suppliers`, label: 'الموردون', icon: SupplierIcon, code: PERM.SuppliersView },

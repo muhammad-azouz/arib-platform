@@ -17,6 +17,8 @@ export const PERM = {
   BranchesManage: 'branches.manage',
   CatalogView: 'catalog.view',
   CatalogManage: 'catalog.manage',
+  PromotionsView: 'promotions.view',
+  PromotionsManage: 'promotions.manage',
   InventoryView: 'inventory.view',
   CustomersView: 'customers.view',
   CustomersManage: 'customers.manage',

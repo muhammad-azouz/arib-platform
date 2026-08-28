@@ -22,6 +22,8 @@ import { CustomerDetail } from '@/pages/console/CustomerDetail'
 import { Suppliers } from '@/pages/console/Suppliers'
 import { SupplierDetail } from '@/pages/console/SupplierDetail'
 import { Orders } from '@/pages/console/Orders'
+import { Promotions } from '@/pages/console/Promotions'
+import { PromotionDetail } from '@/pages/console/PromotionDetail'
 import { NewOrder } from '@/pages/console/NewOrder'
 import { OrderDetail } from '@/pages/console/OrderDetail'
 import { Conflicts } from '@/pages/console/Conflicts'
@@ -94,6 +96,22 @@ export default function App() {
               element={
                 <RequirePerm code={PERM.CatalogView}>
                   <ProductDetail />
+                </RequirePerm>
+              }
+            />
+            <Route
+              path="promotions"
+              element={
+                <RequirePerm code={PERM.PromotionsView}>
+                  <Promotions />
+                </RequirePerm>
+              }
+            />
+            <Route
+              path="promotions/:promotionId"
+              element={
+                <RequirePerm code={PERM.PromotionsView}>
+                  <PromotionDetail />
                 </RequirePerm>
               }
             />

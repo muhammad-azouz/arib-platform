@@ -12,6 +12,7 @@ func TestAll_ExactCatalog(t *testing.T) {
 	want := []string{
 		"branches.view", "branches.manage",
 		"catalog.view", "catalog.manage",
+		"promotions.view", "promotions.manage",
 		"inventory.view",
 		"customers.view", "customers.manage",
 		"suppliers.view", "suppliers.manage",
@@ -38,6 +39,9 @@ func TestCan(t *testing.T) {
 		{"empty set", nil, CatalogView, false},
 		{"view-only set asked for manage", []string{CatalogView}, CatalogManage, false},
 		{"view-only section has no manage implication", []string{InventoryView}, "inventory.manage", false},
+		{"promotions manage implies view", []string{PromotionsManage}, PromotionsView, true},
+		{"promotions view does not imply manage", []string{PromotionsView}, PromotionsManage, false},
+		{"catalog manage does not leak into promotions", []string{CatalogManage}, PromotionsView, false},
 		{"company has no view code to imply", []string{CompanyManage}, "company.view", false},
 	}
 	for _, tt := range tests {

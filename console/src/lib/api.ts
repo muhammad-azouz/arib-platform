@@ -50,6 +50,12 @@ import type {
   PriceChangeResult,
   ProductDetailResponse,
   ProductsReportResponse,
+  PromotionInput,
+  PromotionPerformanceResponse,
+  PromotionResponse,
+  PromotionStatusFilter,
+  PromotionWriteResult,
+  PromotionsResponse,
   ReportSort,
   RoleView,
   SalesReportResponse,
@@ -924,6 +930,72 @@ export const api = {
       `/v1/tenants/${tenantId}/hq/orders/${orderId}/transfer`,
       post({ to_branch_id: toBranchId }),
     ),
+
+  // --- Promotions (T137). Six functions over the API's /hq/promotions*.
+  //     Every write returns the same {id, written_at} receipt; validation
+  //     refusals arrive as a flat 400 {error, field} and surface through
+  //     ApiError's message like every other write in this file. ---
+
+  promotions: (
+    tenantId: string,
+    params: {
+      status?: PromotionStatusFilter
+      level?: 'item' | 'bill'
+      branchId?: string
+      page?: number
+      pageSize?: number
+    },
+  ) => {
+    const q = new URLSearchParams()
+    // 'all' is the server's own default, so it is omitted rather than sent —
+    // keeps the query key and the URL identical for the unfiltered view.
+    if (params.status && params.status !== 'all') q.set('status', params.status)
+    if (params.level) q.set('level', params.level)
+    if (params.branchId) q.set('branch_id', params.branchId)
+    if (params.page) q.set('page', String(params.page))
+    if (params.pageSize) q.set('page_size', String(params.pageSize))
+    const qs = q.toString()
+    return request<PromotionsResponse>(
+      `/v1/tenants/${tenantId}/hq/promotions${qs ? `?${qs}` : ''}`,
+    )
+  },
+
+  promotion: (tenantId: string, promotionId: string) =>
+    request<PromotionResponse>(`/v1/tenants/${tenantId}/hq/promotions/${promotionId}`),
+
+  createPromotion: (tenantId: string, input: PromotionInput) =>
+    request<PromotionWriteResult>(`/v1/tenants/${tenantId}/hq/promotions`, post(input)),
+
+  updatePromotion: (tenantId: string, promotionId: string, input: PromotionInput) =>
+    request<PromotionWriteResult>(`/v1/tenants/${tenantId}/hq/promotions/${promotionId}`, {
+      method: 'PUT',
+      body: JSON.stringify(input),
+    }),
+
+  // Soft delete (D9) — the row survives so the audit rows written against it
+  // stay explicable. DELETE is still the honest verb: the promotion is gone
+  // from every read and from the till.
+  deletePromotion: (tenantId: string, promotionId: string) =>
+    request<PromotionWriteResult>(`/v1/tenants/${tenantId}/hq/promotions/${promotionId}`, {
+      method: 'DELETE',
+    }),
+
+  // T153. from/to/branch_id pass straight through, same shape as
+  // reportSales — the gateway owns period defaulting/clamping either way.
+  promotionPerformance: (
+    tenantId: string,
+    promotionId: string,
+    params: { from?: string; to?: string; branchId?: string },
+  ) => {
+    const q = new URLSearchParams()
+    if (params.from) q.set('from', params.from)
+    if (params.to) q.set('to', params.to)
+    if (params.branchId) q.set('branch_id', params.branchId)
+    const qs = q.toString()
+    return request<PromotionPerformanceResponse>(
+      `/v1/tenants/${tenantId}/hq/promotions/${promotionId}/performance${qs ? `?${qs}` : ''}`,
+    )
+  },
 
   // SSE stream URL. EventSource cannot set an Authorization header, so the
   // current access token rides the query string (the server keeps this route

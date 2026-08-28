@@ -213,6 +213,16 @@ var permTable = []accessRule{
 	rule(http.MethodGet, "hq/orders/{orderId}", perm.OrdersView),
 	rule(http.MethodPost, "hq/orders/{orderId}/cancel", perm.OrdersManage),
 	rule(http.MethodPost, "hq/orders/{orderId}/transfer", perm.OrdersManage),
+
+	rule(http.MethodGet, "hq/promotions", perm.PromotionsView),
+	rule(http.MethodPost, "hq/promotions", perm.PromotionsManage),
+	rule(http.MethodGet, "hq/promotions/{promotionId}", perm.PromotionsView),
+	rule(http.MethodPut, "hq/promotions/{promotionId}", perm.PromotionsManage),
+	rule(http.MethodDelete, "hq/promotions/{promotionId}", perm.PromotionsManage),
+	// Performance is a report ABOUT a promotion, not a change to one, so it
+	// sits on the view side — unlike /hq/orders/availability, which is
+	// read-only but exists solely to serve a create form.
+	rule(http.MethodGet, "hq/promotions/{promotionId}/performance", perm.PromotionsView),
 }
 
 // findAccessRule returns the table entry matching method and the request

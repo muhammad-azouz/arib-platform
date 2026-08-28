@@ -3,13 +3,17 @@ import { ar } from 'date-fns/locale'
 import type {
   BranchStatus,
   DeviceStatus,
+  DiscountTypeValue,
   MemberRole,
   OrderChannelValue,
   OrderModeValue,
   OrderStatusValue,
+  PromotionLevelValue,
+  PromotionStatus,
   SubscriptionState,
   TenantStatus,
 } from './types'
+import { DISCOUNT_TYPE, PROMOTION_LEVEL } from './types'
 
 const ZERO = '0001-01-01T00:00:00Z'
 
@@ -25,6 +29,39 @@ export function fmtDate(iso?: string | null): string {
 export function fmtDateTime(iso?: string | null): string {
   if (isZeroTime(iso)) return '—'
   return format(new Date(iso as string), 'd MMM yyyy · HH:mm', { locale: ar })
+}
+
+/**
+ * Formats a **date-only** value — one whose payload is the calendar date and
+ * whose time component is meaningless (a promotion's starts_on/ends_on, spec
+ * D8). Deliberately NOT `fmtDate`.
+ *
+ * `fmtDate` renders `new Date(iso)` in the browser's local timezone, which is
+ * correct for an instant and wrong for a date: the gateway serializes these as
+ * midnight UTC, so `2026-09-01T00:00:00Z` renders as **31 August** anywhere
+ * west of Greenwich (verified: America/New_York). That is the same off-by-one
+ * the gateway avoids by stamping rather than converting — reintroducing it in
+ * the browser would undo the fix one layer later.
+ *
+ * Reading the date straight off the string takes the calendar date as written
+ * and cannot shift it, whatever the viewer's timezone.
+ */
+export function fmtDateOnly(iso?: string | null): string {
+  if (isZeroTime(iso)) return '—'
+  const [y, m, d] = (iso as string).slice(0, 10).split('-').map(Number)
+  if (!y || !m || !d) return '—'
+  return format(new Date(y, m - 1, d), 'd MMM yyyy', { locale: ar })
+}
+
+/** The inverse of fmtDateOnly for a date input's `value` — same no-shift rule. */
+export function toDateInput(iso?: string | null): string {
+  if (isZeroTime(iso)) return ''
+  return (iso as string).slice(0, 10)
+}
+
+/** A `YYYY-MM-DD` date input back to the midnight-UTC form the API expects. */
+export function fromDateInput(value: string): string {
+  return value ? `${value}T00:00:00Z` : ''
 }
 
 export function relative(iso?: string | null): string {
@@ -156,3 +193,56 @@ export function toArabicDigits(value: string | number): string {
 }
 
 export { ZERO }
+
+// --- Promotions (T138) ------------------------------------------------------
+
+/**
+ * Labels the **server-derived** status. There is deliberately no function here
+ * that computes a status from the dates: the gateway's PromotionStatusOf is the
+ * single definition of "active" (spec D8), shared with the till, and a second
+ * client-side one is a second thing that can disagree with what a cashier is
+ * actually giving away.
+ */
+export function promotionStatusLabel(s: PromotionStatus): string {
+  switch (s) {
+    case 'active':
+      return 'نشط'
+    case 'scheduled':
+      return 'مجدول'
+    case 'expired':
+      return 'منتهي'
+    case 'paused':
+      return 'موقوف'
+  }
+}
+
+export function promotionStatusTone(s: PromotionStatus): Tone {
+  switch (s) {
+    case 'active':
+      return 'success'
+    case 'scheduled':
+      return 'info'
+    case 'expired':
+      return 'neutral'
+    case 'paused':
+      return 'muted'
+  }
+}
+
+export function promotionLevelLabel(level: PromotionLevelValue): string {
+  return level === PROMOTION_LEVEL.Bill ? 'خصم فاتورة' : 'خصم صنف'
+}
+
+/** "١٥٪" for a percentage, a plain money figure for a fixed amount. */
+export function promotionValueLabel(
+  discountType: DiscountTypeValue,
+  value: number,
+): string {
+  const n = toArabicDigits(value.toLocaleString('en', { maximumFractionDigits: 2 }))
+  return discountType === DISCOUNT_TYPE.Percentage ? `${n}٪` : n
+}
+
+/** Company-wide vs. one branch — the D2 distinction, read off a nullable id. */
+export function promotionReachLabel(branchName?: string | null): string {
+  return branchName ?? 'الشركة كلها'
+}

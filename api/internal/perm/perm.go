@@ -24,21 +24,23 @@ import (
 
 // The permission catalog (spec D3). Every code the console can gate on.
 const (
-	BranchesView    = "branches.view"
-	BranchesManage  = "branches.manage"
-	CatalogView     = "catalog.view"
-	CatalogManage   = "catalog.manage"
-	InventoryView   = "inventory.view"
-	CustomersView   = "customers.view"
-	CustomersManage = "customers.manage"
-	SuppliersView   = "suppliers.view"
-	SuppliersManage = "suppliers.manage"
-	OrdersView      = "orders.view"
-	OrdersManage    = "orders.manage"
-	ReportsView     = "reports.view"
-	ConflictsView   = "conflicts.view"
-	ConflictsManage = "conflicts.manage"
-	CompanyManage   = "company.manage"
+	BranchesView     = "branches.view"
+	BranchesManage   = "branches.manage"
+	CatalogView      = "catalog.view"
+	CatalogManage    = "catalog.manage"
+	PromotionsView   = "promotions.view"
+	PromotionsManage = "promotions.manage"
+	InventoryView    = "inventory.view"
+	CustomersView    = "customers.view"
+	CustomersManage  = "customers.manage"
+	SuppliersView    = "suppliers.view"
+	SuppliersManage  = "suppliers.manage"
+	OrdersView       = "orders.view"
+	OrdersManage     = "orders.manage"
+	ReportsView      = "reports.view"
+	ConflictsView    = "conflicts.view"
+	ConflictsManage  = "conflicts.manage"
+	CompanyManage    = "company.manage"
 )
 
 // All is the full permission catalog (spec D3), in table order. Adding or
@@ -46,6 +48,7 @@ const (
 var All = []string{
 	BranchesView, BranchesManage,
 	CatalogView, CatalogManage,
+	PromotionsView, PromotionsManage,
 	InventoryView,
 	CustomersView, CustomersManage,
 	SuppliersView, SuppliersManage,
@@ -69,6 +72,7 @@ var catalogSet = func() map[string]bool {
 var managePairs = []struct{ manage, view string }{
 	{BranchesManage, BranchesView},
 	{CatalogManage, CatalogView},
+	{PromotionsManage, PromotionsView},
 	{CustomersManage, CustomersView},
 	{SuppliersManage, SuppliersView},
 	{OrdersManage, OrdersView},

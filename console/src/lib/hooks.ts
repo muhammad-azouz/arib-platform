@@ -17,6 +17,8 @@ import type {
   NewProductInput,
   NewSupplierInput,
   PriceChangeInput,
+  PromotionInput,
+  PromotionStatusFilter,
   ReportSort,
   RoleView,
   SupplierDebtFilter,
@@ -998,6 +1000,87 @@ export function useTransferOrder(tenantId: string) {
       api.transferOrder(tenantId, orderId, toBranchId),
     onSuccess: () => {
       void qc.invalidateQueries({ queryKey: ['hq-orders', tenantId] })
+    },
+  })
+}
+
+// --- Promotions (T137) ------------------------------------------------------
+//
+// List and detail share the 'hq-promotions' prefix, so every mutation below
+// invalidates that ONE key and both views refresh together — an edit made from
+// the detail page updates the list behind it, and a create from the list makes
+// the new row appear without a manual refetch. Invalidating the narrower
+// detail key alone would leave a stale row visible in the list.
+
+export function usePromotions(
+  tenantId: string | undefined,
+  params: {
+    status?: PromotionStatusFilter
+    level?: 'item' | 'bill'
+    branchId?: string
+    page?: number
+    pageSize?: number
+  },
+) {
+  return useQuery({
+    queryKey: qk.promotions(tenantId ?? '', params),
+    queryFn: () => api.promotions(tenantId as string, params),
+    enabled: !!tenantId,
+    placeholderData: keepPreviousData,
+  })
+}
+
+export function usePromotion(tenantId: string | undefined, promotionId: string | undefined) {
+  return useQuery({
+    queryKey: qk.promotion(tenantId ?? '', promotionId ?? ''),
+    queryFn: () => api.promotion(tenantId as string, promotionId as string),
+    enabled: !!tenantId && !!promotionId,
+  })
+}
+
+/** T153. `keepPreviousData` so a period change never blanks the panel, same
+ * as the report views (Reports.tsx). */
+export function usePromotionPerformance(
+  tenantId: string | undefined,
+  promotionId: string | undefined,
+  params: { from?: string; to?: string; branchId?: string },
+) {
+  return useQuery({
+    queryKey: qk.promotionPerformance(tenantId ?? '', promotionId ?? '', params),
+    queryFn: () => api.promotionPerformance(tenantId as string, promotionId as string, params),
+    enabled: !!tenantId && !!promotionId,
+    placeholderData: keepPreviousData,
+  })
+}
+
+export function useCreatePromotion(tenantId: string) {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: (input: PromotionInput) => api.createPromotion(tenantId, input),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ['hq-promotions', tenantId] })
+    },
+  })
+}
+
+export function useUpdatePromotion(tenantId: string) {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: ({ promotionId, input }: { promotionId: string; input: PromotionInput }) =>
+      api.updatePromotion(tenantId, promotionId, input),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ['hq-promotions', tenantId] })
+    },
+  })
+}
+
+/** Soft delete (D9) — the console calls it إيقاف, not permanent removal. */
+export function useDeletePromotion(tenantId: string) {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: (promotionId: string) => api.deletePromotion(tenantId, promotionId),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ['hq-promotions', tenantId] })
     },
   })
 }
