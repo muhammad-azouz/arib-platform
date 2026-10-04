@@ -5,6 +5,7 @@ import type {
   CreateBillResult,
   License,
   LicenseStatus,
+  ModuleDef,
   SchemaReport,
   Session,
   Stats,
@@ -175,9 +176,15 @@ export const adminApi = {
       body: JSON.stringify(input),
     }),
 
+  modules: () =>
+    request<{ modules: ModuleDef[] }>('/v1/admin/modules').then(
+      (r) => r.modules,
+    ),
+
   assignLicenses: (input: {
     email: string
     modules: string[]
+    seats: number // AribLink terminals; 0 = desktop default
     expires_at: string | null // null = perpetual
     count: number
     notes: string
@@ -190,6 +197,14 @@ export const adminApi = {
     request<{ status: string }>(
       `/v1/admin/licenses/${id}/status`,
       body({ status }),
+    ),
+
+  // Upgrade/downgrade an existing license. The server adds core modules and
+  // a submodule's parent itself.
+  updateLicenseModules: (id: string, modules: string[], seats: number) =>
+    request<License>(
+      `/v1/admin/licenses/${id}/modules`,
+      body({ modules, seats }),
     ),
 
   extendUpdates: (id: string, updatesUntil: string | null) =>

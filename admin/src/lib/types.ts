@@ -23,8 +23,18 @@ export interface Account {
   UpdatedAt: string
 }
 
-export const MODULES = ['purchase', 'sales', 'customers', 'accounting'] as const
-export type ModuleCode = (typeof MODULES)[number]
+export type ModuleKind = 'core' | 'module' | 'sub' | 'addon'
+
+// GET /v1/admin/modules — hand-written json tags, so snake_case.
+export interface ModuleDef {
+  code: string
+  parent?: string
+  kind: ModuleKind
+  valued?: boolean // carries a number (terminal seats) on License.Seats
+  name_ar: string
+  name_en: string
+  order: number
+}
 
 export interface License {
   ID: string
@@ -33,6 +43,7 @@ export interface License {
   Type: LicenseType
   Features: string
   Modules: string[] | null
+  Seats?: number // AribLink terminal count; 0/absent = desktop default
   Status: LicenseStatus
   ExpiresAt: string | null // null = perpetual
   UpdatesUntil?: string | null // null = unlimited updates (grandfathered)

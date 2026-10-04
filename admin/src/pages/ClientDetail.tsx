@@ -3,6 +3,7 @@ import { Link, useParams } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
   ArrowLeft,
+  Blocks,
   Building2,
   CalendarClock,
   DatabaseBackup,
@@ -39,6 +40,8 @@ import { ConfirmDialog } from '@/components/ConfirmDialog'
 import { TenantBillingCard } from '@/components/TenantBillingCard'
 import { AssignLicenseDialog } from '@/components/dialogs/AssignLicenseDialog'
 import { ExtendUpdatesDialog } from '@/components/dialogs/ExtendUpdatesDialog'
+import { EditModulesDialog } from '@/components/dialogs/EditModulesDialog'
+import { describeModules, useModuleCatalog } from '@/lib/modules'
 import { SignOfflineDialog } from '@/components/dialogs/SignOfflineDialog'
 import { EditClientDialog } from '@/components/dialogs/EditClientDialog'
 import { DropTenantDbDialog } from '@/components/dialogs/DropTenantDbDialog'
@@ -64,6 +67,7 @@ import {
 export function ClientDetail() {
   const { id = '' } = useParams()
   const qc = useQueryClient()
+  const { data: catalog } = useModuleCatalog()
   const query = useQuery({
     queryKey: qk.client(id),
     queryFn: () => adminApi.getClient(id),
@@ -74,6 +78,7 @@ export function ClientDetail() {
   const [editOpen, setEditOpen] = useState(false)
   const [signLicense, setSignLicense] = useState<License | null>(null)
   const [updatesLicense, setUpdatesLicense] = useState<License | null>(null)
+  const [modulesLicense, setModulesLicense] = useState<License | null>(null)
   const [releaseDevice, setReleaseDevice] = useState<Device | null>(null)
   const [deleteTenant, setDeleteTenant] = useState<Tenant | null>(null)
   const [dropDbTenant, setDropDbTenant] = useState<Tenant | null>(null)
@@ -321,7 +326,7 @@ export function ClientDetail() {
                 <TableRow className="hover:bg-transparent">
                   <TableHead>Key</TableHead>
                   <TableHead>Type</TableHead>
-                  <TableHead>Features</TableHead>
+                  <TableHead>Modules</TableHead>
                   <TableHead>Status</TableHead>
                   <TableHead>Expires</TableHead>
                   <TableHead>Updates until</TableHead>
@@ -342,7 +347,7 @@ export function ClientDetail() {
                         </Badge>
                       </TableCell>
                       <TableCell className="text-sm text-muted-foreground">
-                        {lic.Modules?.length ? lic.Modules.join(', ') : lic.Features}
+                        {describeModules(lic, catalog)}
                       </TableCell>
                       <TableCell>
                         <Badge tone={licenseStatusTone(lic.Status)} className="capitalize">
@@ -398,6 +403,12 @@ export function ClientDetail() {
                                 Activate
                               </DropdownMenuItem>
                             )}
+                            <DropdownMenuItem
+                              onSelect={() => setModulesLicense(lic)}
+                            >
+                              <Blocks className="size-4" />
+                              Modules…
+                            </DropdownMenuItem>
                             <DropdownMenuItem
                               onSelect={() => setUpdatesLicense(lic)}
                             >
@@ -513,6 +524,15 @@ export function ClientDetail() {
           accountId={account.ID}
           open={!!updatesLicense}
           onOpenChange={(o) => !o && setUpdatesLicense(null)}
+        />
+      )}
+      {modulesLicense && (
+        <EditModulesDialog
+          key={modulesLicense.ID}
+          license={modulesLicense}
+          accountId={account.ID}
+          open={!!modulesLicense}
+          onOpenChange={(o) => !o && setModulesLicense(null)}
         />
       )}
       {signLicense && (

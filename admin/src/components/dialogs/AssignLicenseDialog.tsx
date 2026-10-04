@@ -19,10 +19,12 @@ import {
   DialogTitle,
 } from '@/components/ui/dialog'
 import { Field } from './Field'
-import { MODULES, type ModuleCode } from '@/lib/types'
+import { ModuleTreePicker } from '@/components/ModuleTreePicker'
+import { sellableCodes, useModuleCatalog } from '@/lib/modules'
 
 const schema = z.object({
-  modules: z.array(z.string()).min(1, 'Pick at least one module'),
+  modules: z.array(z.string()), // empty = Bills-only POS (core is implied)
+  seats: z.coerce.number().int().min(0).max(100),
   expires_at: z.string().optional().default(''), // blank = perpetual
   count: z.coerce.number().int().min(1, 'At least 1').max(50, 'Max 50'),
   notes: z.string().trim().optional().default(''),
@@ -36,8 +38,6 @@ interface Props {
   onOpenChange: (open: boolean) => void
 }
 
-const defaultModules: ModuleCode[] = [...MODULES]
-
 export function AssignLicenseDialog({
   email,
   accountId,
@@ -45,6 +45,7 @@ export function AssignLicenseDialog({
   onOpenChange,
 }: Props) {
   const qc = useQueryClient()
+  const { data: catalog } = useModuleCatalog()
   const {
     register,
     handleSubmit,
@@ -54,28 +55,31 @@ export function AssignLicenseDialog({
     formState: { errors },
   } = useForm<Values>({
     resolver: zodResolver(schema),
-    defaultValues: { modules: defaultModules, count: 1, expires_at: '', notes: '' },
+    defaultValues: { modules: [], seats: 0, count: 1, expires_at: '', notes: '' },
   })
   const selectedModules = watch('modules') ?? []
+  const seats = Number(watch('seats') ?? 0)
 
+  // New licenses default to every module, as before; re-seeded once the
+  // catalog has loaded.
   useEffect(() => {
     if (open) {
-      reset({ modules: defaultModules, count: 1, expires_at: '', notes: '' })
+      reset({
+        modules: catalog ? sellableCodes(catalog) : [],
+        seats: 0,
+        count: 1,
+        expires_at: '',
+        notes: '',
+      })
     }
-  }, [open, reset])
-
-  function toggleModule(m: ModuleCode) {
-    const next = selectedModules.includes(m)
-      ? selectedModules.filter((x) => x !== m)
-      : [...selectedModules, m]
-    setValue('modules', next, { shouldValidate: true })
-  }
+  }, [open, reset, catalog])
 
   const mutation = useMutation({
     mutationFn: (v: Values) =>
       adminApi.assignLicenses({
         email,
         modules: v.modules,
+        seats: Number(v.seats),
         // Blank = perpetual; otherwise expire at end of the chosen day.
         expires_at: v.expires_at
           ? new Date(`${v.expires_at}T23:59:59Z`).toISOString()
@@ -108,26 +112,21 @@ export function AssignLicenseDialog({
           onSubmit={handleSubmit((v) => mutation.mutate(v))}
           className="grid gap-4"
         >
-          <Field label="Modules" error={errors.modules?.message}>
-            <div className="flex flex-wrap gap-3">
-              {MODULES.map((m) => (
-                <label
-                  key={m}
-                  className="flex items-center gap-1.5 text-sm capitalize"
-                >
-                  <input
-                    type="checkbox"
-                    checked={selectedModules.includes(m)}
-                    onChange={() => toggleModule(m)}
-                    className="size-4 rounded border-input"
-                  />
-                  {m}
-                </label>
-              ))}
-            </div>
+          <Field
+            label="Modules"
+            error={errors.modules?.message ?? errors.seats?.message}
+            hint="Terminals count blank = desktop default"
+          >
+            <ModuleTreePicker
+              catalog={catalog}
+              value={selectedModules}
+              onChange={(m) => setValue('modules', m, { shouldValidate: true })}
+              seats={seats}
+              onSeatsChange={(n) => setValue('seats', n, { shouldValidate: true })}
+            />
           </Field>
           <div className="grid grid-cols-2 gap-3">
-            <Field label="Seats" error={errors.count?.message}>
+            <Field label="Licenses" error={errors.count?.message}>
               <Input type="number" min={1} max={50} {...register('count')} />
             </Field>
             <Field
