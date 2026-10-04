@@ -59,12 +59,16 @@ type Account struct {
 
 // License is a single-device seat owned by an account.
 type License struct {
-	ID        string        `bson:"_id"`
-	Key       string        `bson:"key"`
-	AccountID string        `bson:"account_id"`
-	Type      LicenseType   `bson:"type"`
-	Features  string        `bson:"features"`
-	Modules   []string      `bson:"modules,omitempty"`
+	ID        string      `bson:"_id"`
+	Key       string      `bson:"key"`
+	AccountID string      `bson:"account_id"`
+	Type      LicenseType `bson:"type"`
+	Features  string      `bson:"features"`
+	Modules   []string    `bson:"modules,omitempty"`
+	// Seats is the AribLink terminal count, written to the token as
+	// "ariblink=N" when the ariblink module is granted. 0 = the desktop's
+	// built-in default.
+	Seats     int           `bson:"seats,omitempty"`
 	Status    LicenseStatus `bson:"status"`
 	ExpiresAt *time.Time    `bson:"expires_at,omitempty"` // nil = perpetual
 	// UpdatesUntil ends the update-entitlement window (maintenance model,

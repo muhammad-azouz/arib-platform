@@ -129,6 +129,15 @@ func main() {
 	} else if roles > 0 || members > 0 {
 		log.Info("backfilled console roles", "roles_seeded", roles, "members_updated", members)
 	}
+	// License modules catalog: licenses issued before the catalog get every
+	// module (their owners always had full access). Idempotent — cheap to
+	// run on every boot.
+	if n, err := store.BackfillCatalogModules(ctx); err != nil {
+		log.Error("backfill catalog modules", "err", err)
+		os.Exit(1)
+	} else if n > 0 {
+		log.Info("backfilled catalog modules", "count", n)
+	}
 	billingSvc := billing.New(store, tenantSvc)
 	rolloutSvc := rollout.New(store, tenantSvc, nil)
 	hqSvc := hq.New(store, tenantSvc, nil)

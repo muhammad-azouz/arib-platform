@@ -56,13 +56,35 @@ func TestTokenForTrial(t *testing.T) {
 }
 
 func TestEncodeModulesFallsBackToAll(t *testing.T) {
-	got := encodeModules(nil)
-	if !strings.HasPrefix(got, "v1:") {
-		t.Fatalf("expected v1: prefix, got %q", got)
+	for _, legacy := range [][]string{nil, {"purchase", "sales", "customers", "accounting"}} {
+		got := encodeModules(legacy, 0)
+		if !strings.HasPrefix(got, "v1:") {
+			t.Fatalf("expected v1: prefix, got %q", got)
+		}
+		for _, m := range []string{"customers", "inventory", "accounting", "accounting.ewallets", "accounting.banks", "mahger", "ariblink"} {
+			if !strings.Contains(got, m) {
+				t.Fatalf("legacy %v: expected %q to contain module %q", legacy, got, m)
+			}
+		}
 	}
-	for _, m := range model.AllModules {
-		if !strings.Contains(got, m) {
-			t.Fatalf("expected %q to contain module %q", got, m)
+}
+
+func TestEncodeModulesCatalogList(t *testing.T) {
+	cases := []struct {
+		name    string
+		modules []string
+		seats   int
+		want    string
+	}{
+		{"bills only", []string{"bills", "users"}, 0, "v1:sales,purchase"},
+		{"accounting with banks", []string{"bills", "accounting", "accounting.banks", "users"}, 0, "v1:sales,purchase,accounting,accounting.banks"},
+		{"terminals with seats", []string{"bills", "users", "ariblink"}, 5, "v1:sales,purchase,ariblink=5"},
+		{"terminals default seats", []string{"bills", "users", "ariblink"}, 0, "v1:sales,purchase,ariblink"},
+		{"seats without terminals", []string{"bills", "users"}, 5, "v1:sales,purchase"},
+	}
+	for _, c := range cases {
+		if got := encodeModules(c.modules, c.seats); got != c.want {
+			t.Errorf("%s: encodeModules = %q, want %q", c.name, got, c.want)
 		}
 	}
 }
@@ -84,22 +106,6 @@ func TestUsable(t *testing.T) {
 		if got := Usable(c.l); got != c.want {
 			t.Errorf("%s: Usable() = %v, want %v", c.name, got, c.want)
 		}
-	}
-}
-
-func TestNormalizeModulesRejectsUnknown(t *testing.T) {
-	if _, err := model.NormalizeModules([]string{"sales", "bogus"}); err == nil {
-		t.Fatal("expected error for unknown module")
-	}
-}
-
-func TestNormalizeModulesDedupesAndLowercases(t *testing.T) {
-	got, err := model.NormalizeModules([]string{"Sales", "sales", " accounting "})
-	if err != nil {
-		t.Fatalf("NormalizeModules: %v", err)
-	}
-	if len(got) != 2 || got[0] != "sales" || got[1] != "accounting" {
-		t.Fatalf("unexpected result: %v", got)
 	}
 }
 

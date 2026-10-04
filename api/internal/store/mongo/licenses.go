@@ -63,3 +63,52 @@ func (s *Store) SetLicenseUpdatesUntil(ctx context.Context, id string, until *ti
 	}
 	return nil
 }
+
+// SetLicenseModules replaces a license's modules and AribLink seat count.
+func (s *Store) SetLicenseModules(ctx context.Context, id string, modules []string, seats int) error {
+	res, err := s.Licenses.UpdateByID(ctx, id, bson.D{{Key: "$set", Value: bson.D{
+		{Key: "modules", Value: modules},
+		{Key: "seats", Value: seats},
+		{Key: "updated_at", Value: time.Now().UTC()},
+	}}})
+	if err != nil {
+		return err
+	}
+	if res.MatchedCount == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+// BackfillCatalogModules grants the full module catalog to every license
+// whose modules predate it (model.IsLegacyModuleList): those owners always
+// had every feature, so moving them onto the catalog must not narrow them.
+// Idempotent — a backfilled license carries the core Bills code and is
+// skipped on the next boot.
+func (s *Store) BackfillCatalogModules(ctx context.Context) (int, error) {
+	cur, err := s.Licenses.Find(ctx, bson.D{{Key: "modules", Value: bson.D{{Key: "$ne", Value: model.ModuleBills}}}},
+		options.Find().SetProjection(bson.D{{Key: "_id", Value: 1}}))
+	if err != nil {
+		return 0, err
+	}
+	var rows []struct {
+		ID string `bson:"_id"`
+	}
+	if err := cur.All(ctx, &rows); err != nil {
+		return 0, err
+	}
+	n := 0
+	for _, r := range rows {
+		res, err := s.Licenses.UpdateOne(ctx,
+			bson.D{{Key: "_id", Value: r.ID}, {Key: "modules", Value: bson.D{{Key: "$ne", Value: model.ModuleBills}}}},
+			bson.D{{Key: "$set", Value: bson.D{
+				{Key: "modules", Value: model.AllModules},
+				{Key: "updated_at", Value: time.Now().UTC()},
+			}}})
+		if err != nil {
+			return n, err
+		}
+		n += int(res.ModifiedCount)
+	}
+	return n, nil
+}

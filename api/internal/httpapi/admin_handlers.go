@@ -88,6 +88,7 @@ func (s *Server) handleAdminAssignLicenses(w http.ResponseWriter, r *http.Reques
 	var req struct {
 		Email     string     `json:"email"`
 		Modules   []string   `json:"modules"`
+		Seats     int        `json:"seats"`
 		ExpiresAt *time.Time `json:"expires_at"` // nil/omitted = perpetual
 		Count     int        `json:"count"`
 		Notes     string     `json:"notes"`
@@ -101,16 +102,55 @@ func (s *Server) handleAdminAssignLicenses(w http.ResponseWriter, r *http.Reques
 		writeErr(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	if len(modules) == 0 {
-		writeErr(w, http.StatusBadRequest, "at least one module is required")
+	if req.Seats < 0 {
+		writeErr(w, http.StatusBadRequest, "seats must not be negative")
 		return
 	}
-	lics, err := s.admin.AssignLicenses(r.Context(), req.Email, modules, req.ExpiresAt, req.Count, c.Email, req.Notes)
+	lics, err := s.admin.AssignLicenses(r.Context(), req.Email, modules, req.Seats, req.ExpiresAt, req.Count, c.Email, req.Notes)
 	if err != nil {
 		writeErr(w, http.StatusBadRequest, err.Error())
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"licenses": lics})
+}
+
+// handleAdminListModules returns the module catalog so the admin panel can
+// render the module tree from data rather than a hardcoded list.
+func (s *Server) handleAdminListModules(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, map[string]any{"modules": model.Catalog})
+}
+
+// handleAdminUpdateLicenseModules replaces an existing license's modules and
+// terminal seat count (upgrade or downgrade). Returns the updated license.
+func (s *Server) handleAdminUpdateLicenseModules(w http.ResponseWriter, r *http.Request) {
+	c := claimsFrom(r.Context())
+	var req struct {
+		Modules []string `json:"modules"`
+		Seats   int      `json:"seats"`
+	}
+	if err := decode(r, &req); err != nil {
+		writeErr(w, http.StatusBadRequest, "invalid body")
+		return
+	}
+	modules, err := model.NormalizeModules(req.Modules)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if req.Seats < 0 {
+		writeErr(w, http.StatusBadRequest, "seats must not be negative")
+		return
+	}
+	l, err := s.admin.UpdateLicenseModules(r.Context(), c.Email, chi.URLParam(r, "id"), modules, req.Seats)
+	if errors.Is(err, mongostore.ErrNotFound) {
+		writeErr(w, http.StatusNotFound, "license not found")
+		return
+	}
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, "update failed")
+		return
+	}
+	writeJSON(w, http.StatusOK, l)
 }
 
 func (s *Server) handleAdminLicenseStatus(w http.ResponseWriter, r *http.Request) {

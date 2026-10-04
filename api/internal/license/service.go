@@ -3,6 +3,7 @@ package license
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"time"
 
@@ -68,7 +69,7 @@ func (s *Service) CreateTrial(ctx context.Context, accountID string) (*model.Lic
 
 // CreatePaid provisions a license for an account granting the given modules.
 // A nil expiresAt makes the license perpetual (no expiry).
-func (s *Service) CreatePaid(ctx context.Context, accountID string, modules []string, expiresAt *time.Time, source, externalRef, assignedBy, notes string) (*model.License, error) {
+func (s *Service) CreatePaid(ctx context.Context, accountID string, modules []string, seats int, expiresAt *time.Time, source, externalRef, assignedBy, notes string) (*model.License, error) {
 	now := time.Now().UTC()
 	var exp *time.Time
 	if expiresAt != nil {
@@ -82,6 +83,7 @@ func (s *Service) CreatePaid(ctx context.Context, accountID string, modules []st
 		AccountID:    accountID,
 		Type:         model.LicensePaid,
 		Modules:      modules,
+		Seats:        seats,
 		Status:       model.LicenseActive,
 		ExpiresAt:    exp,
 		UpdatesUntil: &updatesUntil,
@@ -120,7 +122,7 @@ func (s *Service) TokenFor(l *model.License, machineID string, includeUpdatesUnt
 	}
 	p := licensetoken.Payload{
 		MachineID:    machineID,
-		Features:     encodeModules(l.Modules),
+		Features:     encodeModules(l.Modules, l.Seats),
 		HardExpiry:   hard,
 		RevalidateBy: reval,
 		LicenseID:    l.ID,
@@ -135,7 +137,7 @@ func (s *Service) TokenFor(l *model.License, machineID string, includeUpdatesUnt
 // SignOffline mints a fully-offline token (no revalidation expected) for the
 // hidden manual-entry fallback. A nil expiry mints a perpetual sentinel; both
 // clocks are otherwise set to expiry.
-func (s *Service) SignOffline(machineID string, modules []string, expiry *time.Time, licenseID string) (string, error) {
+func (s *Service) SignOffline(machineID string, modules []string, seats int, expiry *time.Time, licenseID string) (string, error) {
 	now := time.Now().UTC()
 	hard, reval := now.Add(perpetualHorizon), now
 	if expiry != nil {
@@ -143,7 +145,7 @@ func (s *Service) SignOffline(machineID string, modules []string, expiry *time.T
 	}
 	return s.signer.Sign(licensetoken.Payload{
 		MachineID:    machineID,
-		Features:     encodeModules(modules),
+		Features:     encodeModules(modules, seats),
 		HardExpiry:   hard,
 		RevalidateBy: reval,
 		LicenseID:    licenseID,
@@ -152,15 +154,27 @@ func (s *Service) SignOffline(machineID string, modules []string, expiry *time.T
 
 // encodeModules renders the versioned module encoding carried in the token's
 // features field. The "v1:" prefix discriminates this format from legacy
-// free-text Features labels and lets the encoding extend later without
-// re-breaking the client. Empty Modules (legacy/in-flight rows) fall back to
-// AllModules — never the raw legacy label, which a module-aware client can't
-// parse and would grant nothing.
-func encodeModules(modules []string) string {
-	if len(modules) == 0 {
+// free-text Features labels. A list that predates the catalog (empty, or
+// without the core Bills code) grants the full catalog — those owners always
+// had every feature. Core codes are always on in the client, so they are not
+// written; model.LegacyTokenCodes are, so older desktops keep selling and
+// buying. A granted ariblink carries its seat count as "ariblink=N".
+func encodeModules(modules []string, seats int) string {
+	if model.IsLegacyModuleList(modules) {
 		modules = model.AllModules
 	}
-	return "v1:" + strings.Join(modules, ",")
+	codes := append([]string{}, model.LegacyTokenCodes...)
+	for _, m := range modules {
+		d, ok := model.ModuleByCode(m)
+		if !ok || d.Kind == model.ModuleCore {
+			continue
+		}
+		if d.Valued && seats > 0 {
+			m = fmt.Sprintf("%s=%d", m, seats)
+		}
+		codes = append(codes, m)
+	}
+	return "v1:" + strings.Join(codes, ",")
 }
 
 // Usable reports whether a license can currently back a binding. A nil

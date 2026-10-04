@@ -134,7 +134,7 @@ func (s *Service) Stats(ctx context.Context) (*Stats, error) {
 
 // AssignLicenses creates n paid license seats for a client (by email),
 // granting the given modules. A nil expiresAt makes the licenses perpetual.
-func (s *Service) AssignLicenses(ctx context.Context, email string, modules []string, expiresAt *time.Time, count int, adminEmail, notes string) ([]model.License, error) {
+func (s *Service) AssignLicenses(ctx context.Context, email string, modules []string, seats int, expiresAt *time.Time, count int, adminEmail, notes string) ([]model.License, error) {
 	if count < 1 {
 		count = 1
 	}
@@ -144,13 +144,13 @@ func (s *Service) AssignLicenses(ctx context.Context, email string, modules []st
 	}
 	out := make([]model.License, 0, count)
 	for i := 0; i < count; i++ {
-		l, err := s.licenses.CreatePaid(ctx, acc.ID, modules, expiresAt, "manual_admin", "", adminEmail, notes)
+		l, err := s.licenses.CreatePaid(ctx, acc.ID, modules, seats, expiresAt, "manual_admin", "", adminEmail, notes)
 		if err != nil {
 			return nil, err
 		}
 		out = append(out, *l)
 	}
-	s.audit(ctx, adminEmail, "assign_licenses", acc.ID, map[string]any{"count": count, "modules": modules})
+	s.audit(ctx, adminEmail, "assign_licenses", acc.ID, map[string]any{"count": count, "modules": modules, "seats": seats})
 	return out, nil
 }
 
@@ -175,6 +175,30 @@ func (s *Service) ExtendUpdates(ctx context.Context, adminEmail, licenseID strin
 		return nil, err
 	}
 	s.audit(ctx, adminEmail, "extend_updates", licenseID, map[string]any{"updates_until": until})
+	return l, nil
+}
+
+// UpdateLicenseModules replaces a license's modules and terminal seat count
+// (a tenant buying or dropping a module later). modules must already be
+// normalized. Devices pick the change up on their next check-in, since every
+// token is minted from the stored license; offline-signed devices need a
+// re-sign. Data in a dropped module is never touched — its screens just lock.
+func (s *Service) UpdateLicenseModules(ctx context.Context, adminEmail, licenseID string, modules []string, seats int) (*model.License, error) {
+	before, err := s.store.LicenseByID(ctx, licenseID)
+	if err != nil {
+		return nil, err
+	}
+	if err := s.store.SetLicenseModules(ctx, licenseID, modules, seats); err != nil {
+		return nil, err
+	}
+	l, err := s.store.LicenseByID(ctx, licenseID)
+	if err != nil {
+		return nil, err
+	}
+	s.audit(ctx, adminEmail, "update_license_modules", licenseID, map[string]any{
+		"before": before.Modules, "before_seats": before.Seats,
+		"after": modules, "after_seats": seats,
+	})
 	return l, nil
 }
 
@@ -240,7 +264,7 @@ func (s *Service) SignOffline(ctx context.Context, adminEmail, licenseID, machin
 	if err != nil {
 		return "", err
 	}
-	tok, err := s.licenses.SignOffline(machineID, l.Modules, l.ExpiresAt, l.ID)
+	tok, err := s.licenses.SignOffline(machineID, l.Modules, l.Seats, l.ExpiresAt, l.ID)
 	if err != nil {
 		return "", err
 	}
