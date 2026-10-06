@@ -707,6 +707,100 @@ export interface StaffReportData {
 // GET /v1/tenants/{id}/hq/reports/staff
 export type StaffReportResponse = CatalogEnvelope<StaffReportData>
 
+// One cashier shift opened in the period. A closed shift carries its stored
+// count (actual_cash/difference: positive = over, negative = short); an open
+// one has none yet (null) and expected_cash is live.
+export interface ShiftReportRow {
+  id: string
+  num: number
+  branch_id: string
+  workstation_id: string
+  is_open: boolean
+  is_force_closed: boolean
+  opened_by_user_id: string
+  opened_by: string
+  opened_at: string
+  closed_by: string | null
+  closed_at: string | null
+  opening_cash: number
+  sales_total: number
+  sales_count: number
+  refunds_total: number
+  refunds_count: number
+  expected_cash: number
+  actual_cash: number | null
+  difference: number | null
+}
+
+// Totals over every shift matching the filters (not just the page). Over/short
+// figures cover closed shifts only.
+export interface ShiftsReportSummary {
+  shift_count: number
+  open_count: number
+  force_closed_count: number
+  sales_total: number
+  refunds_total: number
+  net_difference: number
+  short_count: number
+  short_total: number
+  over_count: number
+  over_total: number
+}
+
+export interface ShiftCashier {
+  user_id: string
+  name: string
+}
+
+export interface ShiftsReportPage {
+  summary: ShiftsReportSummary
+  cashiers: ShiftCashier[]
+  total: number
+  page: number
+  page_size: number
+  items: ShiftReportRow[]
+}
+
+export type ShiftStatusFilter = 'open' | 'closed'
+
+// GET /v1/tenants/{id}/hq/reports/shifts
+export type ShiftsReportResponse = CatalogEnvelope<ShiftsReportPage>
+
+// The online Z report (X while still open) for one shift.
+export interface ShiftDetail {
+  id: string
+  num: number
+  branch_id: string
+  branch_name: string
+  workstation_id: string
+  is_open: boolean
+  is_force_closed: boolean
+  opened_by: string
+  opened_at: string
+  open_note: string | null
+  closed_by: string | null
+  closed_at: string | null
+  close_note: string | null
+  sales_count: number
+  sales_total: number
+  refunds_count: number
+  refunds_total: number
+  tender: { cash: number; bank: number; wallet: number; credit: number }
+  cash_in: number
+  cash_out: number
+  expenses: number
+  revenue: number
+  opening_cash: number
+  expected_cash: number
+  actual_cash: number | null
+  difference: number | null
+  customers_served: number
+  inventory_adjustments: number
+}
+
+// GET /v1/tenants/{id}/hq/reports/shifts/{shiftId}
+export type ShiftDetailResponse = CatalogEnvelope<ShiftDetail>
+
 // --- HQ customers (slice 7; hq/service.go's Customer* methods) ---
 //
 // Read-mostly, branch-specific (Customers is a Tier-B, own-BranchId table —

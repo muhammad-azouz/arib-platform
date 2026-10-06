@@ -60,6 +60,9 @@ import type {
   RoleView,
   SalesReportResponse,
   Session,
+  ShiftDetailResponse,
+  ShiftStatusFilter,
+  ShiftsReportResponse,
   StaffReportResponse,
   SubscriptionResponse,
   SupplierDebtFilter,
@@ -588,6 +591,35 @@ export const api = {
       `/v1/tenants/${tenantId}/hq/reports/staff${qs ? `?${qs}` : ''}`,
     )
   },
+
+  reportShifts: (
+    tenantId: string,
+    params: {
+      from?: string
+      to?: string
+      branchId?: string
+      status?: ShiftStatusFilter
+      userId?: string
+      page?: number
+      pageSize?: number
+    },
+  ) => {
+    const q = new URLSearchParams()
+    if (params.from) q.set('from', params.from)
+    if (params.to) q.set('to', params.to)
+    if (params.branchId) q.set('branch_id', params.branchId)
+    if (params.status) q.set('status', params.status)
+    if (params.userId) q.set('user_id', params.userId)
+    if (params.page) q.set('page', String(params.page))
+    if (params.pageSize) q.set('page_size', String(params.pageSize))
+    const qs = q.toString()
+    return request<ShiftsReportResponse>(
+      `/v1/tenants/${tenantId}/hq/reports/shifts${qs ? `?${qs}` : ''}`,
+    )
+  },
+
+  reportShiftDetail: (tenantId: string, shiftId: string) =>
+    request<ShiftDetailResponse>(`/v1/tenants/${tenantId}/hq/reports/shifts/${shiftId}`),
 
   // customers (slice 7): read-mostly, branch-specific — same HQ chain as
   // catalog/inventory/reports. search/branch/group/active/debt/page/pageSize

@@ -21,6 +21,7 @@ import type {
   PromotionStatusFilter,
   ReportSort,
   RoleView,
+  ShiftStatusFilter,
   SupplierDebtFilter,
   SupplierEditInput,
   Tenant,
@@ -541,6 +542,34 @@ export function useReportStaff(
     queryFn: () => api.reportStaff(tenantId as string, params),
     enabled: !!tenantId,
     placeholderData: keepPreviousData,
+  })
+}
+
+/** Period shift list + over/short summary (paged, newest first). */
+export function useReportShifts(
+  tenantId: string | undefined,
+  params: ReportPeriodParams & {
+    branchId?: string
+    status?: ShiftStatusFilter
+    userId?: string
+    page?: number
+    pageSize?: number
+  },
+) {
+  return useQuery({
+    queryKey: qk.reportShifts(tenantId ?? '', params),
+    queryFn: () => api.reportShifts(tenantId as string, params),
+    enabled: !!tenantId,
+    placeholderData: keepPreviousData,
+  })
+}
+
+/** One shift's online Z report; idle until a shift is picked. */
+export function useReportShiftDetail(tenantId: string | undefined, shiftId: string | undefined) {
+  return useQuery({
+    queryKey: qk.reportShiftDetail(tenantId ?? '', shiftId ?? ''),
+    queryFn: () => api.reportShiftDetail(tenantId as string, shiftId as string),
+    enabled: !!tenantId && !!shiftId,
   })
 }
 

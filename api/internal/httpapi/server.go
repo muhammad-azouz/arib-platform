@@ -184,6 +184,8 @@ func (s *Server) Router() http.Handler {
 					r.Get("/hq/reports/products", s.handleHqReportProducts)
 					r.Get("/hq/reports/branches", s.handleHqReportBranches)
 					r.Get("/hq/reports/staff", s.handleHqReportStaff)
+					r.Get("/hq/reports/shifts", s.handleHqReportShifts)
+					r.Get("/hq/reports/shifts/{shiftId}", s.handleHqReportShiftDetail)
 					r.Get("/hq/customer-groups", s.handleHqCustomerGroups)
 					r.Get("/hq/customers", s.handleHqCustomers)
 					r.Post("/hq/customers", s.handleHqCustomerCreate)

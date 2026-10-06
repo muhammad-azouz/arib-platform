@@ -1032,6 +1032,99 @@ func TestReportStaff_PassthroughAndEmptyNeverNil(t *testing.T) {
 	}
 }
 
+func TestReportShifts_PassthroughAndEmptyNeverNil(t *testing.T) {
+	var gotQuery url.Values
+	gw := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/hq/reports/shifts" {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		gotQuery = r.URL.Query()
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"summary":{"shift_count":2,"open_count":1,"net_difference":-15,"short_count":1,"short_total":-15},` +
+			`"cashiers":[{"user_id":"u-1","name":"أحمد"}],"total":2,"page":1,"page_size":25,"items":[` +
+			`{"id":"s-1","num":7,"branch_id":"b1","workstation_id":"ws-1","is_open":false,"is_force_closed":false,` +
+			`"opened_by_user_id":"u-1","opened_by":"أحمد","opened_at":"2026-10-05T06:00:00Z","closed_by":"أحمد",` +
+			`"closed_at":"2026-10-05T14:00:00Z","opening_cash":500,"sales_total":1200,"sales_count":30,` +
+			`"refunds_total":0,"refunds_count":0,"expected_cash":1400,"actual_cash":1385,"difference":-15},` +
+			`{"id":"s-2","num":8,"branch_id":"b1","workstation_id":"ws-1","is_open":true,"is_force_closed":false,` +
+			`"opened_by_user_id":"u-1","opened_by":"أحمد","opened_at":"2026-10-05T14:05:00Z","closed_by":null,` +
+			`"closed_at":null,"opening_cash":500,"sales_total":100,"sales_count":2,` +
+			`"refunds_total":0,"refunds_count":0,"expected_cash":600,"actual_cash":null,"difference":null}]}`))
+	}))
+	defer gw.Close()
+
+	s := New(testStore(gw.URL), &fakeTokens{}, nil)
+	env, err := s.ReportShifts(context.Background(), "acc_owner", "tnt_1",
+		url.Values{"status": {"closed"}, "user_id": {"u-1"}})
+	if err != nil {
+		t.Fatalf("report shifts: %v", err)
+	}
+	if gotQuery.Get("status") != "closed" || gotQuery.Get("user_id") != "u-1" {
+		t.Fatalf("filters not passed through: %v", gotQuery)
+	}
+	d := env.Data
+	if d.Summary.ShortTotal != -15 || len(d.Cashiers) != 1 || len(d.Items) != 2 {
+		t.Fatalf("shifts round-trip: %+v", d)
+	}
+	if d.Items[0].Difference == nil || *d.Items[0].Difference != -15 || d.Items[1].ActualCash != nil {
+		t.Fatalf("closed/open count fields wrong: %+v", d.Items)
+	}
+
+	empty := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"summary":{},"cashiers":null,"total":0,"items":null}`))
+	}))
+	defer empty.Close()
+	s2 := New(testStore(empty.URL), &fakeTokens{}, nil)
+	env2, err := s2.ReportShifts(context.Background(), "acc_owner", "tnt_1", url.Values{})
+	if err != nil {
+		t.Fatalf("report shifts (empty): %v", err)
+	}
+	if env2.Data.Items == nil || env2.Data.Cashiers == nil {
+		t.Fatalf("items/cashiers should be empty slices, got %#v", env2.Data)
+	}
+}
+
+func TestReportShiftDetail_DecoratesBranchScopeAndNotFound(t *testing.T) {
+	gw := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/hq/reports/shifts/s1":
+			_, _ = w.Write([]byte(`{"id":"s1","num":7,"branch_id":"b1","opened_by":"أحمد","opened_at":"2026-10-05T06:00:00Z",` +
+				`"sales_total":1200,"tender":{"cash":1000,"bank":200},"expected_cash":1400,"actual_cash":1385,"difference":-15}`))
+		case "/hq/reports/shifts/s2":
+			_, _ = w.Write([]byte(`{"id":"s2","num":3,"branch_id":"b2","opened_by":"سارة","opened_at":"2026-10-05T06:00:00Z"}`))
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer gw.Close()
+
+	fs := testStore(gw.URL)
+	fs.branches = []model.Branch{{ID: "b1", TenantID: "tnt_1", Name: "وسط البلد", Status: model.BranchActive}}
+	s := New(fs, &fakeTokens{}, nil)
+
+	env, err := s.ReportShiftDetail(context.Background(), "acc_owner", "tnt_1", "s1")
+	if err != nil {
+		t.Fatalf("shift detail: %v", err)
+	}
+	if env.Data.BranchName != "وسط البلد" || env.Data.Tender.Cash != 1000 || *env.Data.Difference != -15 {
+		t.Fatalf("shift detail wrong: %+v", env.Data)
+	}
+	if _, err := s.ReportShiftDetail(context.Background(), "acc_owner", "tnt_1", "nope"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("expected ErrNotFound, got %v", err)
+	}
+
+	ctx := scopedCtx(fs, []string{"b1"})
+	if _, err := s.ReportShiftDetail(ctx, fs.tenant.AccountID, fs.tenant.ID, "s1"); err != nil {
+		t.Fatalf("in-allowlist shift should succeed, got %v", err)
+	}
+	if _, err := s.ReportShiftDetail(ctx, fs.tenant.AccountID, fs.tenant.ID, "s2"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("expected ErrNotFound for an out-of-allowlist shift, got %v", err)
+	}
+}
+
 func TestReportSales_Ownership(t *testing.T) {
 	s := New(testStore("http://127.0.0.1:1"), &fakeTokens{}, nil)
 	if _, err := s.ReportSales(context.Background(), "acc_intruder", "tnt_1", url.Values{}); !errors.Is(err, ErrForbidden) {

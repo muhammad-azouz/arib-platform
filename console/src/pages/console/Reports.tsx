@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useState, type ReactNode } from 'react'
 import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom'
 import { format } from 'date-fns'
 import { ar } from 'date-fns/locale'
@@ -10,11 +10,13 @@ import {
   useReportBranches,
   useReportProducts,
   useReportSales,
+  useReportShiftDetail,
+  useReportShifts,
   useReportStaff,
 } from '@/lib/hooks'
-import { toArabicDigits } from '@/lib/format'
+import { fmtDateTime, toArabicDigits } from '@/lib/format'
 import { cn } from '@/lib/utils'
-import type { ReportSort, SalesDay } from '@/lib/types'
+import type { ReportSort, SalesDay, ShiftStatusFilter } from '@/lib/types'
 import { Freshness } from '@/components/Freshness'
 import { HealthDot } from '@/components/HealthDot'
 import { PageHeader } from '@/components/PageHeader'
@@ -22,7 +24,15 @@ import { Pagination } from '@/components/Pagination'
 import { PeriodPicker } from '@/components/PeriodPicker'
 import { LoadingState, EmptyState, ErrorState } from '@/components/States'
 import { ArrowLeading, InventoryIcon, ReportsIcon, UsersIcon } from '@/components/icon'
+import { Badge } from '@/components/ui/badge'
 import { Card } from '@/components/ui/card'
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+} from '@/components/ui/dialog'
 import {
   Table,
   TableBody,
@@ -43,12 +53,13 @@ function parseDay(day: string): Date {
   return new Date(`${day}T00:00:00`)
 }
 
-type ViewKey = 'sales' | 'products' | 'branches' | 'staff' | 'inventory'
+type ViewKey = 'sales' | 'products' | 'branches' | 'staff' | 'shifts' | 'inventory'
 const VIEWS: { key: ViewKey; label: string }[] = [
   { key: 'sales', label: 'المبيعات' },
   { key: 'products', label: 'الأصناف' },
   { key: 'branches', label: 'الفروع' },
   { key: 'staff', label: 'الموظفون' },
+  { key: 'shifts', label: 'الورديات' },
   { key: 'inventory', label: 'المخزون' },
 ]
 
@@ -126,6 +137,16 @@ export function Reports() {
       {view === 'branches' && <BranchesView tenantId={tenantId} from={from} to={to} />}
       {view === 'staff' && (
         <StaffView
+          tenantId={tenantId}
+          from={from}
+          to={to}
+          branchId={branchId}
+          branches={branches}
+          onBranchChange={setBranchId}
+        />
+      )}
+      {view === 'shifts' && (
+        <ShiftsView
           tenantId={tenantId}
           from={from}
           to={to}
@@ -711,6 +732,380 @@ function StaffView({
         </div>
       )}
     </div>
+  )
+}
+
+// --- الورديات ---
+
+const SHIFT_STATUSES: { key: ShiftStatusFilter | undefined; label: string }[] = [
+  { key: undefined, label: 'الكل' },
+  { key: 'open', label: 'مفتوحة' },
+  { key: 'closed', label: 'مغلقة' },
+]
+
+/** Over/short against the expected drawer cash: positive = over, negative = short. */
+function DiffValue({ value }: { value: number | null }) {
+  if (value === null) return <span className="text-muted-foreground">—</span>
+  if (value === 0) return <span className="text-muted-foreground">{money.format(0)}</span>
+  return (
+    <span className={cn('font-semibold', value < 0 ? 'text-danger' : 'text-success')}>
+      {value > 0 ? '+' : ''}
+      {money.format(value)}
+    </span>
+  )
+}
+
+function ShiftsView({
+  tenantId,
+  from,
+  to,
+  branchId,
+  branches,
+  onBranchChange,
+}: {
+  tenantId?: string
+  from?: string
+  to?: string
+  branchId?: string
+  branches: BranchOption[]
+  onBranchChange: (id: string | undefined) => void
+}) {
+  const [searchParams, setSearchParams] = useSearchParams()
+  const [status, setStatus] = useState<ShiftStatusFilter | undefined>(undefined)
+  const [userId, setUserId] = useState<string | undefined>(undefined)
+  const [page, setPage] = useState(1)
+
+  const filterKey = `${from ?? ''} ${to ?? ''} ${branchId ?? ''} ${status ?? ''} ${userId ?? ''}`
+  const [lastFilterKey, setLastFilterKey] = useState(filterKey)
+  if (filterKey !== lastFilterKey) {
+    setLastFilterKey(filterKey)
+    setPage(1)
+  }
+
+  const query = useReportShifts(tenantId, {
+    from,
+    to,
+    branchId,
+    status,
+    userId,
+    page,
+    pageSize: PAGE_SIZE,
+  })
+
+  // The open shift lives in the URL so a Z report can be linked to directly.
+  const shiftId = searchParams.get('shift') ?? undefined
+  const setShiftId = (id: string | undefined) => {
+    const next = new URLSearchParams(searchParams)
+    if (id) next.set('shift', id)
+    else next.delete('shift')
+    setSearchParams(next, { replace: true })
+  }
+
+  const branchName = (id: string) => branches.find((b) => b.ID === id)?.Name ?? '—'
+  const notSubscribed = query.error instanceof ApiError && query.error.status === 402
+  const gatewayError = query.error instanceof ApiError && query.error.status !== 402
+  const r = query.data?.data
+
+  return (
+    <div>
+      <div className="mb-4 flex flex-wrap items-center gap-3">
+        <div className="inline-flex rounded-lg border border-border bg-card/50 p-1">
+          {SHIFT_STATUSES.map((s) => (
+            <button
+              key={s.label}
+              type="button"
+              onClick={() => setStatus(s.key)}
+              className={cn(
+                'rounded-md px-3 py-1.5 text-sm font-medium transition-colors',
+                status === s.key
+                  ? 'bg-accent text-primary'
+                  : 'text-muted-foreground hover:text-foreground',
+              )}
+            >
+              {s.label}
+            </button>
+          ))}
+        </div>
+        <select
+          className={cn(selectClass, 'w-44')}
+          value={userId ?? ''}
+          onChange={(e) => setUserId(e.target.value || undefined)}
+        >
+          <option value="">كل الكاشيرات</option>
+          {(r?.cashiers ?? []).map((c) => (
+            <option key={c.user_id} value={c.user_id}>
+              {c.name}
+            </option>
+          ))}
+        </select>
+        <BranchSelect branchId={branchId} branches={branches} onChange={onBranchChange} />
+        {query.data && (
+          <Freshness className="ms-auto" source={query.data.source} asOf={query.data.as_of} />
+        )}
+      </div>
+
+      {notSubscribed ? (
+        <NotSubscribed />
+      ) : gatewayError ? (
+        <ErrorState
+          message="تعذّر الوصول إلى بيانات التقارير الآن."
+          onRetry={() => void query.refetch()}
+        />
+      ) : query.isLoading || !r ? (
+        <LoadingState rows={5} />
+      ) : r.total === 0 ? (
+        <EmptyState
+          icon={ReportsIcon}
+          title="لا ورديات في هذه الفترة"
+          description="تظهر هنا ورديات الفروع التي تعمل بنظام الورديات فقط."
+        />
+      ) : (
+        <>
+          <div className="mb-4 grid grid-cols-2 gap-3 lg:grid-cols-5">
+            <KpiTile
+              label="الورديات"
+              value={
+                r.summary.open_count > 0
+                  ? `${toArabicDigits(r.summary.shift_count)} (${toArabicDigits(r.summary.open_count)} مفتوحة)`
+                  : toArabicDigits(r.summary.shift_count)
+              }
+            />
+            <KpiTile label="المبيعات" value={money.format(r.summary.sales_total)} />
+            <KpiTile
+              label="المرتجعات"
+              value={money.format(r.summary.refunds_total)}
+              tone={r.summary.refunds_total > 0 ? 'danger' : undefined}
+            />
+            <KpiTile
+              label="صافي العجز / الزيادة"
+              value={`${r.summary.net_difference > 0 ? '+' : ''}${money.format(r.summary.net_difference)}`}
+              tone={r.summary.net_difference < 0 ? 'danger' : undefined}
+            />
+            <KpiTile
+              label="ورديات بها عجز"
+              value={
+                r.summary.short_count > 0
+                  ? `${toArabicDigits(r.summary.short_count)} · ${money.format(r.summary.short_total)}`
+                  : toArabicDigits(0)
+              }
+              tone={r.summary.short_count > 0 ? 'danger' : undefined}
+            />
+          </div>
+
+          <div className="rounded-xl border border-border">
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead>الوردية</TableHead>
+                  <TableHead>الفرع</TableHead>
+                  <TableHead>الكاشير</TableHead>
+                  <TableHead>الفتح</TableHead>
+                  <TableHead>الإغلاق</TableHead>
+                  <TableHead>المبيعات</TableHead>
+                  <TableHead>المرتجعات</TableHead>
+                  <TableHead>النقدية المتوقعة</TableHead>
+                  <TableHead>النقدية الفعلية</TableHead>
+                  <TableHead>الفرق</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {r.items.map((s) => (
+                  <TableRow
+                    key={s.id}
+                    tabIndex={0}
+                    onClick={() => setShiftId(s.id)}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter') setShiftId(s.id)
+                    }}
+                    className="cursor-pointer"
+                  >
+                    <TableCell className="font-medium">#{toArabicDigits(s.num)}</TableCell>
+                    <TableCell>{branchName(s.branch_id)}</TableCell>
+                    <TableCell>{s.opened_by}</TableCell>
+                    <TableCell className="whitespace-nowrap">{fmtDateTime(s.opened_at)}</TableCell>
+                    <TableCell className="whitespace-nowrap">
+                      {s.is_open ? (
+                        <Badge tone="info">مفتوحة</Badge>
+                      ) : (
+                        <span className="inline-flex items-center gap-2">
+                          {fmtDateTime(s.closed_at)}
+                          {s.is_force_closed && <Badge tone="warning">إغلاق إجباري</Badge>}
+                        </span>
+                      )}
+                    </TableCell>
+                    <TableCell>{money.format(s.sales_total)}</TableCell>
+                    <TableCell
+                      className={cn(s.refunds_total > 0 ? 'text-danger' : 'text-muted-foreground')}
+                    >
+                      {money.format(s.refunds_total)}
+                    </TableCell>
+                    <TableCell>{money.format(s.expected_cash)}</TableCell>
+                    <TableCell>
+                      {s.actual_cash === null ? (
+                        <span className="text-muted-foreground">—</span>
+                      ) : (
+                        money.format(s.actual_cash)
+                      )}
+                    </TableCell>
+                    <TableCell>
+                      <DiffValue value={s.difference} />
+                    </TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+          </div>
+          <Pagination page={page} pageSize={PAGE_SIZE} total={r.total} onPageChange={setPage} />
+        </>
+      )}
+
+      <ShiftDetailDialog
+        tenantId={tenantId}
+        shiftId={shiftId}
+        onClose={() => setShiftId(undefined)}
+      />
+    </div>
+  )
+}
+
+function duration(fromIso: string, toIso: string | null): string {
+  const end = toIso ? new Date(toIso) : new Date()
+  const mins = Math.max(0, Math.round((end.getTime() - new Date(fromIso).getTime()) / 60000))
+  const h = Math.floor(mins / 60)
+  const m = mins % 60
+  return h > 0 ? `${toArabicDigits(h)} س ${toArabicDigits(m)} د` : `${toArabicDigits(m)} د`
+}
+
+function DetailRow({
+  label,
+  value,
+  strong,
+}: {
+  label: string
+  value: ReactNode
+  strong?: boolean
+}) {
+  return (
+    <div className={cn('flex items-center justify-between py-1 text-sm', strong && 'font-semibold')}>
+      <span className={cn(!strong && 'text-muted-foreground')}>{label}</span>
+      <span>{value}</span>
+    </div>
+  )
+}
+
+/** The online Z report (X while the shift is still open). */
+function ShiftDetailDialog({
+  tenantId,
+  shiftId,
+  onClose,
+}: {
+  tenantId?: string
+  shiftId?: string
+  onClose: () => void
+}) {
+  const query = useReportShiftDetail(tenantId, shiftId)
+  const d = query.data?.data
+
+  return (
+    <Dialog open={!!shiftId} onOpenChange={(open) => !open && onClose()}>
+      <DialogContent className="max-h-[90vh] max-w-2xl overflow-y-auto">
+        <DialogHeader>
+          <DialogTitle className="flex flex-wrap items-center gap-2">
+            {d ? `وردية #${toArabicDigits(d.num)}` : 'الوردية'}
+            {d?.is_open && <Badge tone="info">مفتوحة · تقرير X</Badge>}
+            {d && !d.is_open && <Badge tone="muted">مغلقة · تقرير Z</Badge>}
+            {d?.is_force_closed && <Badge tone="warning">إغلاق إجباري</Badge>}
+          </DialogTitle>
+          {d && (
+            <DialogDescription>
+              {d.branch_name || '—'} · {d.opened_by} · {fmtDateTime(d.opened_at)}
+              {d.closed_at && ` ← ${fmtDateTime(d.closed_at)}`} · {duration(d.opened_at, d.closed_at)}
+            </DialogDescription>
+          )}
+        </DialogHeader>
+
+        {query.error ? (
+          <ErrorState
+            message={
+              query.error instanceof ApiError && query.error.status === 404
+                ? 'لم يتم العثور على هذه الوردية.'
+                : 'تعذّر تحميل تقرير الوردية الآن.'
+            }
+            onRetry={() => void query.refetch()}
+          />
+        ) : !d ? (
+          <LoadingState rows={4} />
+        ) : (
+          <div className="space-y-4">
+            <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+              <KpiTile label="المبيعات" value={money.format(d.sales_total)} />
+              <KpiTile label="عدد الفواتير" value={toArabicDigits(d.sales_count)} />
+              <KpiTile
+                label="المرتجعات"
+                value={`${money.format(d.refunds_total)} (${toArabicDigits(d.refunds_count)})`}
+                tone={d.refunds_total > 0 ? 'danger' : undefined}
+              />
+              <KpiTile label="الصافي" value={money.format(d.sales_total - d.refunds_total)} />
+            </div>
+
+            <Card className="p-4">
+              <div className="mb-1 text-xs font-medium uppercase tracking-wide text-muted-foreground">
+                طرق الدفع
+              </div>
+              <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+                <TenderCell label="نقدًا" value={d.tender.cash} total={d.sales_total} />
+                <TenderCell label="بنك / بطاقة" value={d.tender.bank} total={d.sales_total} />
+                <TenderCell label="محفظة" value={d.tender.wallet} total={d.sales_total} />
+                <TenderCell label="آجل" value={d.tender.credit} total={d.sales_total} />
+              </div>
+            </Card>
+
+            <div className="grid gap-3 sm:grid-cols-2">
+              <Card className="p-4">
+                <div className="mb-2 text-xs font-medium uppercase tracking-wide text-muted-foreground">
+                  حركة الدرج
+                </div>
+                <DetailRow label="وارد نقدي" value={money.format(d.cash_in)} />
+                <DetailRow label="منصرف نقدي" value={money.format(d.cash_out)} />
+                <DetailRow label="مصروفات" value={money.format(d.expenses)} />
+                <DetailRow label="إيرادات أخرى" value={money.format(d.revenue)} />
+              </Card>
+              <Card className="p-4">
+                <div className="mb-2 text-xs font-medium uppercase tracking-wide text-muted-foreground">
+                  مطابقة النقدية
+                </div>
+                <DetailRow label="رصيد الافتتاح" value={money.format(d.opening_cash)} />
+                <DetailRow
+                  label={d.is_open ? 'المتوقع حتى الآن' : 'المتوقع'}
+                  value={money.format(d.expected_cash)}
+                />
+                <DetailRow
+                  label="الفعلي (المعدود)"
+                  value={d.actual_cash === null ? '—' : money.format(d.actual_cash)}
+                />
+                <div className="mt-1 border-t border-border pt-1">
+                  <DetailRow label="الفرق" value={<DiffValue value={d.difference} />} strong />
+                </div>
+              </Card>
+            </div>
+
+            <div className="flex flex-wrap gap-x-6 gap-y-1 text-sm text-muted-foreground">
+              <span>العملاء: {toArabicDigits(d.customers_served)}</span>
+              <span>تسويات المخزون: {toArabicDigits(d.inventory_adjustments)}</span>
+              <span className="dir-ltr">{d.workstation_id}</span>
+              {d.closed_by && d.closed_by !== d.opened_by && <span>أغلقها: {d.closed_by}</span>}
+            </div>
+
+            {(d.open_note || d.close_note) && (
+              <Card className="space-y-1 p-4 text-sm">
+                {d.open_note && <DetailRow label="ملاحظة الفتح" value={d.open_note} />}
+                {d.close_note && <DetailRow label="ملاحظة الإغلاق" value={d.close_note} />}
+              </Card>
+            )}
+          </div>
+        )}
+      </DialogContent>
+    </Dialog>
   )
 }
 

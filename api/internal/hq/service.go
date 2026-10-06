@@ -1768,6 +1768,176 @@ func (s *Service) ReportStaff(ctx context.Context, accountID, tenantID string, p
 	return &StaffReportEnvelope{Data: resp, Source: source, AsOf: asOf}, nil
 }
 
+// ShiftReportRow is one cashier shift opened in the period. A closed shift
+// carries its stored count (actual_cash/difference); an open one has none
+// yet (null) and expected_cash is live.
+type ShiftReportRow struct {
+	ID             string     `json:"id"`
+	Num            int        `json:"num"`
+	BranchID       string     `json:"branch_id"`
+	WorkstationID  string     `json:"workstation_id"`
+	IsOpen         bool       `json:"is_open"`
+	IsForceClosed  bool       `json:"is_force_closed"`
+	OpenedByUserID string     `json:"opened_by_user_id"`
+	OpenedBy       string     `json:"opened_by"`
+	OpenedAt       time.Time  `json:"opened_at"`
+	ClosedBy       *string    `json:"closed_by"`
+	ClosedAt       *time.Time `json:"closed_at"`
+	OpeningCash    float64    `json:"opening_cash"`
+	SalesTotal     float64    `json:"sales_total"`
+	SalesCount     int        `json:"sales_count"`
+	RefundsTotal   float64    `json:"refunds_total"`
+	RefundsCount   int        `json:"refunds_count"`
+	ExpectedCash   float64    `json:"expected_cash"`
+	ActualCash     *float64   `json:"actual_cash"`
+	Difference     *float64   `json:"difference"`
+}
+
+// ShiftsReportSummary totals every shift matching the filters, not just the
+// page. Over/short figures cover closed shifts only.
+type ShiftsReportSummary struct {
+	ShiftCount       int     `json:"shift_count"`
+	OpenCount        int     `json:"open_count"`
+	ForceClosedCount int     `json:"force_closed_count"`
+	SalesTotal       float64 `json:"sales_total"`
+	RefundsTotal     float64 `json:"refunds_total"`
+	NetDifference    float64 `json:"net_difference"`
+	ShortCount       int     `json:"short_count"`
+	ShortTotal       float64 `json:"short_total"`
+	OverCount        int     `json:"over_count"`
+	OverTotal        float64 `json:"over_total"`
+}
+
+// ShiftCashier is someone who opened a shift in the period (the cashier filter).
+type ShiftCashier struct {
+	UserID string `json:"user_id"`
+	Name   string `json:"name"`
+}
+
+// ShiftsReportPage is the paged shift report payload.
+type ShiftsReportPage struct {
+	Summary  ShiftsReportSummary `json:"summary"`
+	Cashiers []ShiftCashier      `json:"cashiers"`
+	Total    int                 `json:"total"`
+	Page     int                 `json:"page"`
+	PageSize int                 `json:"page_size"`
+	Items    []ShiftReportRow    `json:"items"`
+}
+
+// ShiftsReportEnvelope wraps a page of the shift report in the freshness
+// envelope.
+type ShiftsReportEnvelope struct {
+	Data   ShiftsReportPage `json:"data"`
+	Source string           `json:"source"`
+	AsOf   *time.Time       `json:"as_of,omitempty"`
+}
+
+// ReportShifts returns one page of the period shift report. params carries
+// from/to/branch_id/status/user_id/page/page_size straight through to the
+// gateway.
+func (s *Service) ReportShifts(ctx context.Context, accountID, tenantID string, params url.Values) (*ShiftsReportEnvelope, error) {
+	t, shard, scope, err := s.resolveGateway(ctx, accountID, tenantID)
+	if err != nil {
+		return nil, err
+	}
+	params, err = applyScope(params, scope)
+	if err != nil {
+		return nil, err
+	}
+	u := shard.GatewayURL + "/hq/reports/shifts"
+	if enc := params.Encode(); enc != "" {
+		u += "?" + enc
+	}
+	var resp ShiftsReportPage
+	if err := s.getJSON(ctx, u, t.DBName, &resp); err != nil {
+		return nil, err
+	}
+	if resp.Items == nil {
+		resp.Items = []ShiftReportRow{}
+	}
+	if resp.Cashiers == nil {
+		resp.Cashiers = []ShiftCashier{}
+	}
+	source, asOf := s.tenantFreshness(ctx, tenantID)
+	return &ShiftsReportEnvelope{Data: resp, Source: source, AsOf: asOf}, nil
+}
+
+// ShiftTender is how a shift's sales were tendered (credit = on-account).
+type ShiftTender struct {
+	Cash   float64 `json:"cash"`
+	Bank   float64 `json:"bank"`
+	Wallet float64 `json:"wallet"`
+	Credit float64 `json:"credit"`
+}
+
+// ShiftDetail is the online Z report (X while open) for one shift.
+type ShiftDetail struct {
+	ID                   string      `json:"id"`
+	Num                  int         `json:"num"`
+	BranchID             string      `json:"branch_id"`
+	BranchName           string      `json:"branch_name"`
+	WorkstationID        string      `json:"workstation_id"`
+	IsOpen               bool        `json:"is_open"`
+	IsForceClosed        bool        `json:"is_force_closed"`
+	OpenedBy             string      `json:"opened_by"`
+	OpenedAt             time.Time   `json:"opened_at"`
+	OpenNote             *string     `json:"open_note"`
+	ClosedBy             *string     `json:"closed_by"`
+	ClosedAt             *time.Time  `json:"closed_at"`
+	CloseNote            *string     `json:"close_note"`
+	SalesCount           int         `json:"sales_count"`
+	SalesTotal           float64     `json:"sales_total"`
+	RefundsCount         int         `json:"refunds_count"`
+	RefundsTotal         float64     `json:"refunds_total"`
+	Tender               ShiftTender `json:"tender"`
+	CashIn               float64     `json:"cash_in"`
+	CashOut              float64     `json:"cash_out"`
+	Expenses             float64     `json:"expenses"`
+	Revenue              float64     `json:"revenue"`
+	OpeningCash          float64     `json:"opening_cash"`
+	ExpectedCash         float64     `json:"expected_cash"`
+	ActualCash           *float64    `json:"actual_cash"`
+	Difference           *float64    `json:"difference"`
+	CustomersServed      int         `json:"customers_served"`
+	InventoryAdjustments int         `json:"inventory_adjustments"`
+}
+
+// ShiftDetailEnvelope wraps one shift's detail in the freshness envelope.
+type ShiftDetailEnvelope struct {
+	Data   ShiftDetail `json:"data"`
+	Source string      `json:"source"`
+	AsOf   *time.Time  `json:"as_of,omitempty"`
+}
+
+// ReportShiftDetail fetches one shift's Z report. Returns ErrNotFound when
+// the gateway has no such shift, or it belongs to a branch outside a scoped
+// member's allowlist.
+func (s *Service) ReportShiftDetail(ctx context.Context, accountID, tenantID, shiftID string) (*ShiftDetailEnvelope, error) {
+	t, shard, scope, err := s.resolveGateway(ctx, accountID, tenantID)
+	if err != nil {
+		return nil, err
+	}
+	var d ShiftDetail
+	if err := s.getJSON(ctx, shard.GatewayURL+"/hq/reports/shifts/"+url.PathEscape(shiftID), t.DBName, &d); err != nil {
+		return nil, err
+	}
+	if err := hideOutOfScopeRow(scope, d.BranchID); err != nil {
+		return nil, err
+	}
+	branches, err := s.store.BranchesByTenant(ctx, tenantID)
+	if err != nil {
+		return nil, err
+	}
+	for i := range branches {
+		if branches[i].ID == d.BranchID {
+			d.BranchName = branches[i].Name
+			break
+		}
+	}
+	source, asOf := s.tenantFreshness(ctx, tenantID)
+	return &ShiftDetailEnvelope{Data: d, Source: source, AsOf: asOf}, nil
+}
+
 // --- Customers (slice 7): read-mostly, branch-specific — each customer
 // belongs to exactly one branch (Customers is a Tier-B, own-BranchId table),
 // so every row is decorated with that branch's registry name/health, the

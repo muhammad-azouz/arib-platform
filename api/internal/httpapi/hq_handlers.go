@@ -457,6 +457,39 @@ func (s *Server) handleHqReportStaff(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, env)
 }
 
+func (s *Server) handleHqReportShifts(w http.ResponseWriter, r *http.Request) {
+	c := claimsFrom(r.Context())
+	if !validReportPeriod(w, r) {
+		return
+	}
+	if status := r.URL.Query().Get("status"); status != "" && status != "open" && status != "closed" {
+		writeErr(w, http.StatusBadRequest, "invalid status")
+		return
+	}
+	params := url.Values{}
+	for _, k := range []string{"from", "to", "branch_id", "status", "user_id", "page", "page_size"} {
+		if v := r.URL.Query().Get(k); v != "" {
+			params.Set(k, v)
+		}
+	}
+	env, err := s.hq.ReportShifts(r.Context(), c.Subject, chi.URLParam(r, "id"), params)
+	if err != nil {
+		s.writeHqError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, env)
+}
+
+func (s *Server) handleHqReportShiftDetail(w http.ResponseWriter, r *http.Request) {
+	c := claimsFrom(r.Context())
+	env, err := s.hq.ReportShiftDetail(r.Context(), c.Subject, chi.URLParam(r, "id"), chi.URLParam(r, "shiftId"))
+	if err != nil {
+		s.writeHqError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, env)
+}
+
 // handleTenantEvents streams tenant-scoped events over SSE. Registered
 // outside the API's 30s timeout group (like /updates/*) — the stream lives
 // for the tab's lifetime, kept open through proxies by a heartbeat comment.
