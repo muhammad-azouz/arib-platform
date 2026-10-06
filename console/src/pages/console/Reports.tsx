@@ -1,4 +1,4 @@
-import { useState, type ReactNode } from 'react'
+import { Fragment, useState, type ReactNode } from 'react'
 import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom'
 import { format } from 'date-fns'
 import { ar } from 'date-fns/locale'
@@ -11,21 +11,36 @@ import {
   useReportProducts,
   useReportSales,
   useReportShiftDetail,
+  useReportShiftInvoice,
+  useReportShiftTransactions,
   useReportShifts,
   useReportStaff,
 } from '@/lib/hooks'
 import { fmtDateTime, toArabicDigits } from '@/lib/format'
 import { cn } from '@/lib/utils'
-import type { ReportSort, SalesDay, ShiftStatusFilter } from '@/lib/types'
+import type {
+  ReportSort,
+  SalesDay,
+  ShiftStatusFilter,
+  ShiftTransaction,
+  ShiftTransactionKind,
+} from '@/lib/types'
 import { Freshness } from '@/components/Freshness'
 import { HealthDot } from '@/components/HealthDot'
 import { PageHeader } from '@/components/PageHeader'
 import { Pagination } from '@/components/Pagination'
 import { PeriodPicker } from '@/components/PeriodPicker'
 import { LoadingState, EmptyState, ErrorState } from '@/components/States'
-import { ArrowLeading, InventoryIcon, ReportsIcon, UsersIcon } from '@/components/icon'
+import {
+  ArrowLeading,
+  InventoryIcon,
+  ReportsIcon,
+  SearchIcon,
+  UsersIcon,
+} from '@/components/icon'
 import { Badge } from '@/components/ui/badge'
 import { Card } from '@/components/ui/card'
+import { Input } from '@/components/ui/input'
 import {
   Dialog,
   DialogContent,
@@ -1005,10 +1020,21 @@ function ShiftDetailDialog({
 }) {
   const query = useReportShiftDetail(tenantId, shiftId)
   const d = query.data?.data
+  const [tab, setTab] = useState<'summary' | 'transactions'>('summary')
+  const [lastShiftId, setLastShiftId] = useState(shiftId)
+  if (shiftId !== lastShiftId) {
+    setLastShiftId(shiftId)
+    setTab('summary')
+  }
 
   return (
     <Dialog open={!!shiftId} onOpenChange={(open) => !open && onClose()}>
-      <DialogContent className="max-h-[90vh] max-w-2xl overflow-y-auto">
+      <DialogContent
+        className={cn(
+          'max-h-[90vh] overflow-y-auto',
+          tab === 'transactions' ? 'max-w-5xl' : 'max-w-2xl',
+        )}
+      >
         <DialogHeader>
           <DialogTitle className="flex flex-wrap items-center gap-2">
             {d ? `وردية #${toArabicDigits(d.num)}` : 'الوردية'}
@@ -1024,7 +1050,32 @@ function ShiftDetailDialog({
           )}
         </DialogHeader>
 
-        {query.error ? (
+        <div className="inline-flex w-fit rounded-lg border border-border bg-card/50 p-1">
+          {(
+            [
+              { key: 'summary', label: d?.is_open ? 'الملخص (X)' : 'الملخص (Z)' },
+              { key: 'transactions', label: 'الحركات' },
+            ] as const
+          ).map((t) => (
+            <button
+              key={t.key}
+              type="button"
+              onClick={() => setTab(t.key)}
+              className={cn(
+                'rounded-md px-3 py-1.5 text-sm font-medium transition-colors',
+                tab === t.key
+                  ? 'bg-accent text-primary'
+                  : 'text-muted-foreground hover:text-foreground',
+              )}
+            >
+              {t.label}
+            </button>
+          ))}
+        </div>
+
+        {tab === 'transactions' ? (
+          <ShiftTransactionsTab tenantId={tenantId} shiftId={shiftId} />
+        ) : query.error ? (
           <ErrorState
             message={
               query.error instanceof ApiError && query.error.status === 404
@@ -1106,6 +1157,374 @@ function ShiftDetailDialog({
         )}
       </DialogContent>
     </Dialog>
+  )
+}
+
+// --- حركات الوردية: every bill, return and voucher, expandable to its lines ---
+
+type TxFilter = 'all' | 'sale' | 'return' | 'voucher'
+const TX_FILTERS: { key: TxFilter; label: string }[] = [
+  { key: 'all', label: 'الكل' },
+  { key: 'sale', label: 'مبيعات' },
+  { key: 'return', label: 'مرتجعات' },
+  { key: 'voucher', label: 'مصروفات وإيرادات' },
+]
+const TX_KIND: Record<
+  ShiftTransactionKind,
+  { label: string; tone: 'success' | 'danger' | 'warning' | 'info' }
+> = {
+  sale: { label: 'بيع', tone: 'success' },
+  return: { label: 'مرتجع', tone: 'danger' },
+  expense: { label: 'مصروف', tone: 'warning' },
+  revenue: { label: 'إيراد', tone: 'info' },
+}
+const TX_PAGE_SIZE = 50
+
+/** Money leaving the drawer (returns, expenses) is shown negative. */
+function txSign(t: ShiftTransaction): 1 | -1 {
+  return t.kind === 'return' || t.kind === 'expense' ? -1 : 1
+}
+
+function payLabel(p: { cash: number; bank: number; wallet: number; credit: number }): string {
+  const parts = [
+    p.cash !== 0 && 'نقدي',
+    p.bank !== 0 && 'بنك',
+    p.wallet !== 0 && 'محفظة',
+    p.credit !== 0 && 'آجل',
+  ].filter(Boolean)
+  return parts.length ? parts.join(' + ') : '—'
+}
+
+function SignedMoney({ value }: { value: number }) {
+  return <span className={cn(value < 0 && 'text-danger')}>{money.format(value)}</span>
+}
+
+function ShiftTransactionsTab({ tenantId, shiftId }: { tenantId?: string; shiftId?: string }) {
+  const query = useReportShiftTransactions(tenantId, shiftId)
+  const [filter, setFilter] = useState<TxFilter>('all')
+  const [creditOnly, setCreditOnly] = useState(false)
+  const [search, setSearch] = useState('')
+  const [page, setPage] = useState(1)
+  const [openId, setOpenId] = useState<string | undefined>(undefined)
+
+  const filterKey = `${filter} ${creditOnly} ${search}`
+  const [lastFilterKey, setLastFilterKey] = useState(filterKey)
+  if (filterKey !== lastFilterKey) {
+    setLastFilterKey(filterKey)
+    setPage(1)
+  }
+
+  if (query.error) {
+    return (
+      <ErrorState
+        message={
+          query.error instanceof ApiError && query.error.status === 404
+            ? 'لم يتم العثور على هذه الوردية.'
+            : 'تعذّر تحميل حركات الوردية الآن.'
+        }
+        onRetry={() => void query.refetch()}
+      />
+    )
+  }
+  const all = query.data?.data.items
+  if (!all) return <LoadingState rows={5} />
+
+  const sales = all.filter((t) => t.kind === 'sale')
+  const returns = all.filter((t) => t.kind === 'return')
+  const expenses = all.filter((t) => t.kind === 'expense')
+  const revenue = all.filter((t) => t.kind === 'revenue')
+  const sum = (rows: ShiftTransaction[], f: (t: ShiftTransaction) => number) =>
+    rows.reduce((acc, t) => acc + f(t), 0)
+
+  const q = search.trim().toLowerCase()
+  const rows = all.filter((t) => {
+    const isVoucher = t.kind === 'expense' || t.kind === 'revenue'
+    if (filter === 'voucher' ? !isVoucher : filter !== 'all' && t.kind !== filter) return false
+    if (creditOnly && t.credit === 0) return false
+    if (!q) return true
+    return (
+      t.num.toLowerCase().includes(q) ||
+      (t.daily_num !== null && String(t.daily_num) === q) ||
+      (t.customer ?? '').toLowerCase().includes(q)
+    )
+  })
+  const pageRows = rows.slice((page - 1) * TX_PAGE_SIZE, page * TX_PAGE_SIZE)
+
+  return (
+    <div className="space-y-4">
+      <div className="grid grid-cols-2 gap-3 lg:grid-cols-5">
+        <KpiTile
+          label="فواتير البيع"
+          value={`${toArabicDigits(sales.length)} · ${money.format(sum(sales, (t) => t.total))}`}
+        />
+        <KpiTile
+          label="المرتجعات"
+          value={`${toArabicDigits(returns.length)} · ${money.format(-sum(returns, (t) => t.total))}`}
+          tone={returns.length > 0 ? 'danger' : undefined}
+        />
+        <KpiTile
+          label="مصروفات / إيرادات"
+          value={`${money.format(-sum(expenses, (t) => t.total))} / ${money.format(sum(revenue, (t) => t.total))}`}
+        />
+        <KpiTile
+          label="نقدي / بنك / محفظة"
+          value={`${money.format(sum(sales, (t) => t.cash))} / ${money.format(sum(sales, (t) => t.bank))} / ${money.format(sum(sales, (t) => t.wallet))}`}
+        />
+        <KpiTile label="آجل" value={money.format(sum(sales, (t) => t.credit))} />
+      </div>
+
+      <div className="flex flex-wrap items-center gap-2">
+        {TX_FILTERS.map((f) => (
+          <button
+            key={f.key}
+            type="button"
+            onClick={() => setFilter(f.key)}
+            className={cn(
+              'rounded-full border px-3 py-1 text-sm transition-colors',
+              filter === f.key
+                ? 'border-primary bg-primary text-primary-foreground'
+                : 'border-border text-muted-foreground hover:text-foreground',
+            )}
+          >
+            {f.label}
+            {f.key === 'all' && ` (${toArabicDigits(all.length)})`}
+          </button>
+        ))}
+        <button
+          type="button"
+          onClick={() => setCreditOnly((v) => !v)}
+          className={cn(
+            'rounded-full border px-3 py-1 text-sm transition-colors',
+            creditOnly
+              ? 'border-primary bg-primary text-primary-foreground'
+              : 'border-border text-muted-foreground hover:text-foreground',
+          )}
+        >
+          آجل فقط
+        </button>
+        <div className="relative ms-auto w-full sm:w-60">
+          <SearchIcon className="pointer-events-none absolute start-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
+          <Input
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            placeholder="رقم الفاتورة أو العميل"
+            className="ps-9"
+          />
+        </div>
+      </div>
+
+      {all.length === 0 ? (
+        <EmptyState icon={ReportsIcon} title="لا حركات في هذه الوردية" />
+      ) : rows.length === 0 ? (
+        <p className="py-6 text-center text-sm text-muted-foreground">لا نتائج لهذا البحث.</p>
+      ) : (
+        <>
+          <div className="rounded-xl border border-border">
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead className="w-8" />
+                  <TableHead>الوقت</TableHead>
+                  <TableHead>النوع</TableHead>
+                  <TableHead>الرقم</TableHead>
+                  <TableHead>العميل / البند</TableHead>
+                  <TableHead>أصناف</TableHead>
+                  <TableHead>الدفع</TableHead>
+                  <TableHead>الإجمالي</TableHead>
+                  <TableHead>المدفوع</TableHead>
+                  <TableHead>المتبقي</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {pageRows.map((t) => {
+                  const sign = txSign(t)
+                  const isOpen = openId === t.id
+                  const toggle = () => setOpenId(isOpen ? undefined : t.id)
+                  return (
+                    <Fragment key={t.id}>
+                      <TableRow
+                        tabIndex={0}
+                        onClick={toggle}
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter') toggle()
+                        }}
+                        className={cn('cursor-pointer', isOpen && 'bg-accent/40')}
+                      >
+                        <TableCell>
+                          <ArrowLeading
+                            className={cn(
+                              'size-4 text-muted-foreground transition-transform',
+                              isOpen && '-rotate-90',
+                            )}
+                          />
+                        </TableCell>
+                        <TableCell className="whitespace-nowrap">
+                          {format(new Date(t.at), 'p', { locale: ar })}
+                        </TableCell>
+                        <TableCell>
+                          <Badge tone={TX_KIND[t.kind].tone}>{TX_KIND[t.kind].label}</Badge>
+                        </TableCell>
+                        <TableCell className="whitespace-nowrap font-medium">
+                          {t.daily_num !== null ? `#${toArabicDigits(t.daily_num)}` : t.num}
+                          {t.original_num && (
+                            <span className="ms-1 text-xs text-muted-foreground">
+                              ← فاتورة {t.original_num}
+                            </span>
+                          )}
+                        </TableCell>
+                        <TableCell className={cn(!t.customer && 'text-muted-foreground')}>
+                          {t.customer ?? 'نقدي'}
+                        </TableCell>
+                        <TableCell>
+                          {t.item_count > 0 ? toArabicDigits(t.item_count) : '—'}
+                        </TableCell>
+                        <TableCell className="whitespace-nowrap">{payLabel(t)}</TableCell>
+                        <TableCell>
+                          <SignedMoney value={sign * t.total} />
+                        </TableCell>
+                        <TableCell>
+                          <SignedMoney value={sign * (t.total - t.credit)} />
+                        </TableCell>
+                        <TableCell>
+                          {t.credit === 0 ? (
+                            <span className="text-muted-foreground">—</span>
+                          ) : (
+                            <span className="text-danger">{money.format(t.credit)}</span>
+                          )}
+                        </TableCell>
+                      </TableRow>
+                      {isOpen && (
+                        <TableRow className="hover:bg-transparent">
+                          <TableCell colSpan={10} className="bg-muted/30 p-3">
+                            {t.kind === 'sale' || t.kind === 'return' ? (
+                              <ShiftInvoicePanel tenantId={tenantId} shiftId={shiftId} invoiceId={t.id} />
+                            ) : (
+                              <div className="space-y-1 text-sm">
+                                <DetailRow label="البند" value={t.customer ?? '—'} />
+                                <DetailRow label="طريقة الدفع" value={payLabel(t)} />
+                                <DetailRow label="بواسطة" value={t.user} />
+                                {t.note && <DetailRow label="ملاحظة" value={t.note} />}
+                              </div>
+                            )}
+                          </TableCell>
+                        </TableRow>
+                      )}
+                    </Fragment>
+                  )
+                })}
+                <TableRow className="bg-muted/30 font-semibold hover:bg-muted/30">
+                  <TableCell />
+                  <TableCell colSpan={6}>
+                    صافي الحركات{rows.length !== all.length && ' (حسب التصفية)'}
+                  </TableCell>
+                  <TableCell>
+                    <SignedMoney value={sum(rows, (t) => txSign(t) * t.total)} />
+                  </TableCell>
+                  <TableCell>
+                    <SignedMoney value={sum(rows, (t) => txSign(t) * (t.total - t.credit))} />
+                  </TableCell>
+                  <TableCell className="text-danger">{money.format(sum(rows, (t) => t.credit))}</TableCell>
+                </TableRow>
+              </TableBody>
+            </Table>
+          </div>
+          <Pagination page={page} pageSize={TX_PAGE_SIZE} total={rows.length} onPageChange={setPage} />
+        </>
+      )}
+    </div>
+  )
+}
+
+/** One bill's lines, totals and payment split, fetched when its row opens. */
+function ShiftInvoicePanel({
+  tenantId,
+  shiftId,
+  invoiceId,
+}: {
+  tenantId?: string
+  shiftId?: string
+  invoiceId: string
+}) {
+  const query = useReportShiftInvoice(tenantId, shiftId, invoiceId)
+  if (query.error) {
+    return (
+      <ErrorState message="تعذّر تحميل تفاصيل الفاتورة." onRetry={() => void query.refetch()} />
+    )
+  }
+  const b = query.data?.data
+  if (!b) return <LoadingState rows={2} />
+
+  return (
+    <div className="grid gap-3 lg:grid-cols-3">
+      <div className="rounded-lg border border-border bg-card lg:col-span-2">
+        <Table>
+          <TableHeader>
+            <TableRow>
+              <TableHead>الصنف</TableHead>
+              <TableHead>الكمية</TableHead>
+              <TableHead>الوحدة</TableHead>
+              <TableHead>السعر</TableHead>
+              <TableHead>الخصم</TableHead>
+              <TableHead>الإجمالي</TableHead>
+            </TableRow>
+          </TableHeader>
+          <TableBody>
+            {b.lines.map((l, i) => (
+              <TableRow key={i}>
+                <TableCell>{l.product}</TableCell>
+                <TableCell>{toArabicDigits(l.qty)}</TableCell>
+                <TableCell>{l.unit}</TableCell>
+                <TableCell>{money.format(l.price)}</TableCell>
+                <TableCell className={cn(l.discount === 0 && 'text-muted-foreground')}>
+                  {l.discount === 0 ? '—' : money.format(l.discount)}
+                </TableCell>
+                <TableCell>{money.format(l.total)}</TableCell>
+              </TableRow>
+            ))}
+          </TableBody>
+        </Table>
+      </div>
+      <Card className="p-3">
+        <DetailRow label="إجمالي الأصناف" value={money.format(b.item_total)} />
+        {b.total_discount !== 0 && (
+          <DetailRow
+            label="الخصم"
+            value={<span className="text-danger">-{money.format(b.total_discount)}</span>}
+          />
+        )}
+        {b.bill_tax !== 0 && <DetailRow label="الضريبة" value={money.format(b.bill_tax)} />}
+        {b.total_extra !== 0 && <DetailRow label="إضافات" value={money.format(b.total_extra)} />}
+        <div className="mt-1 border-t border-border pt-1">
+          <DetailRow label="الإجمالي" value={money.format(b.total)} strong />
+        </div>
+        <div className="mt-2 space-y-0.5">
+          {b.cash !== 0 && <DetailRow label="نقدي" value={money.format(b.cash)} />}
+          {b.bank !== 0 && (
+            <DetailRow
+              label={b.bank_name ? `بنك (${b.bank_name})` : 'بنك'}
+              value={money.format(b.bank)}
+            />
+          )}
+          {b.wallet !== 0 && (
+            <DetailRow
+              label={b.wallet_name ? `محفظة (${b.wallet_name})` : 'محفظة'}
+              value={money.format(b.wallet)}
+            />
+          )}
+          {b.credit !== 0 && (
+            <DetailRow
+              label="آجل على العميل"
+              value={<span className="text-danger">{money.format(b.credit)}</span>}
+            />
+          )}
+        </div>
+        <div className="mt-2 text-xs text-muted-foreground">
+          {b.kind === 'return' ? 'مرتجع' : 'فاتورة'} {b.num} · {b.user} · {fmtDateTime(b.at)}
+          {b.original_num && ` · من فاتورة ${b.original_num}`}
+        </div>
+        {b.note && <div className="mt-1 text-xs text-muted-foreground">ملاحظة: {b.note}</div>}
+      </Card>
+    </div>
   )
 }
 

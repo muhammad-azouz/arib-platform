@@ -61,6 +61,8 @@ import type {
   SalesReportResponse,
   Session,
   ShiftDetailResponse,
+  ShiftInvoiceResponse,
+  ShiftTransactionsResponse,
   ShiftStatusFilter,
   ShiftsReportResponse,
   StaffReportResponse,
@@ -620,6 +622,16 @@ export const api = {
 
   reportShiftDetail: (tenantId: string, shiftId: string) =>
     request<ShiftDetailResponse>(`/v1/tenants/${tenantId}/hq/reports/shifts/${shiftId}`),
+
+  reportShiftTransactions: (tenantId: string, shiftId: string) =>
+    request<ShiftTransactionsResponse>(
+      `/v1/tenants/${tenantId}/hq/reports/shifts/${shiftId}/transactions`,
+    ),
+
+  reportShiftInvoice: (tenantId: string, shiftId: string, invoiceId: string) =>
+    request<ShiftInvoiceResponse>(
+      `/v1/tenants/${tenantId}/hq/reports/shifts/${shiftId}/invoices/${invoiceId}`,
+    ),
 
   // customers (slice 7): read-mostly, branch-specific — same HQ chain as
   // catalog/inventory/reports. search/branch/group/active/debt/page/pageSize

@@ -102,6 +102,10 @@ export const qk = {
   ) => ['hq-reports', id, 'shifts', params] as const,
   reportShiftDetail: (id: string, shiftId: string) =>
     ['hq-reports', id, 'shift', shiftId] as const,
+  reportShiftTransactions: (id: string, shiftId: string) =>
+    ['hq-reports', id, 'shift', shiftId, 'transactions'] as const,
+  reportShiftInvoice: (id: string, shiftId: string, invoiceId: string) =>
+    ['hq-reports', id, 'shift', shiftId, 'invoice', invoiceId] as const,
   // Shared 'hq-customers' prefix — one SSE invalidation flips list/detail/
   // purchases/ledger/insights together, same pattern as 'hq-inventory'.
   customerGroups: (id: string) => ['hq-customers', id, 'groups'] as const,

@@ -1125,6 +1125,51 @@ func TestReportShiftDetail_DecoratesBranchScopeAndNotFound(t *testing.T) {
 	}
 }
 
+func TestReportShiftTransactionsAndInvoice_ScopeAndEmpty(t *testing.T) {
+	gw := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/hq/reports/shifts/s1/transactions":
+			_, _ = w.Write([]byte(`{"shift_id":"s1","branch_id":"b1","items":[{"kind":"sale","id":"i1","at":"2026-10-05T07:00:00Z",` +
+				`"num":"S1","daily_num":1,"user":"أحمد","item_count":2,"cash":100,"total":150,"credit":50}]}`))
+		case "/hq/reports/shifts/s2/transactions":
+			_, _ = w.Write([]byte(`{"shift_id":"s2","branch_id":"b2","items":null}`))
+		case "/hq/reports/shifts/s1/invoices/i1":
+			_, _ = w.Write([]byte(`{"id":"i1","branch_id":"b1","kind":"sale","num":"S1","at":"2026-10-05T07:00:00Z","total":150,"lines":null}`))
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer gw.Close()
+
+	fs := testStore(gw.URL)
+	s := New(fs, &fakeTokens{}, nil)
+
+	env, err := s.ReportShiftTransactions(context.Background(), "acc_owner", "tnt_1", "s1")
+	if err != nil {
+		t.Fatalf("transactions: %v", err)
+	}
+	if len(env.Data.Items) != 1 || env.Data.Items[0].Credit != 50 || *env.Data.Items[0].DailyNum != 1 {
+		t.Fatalf("transactions wrong: %+v", env.Data)
+	}
+	empty, err := s.ReportShiftTransactions(context.Background(), "acc_owner", "tnt_1", "s2")
+	if err != nil || empty.Data.Items == nil {
+		t.Fatalf("empty items must be [], got %+v / %v", empty, err)
+	}
+	inv, err := s.ReportShiftInvoice(context.Background(), "acc_owner", "tnt_1", "s1", "i1")
+	if err != nil || inv.Data.Lines == nil || inv.Data.Total != 150 {
+		t.Fatalf("invoice wrong: %+v / %v", inv, err)
+	}
+	if _, err := s.ReportShiftInvoice(context.Background(), "acc_owner", "tnt_1", "s1", "nope"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("expected ErrNotFound, got %v", err)
+	}
+
+	ctx := scopedCtx(fs, []string{"b1"})
+	if _, err := s.ReportShiftTransactions(ctx, fs.tenant.AccountID, fs.tenant.ID, "s2"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("expected ErrNotFound for an out-of-allowlist shift, got %v", err)
+	}
+}
+
 func TestReportSales_Ownership(t *testing.T) {
 	s := New(testStore("http://127.0.0.1:1"), &fakeTokens{}, nil)
 	if _, err := s.ReportSales(context.Background(), "acc_intruder", "tnt_1", url.Values{}); !errors.Is(err, ErrForbidden) {

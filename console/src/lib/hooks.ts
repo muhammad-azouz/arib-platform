@@ -573,6 +573,29 @@ export function useReportShiftDetail(tenantId: string | undefined, shiftId: stri
   })
 }
 
+/** Every bill and voucher of one shift; idle until the transactions tab opens. */
+export function useReportShiftTransactions(tenantId: string | undefined, shiftId: string | undefined) {
+  return useQuery({
+    queryKey: qk.reportShiftTransactions(tenantId ?? '', shiftId ?? ''),
+    queryFn: () => api.reportShiftTransactions(tenantId as string, shiftId as string),
+    enabled: !!tenantId && !!shiftId,
+  })
+}
+
+/** One bill's lines and payment split; idle until its row is expanded. */
+export function useReportShiftInvoice(
+  tenantId: string | undefined,
+  shiftId: string | undefined,
+  invoiceId: string | undefined,
+) {
+  return useQuery({
+    queryKey: qk.reportShiftInvoice(tenantId ?? '', shiftId ?? '', invoiceId ?? ''),
+    queryFn: () =>
+      api.reportShiftInvoice(tenantId as string, shiftId as string, invoiceId as string),
+    enabled: !!tenantId && !!shiftId && !!invoiceId,
+  })
+}
+
 /** Create a tenant and prime the list cache so the resolver sees it instantly. */
 export function useCreateTenant() {
   const qc = useQueryClient()

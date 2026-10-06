@@ -176,6 +176,8 @@ var permTable = []accessRule{
 	rule(http.MethodGet, "hq/reports/staff", perm.ReportsView),
 	rule(http.MethodGet, "hq/reports/shifts", perm.ReportsView),
 	rule(http.MethodGet, "hq/reports/shifts/{shiftId}", perm.ReportsView),
+	rule(http.MethodGet, "hq/reports/shifts/{shiftId}/transactions", perm.ReportsView),
+	rule(http.MethodGet, "hq/reports/shifts/{shiftId}/invoices/{invoiceId}", perm.ReportsView),
 
 	// Shared by Customers and Suppliers — there is no /hq/supplier-groups,
 	// groups aren't type-scoped in the schema (console/lib/api.ts reuses

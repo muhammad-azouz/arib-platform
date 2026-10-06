@@ -801,6 +801,75 @@ export interface ShiftDetail {
 // GET /v1/tenants/{id}/hq/reports/shifts/{shiftId}
 export type ShiftDetailResponse = CatalogEnvelope<ShiftDetail>
 
+export type ShiftTransactionKind = 'sale' | 'return' | 'expense' | 'revenue'
+
+/** One bill, return or expense/income voucher a shift owns. Amounts are
+ *  positive; kind says which way they move. customer is the account name for
+ *  vouchers. */
+export interface ShiftTransaction {
+  kind: ShiftTransactionKind
+  id: string
+  at: string
+  num: string
+  daily_num: number | null
+  customer: string | null
+  user: string
+  item_count: number
+  cash: number
+  bank: number
+  wallet: number
+  credit: number
+  total: number
+  original_num: string | null
+  note: string | null
+}
+
+export interface ShiftTransactions {
+  shift_id: string
+  branch_id: string
+  items: ShiftTransaction[]
+}
+
+// GET /v1/tenants/{id}/hq/reports/shifts/{shiftId}/transactions
+export type ShiftTransactionsResponse = CatalogEnvelope<ShiftTransactions>
+
+export interface ShiftInvoiceLine {
+  product: string
+  qty: number
+  unit: string
+  price: number
+  discount: number
+  total: number
+}
+
+export interface ShiftInvoice {
+  id: string
+  branch_id: string
+  kind: 'sale' | 'return'
+  num: string
+  daily_num: number | null
+  at: string
+  customer: string | null
+  user: string
+  item_total: number
+  total_discount: number
+  bill_tax: number
+  total_extra: number
+  total: number
+  cash: number
+  bank: number
+  bank_name: string | null
+  wallet: number
+  wallet_name: string | null
+  credit: number
+  original_num: string | null
+  note: string | null
+  lines: ShiftInvoiceLine[]
+}
+
+// GET /v1/tenants/{id}/hq/reports/shifts/{shiftId}/invoices/{invoiceId}
+export type ShiftInvoiceResponse = CatalogEnvelope<ShiftInvoice>
+
 // --- HQ customers (slice 7; hq/service.go's Customer* methods) ---
 //
 // Read-mostly, branch-specific (Customers is a Tier-B, own-BranchId table —

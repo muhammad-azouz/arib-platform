@@ -1938,6 +1938,124 @@ func (s *Service) ReportShiftDetail(ctx context.Context, accountID, tenantID, sh
 	return &ShiftDetailEnvelope{Data: d, Source: source, AsOf: asOf}, nil
 }
 
+// ShiftTransaction is one bill, return or expense/income voucher a shift owns.
+// Kind is "sale", "return", "expense" or "revenue"; amounts are positive.
+type ShiftTransaction struct {
+	Kind        string    `json:"kind"`
+	ID          string    `json:"id"`
+	At          time.Time `json:"at"`
+	Num         string    `json:"num"`
+	DailyNum    *int      `json:"daily_num"`
+	Customer    *string   `json:"customer"`
+	User        string    `json:"user"`
+	ItemCount   int       `json:"item_count"`
+	Cash        float64   `json:"cash"`
+	Bank        float64   `json:"bank"`
+	Wallet      float64   `json:"wallet"`
+	Credit      float64   `json:"credit"`
+	Total       float64   `json:"total"`
+	OriginalNum *string   `json:"original_num"`
+	Note        *string   `json:"note"`
+}
+
+// ShiftTransactions is a shift's transactions, oldest first.
+type ShiftTransactions struct {
+	ShiftID  string             `json:"shift_id"`
+	BranchID string             `json:"branch_id"`
+	Items    []ShiftTransaction `json:"items"`
+}
+
+type ShiftTransactionsEnvelope struct {
+	Data   ShiftTransactions `json:"data"`
+	Source string            `json:"source"`
+	AsOf   *time.Time        `json:"as_of,omitempty"`
+}
+
+// ReportShiftTransactions lists one shift's bills and vouchers. Returns
+// ErrNotFound when the shift is missing or outside the caller's branch scope.
+func (s *Service) ReportShiftTransactions(ctx context.Context, accountID, tenantID, shiftID string) (*ShiftTransactionsEnvelope, error) {
+	t, shard, scope, err := s.resolveGateway(ctx, accountID, tenantID)
+	if err != nil {
+		return nil, err
+	}
+	var d ShiftTransactions
+	if err := s.getJSON(ctx, shard.GatewayURL+"/hq/reports/shifts/"+url.PathEscape(shiftID)+"/transactions", t.DBName, &d); err != nil {
+		return nil, err
+	}
+	if err := hideOutOfScopeRow(scope, d.BranchID); err != nil {
+		return nil, err
+	}
+	if d.Items == nil {
+		d.Items = []ShiftTransaction{}
+	}
+	source, asOf := s.tenantFreshness(ctx, tenantID)
+	return &ShiftTransactionsEnvelope{Data: d, Source: source, AsOf: asOf}, nil
+}
+
+// ShiftInvoiceLine is one line of a shift's bill.
+type ShiftInvoiceLine struct {
+	Product  string  `json:"product"`
+	Qty      float64 `json:"qty"`
+	Unit     string  `json:"unit"`
+	Price    float64 `json:"price"`
+	Discount float64 `json:"discount"`
+	Total    float64 `json:"total"`
+}
+
+// ShiftInvoice is one bill of a shift with its lines and payment split.
+type ShiftInvoice struct {
+	ID            string             `json:"id"`
+	BranchID      string             `json:"branch_id"`
+	Kind          string             `json:"kind"`
+	Num           string             `json:"num"`
+	DailyNum      *int               `json:"daily_num"`
+	At            time.Time          `json:"at"`
+	Customer      *string            `json:"customer"`
+	User          string             `json:"user"`
+	ItemTotal     float64            `json:"item_total"`
+	TotalDiscount float64            `json:"total_discount"`
+	BillTax       float64            `json:"bill_tax"`
+	TotalExtra    float64            `json:"total_extra"`
+	Total         float64            `json:"total"`
+	Cash          float64            `json:"cash"`
+	Bank          float64            `json:"bank"`
+	BankName      *string            `json:"bank_name"`
+	Wallet        float64            `json:"wallet"`
+	WalletName    *string            `json:"wallet_name"`
+	Credit        float64            `json:"credit"`
+	OriginalNum   *string            `json:"original_num"`
+	Note          *string            `json:"note"`
+	Lines         []ShiftInvoiceLine `json:"lines"`
+}
+
+type ShiftInvoiceEnvelope struct {
+	Data   ShiftInvoice `json:"data"`
+	Source string       `json:"source"`
+	AsOf   *time.Time   `json:"as_of,omitempty"`
+}
+
+// ReportShiftInvoice fetches one bill of a shift. Returns ErrNotFound when it
+// is missing, belongs to another shift, or is outside the caller's scope.
+func (s *Service) ReportShiftInvoice(ctx context.Context, accountID, tenantID, shiftID, invoiceID string) (*ShiftInvoiceEnvelope, error) {
+	t, shard, scope, err := s.resolveGateway(ctx, accountID, tenantID)
+	if err != nil {
+		return nil, err
+	}
+	var d ShiftInvoice
+	u := shard.GatewayURL + "/hq/reports/shifts/" + url.PathEscape(shiftID) + "/invoices/" + url.PathEscape(invoiceID)
+	if err := s.getJSON(ctx, u, t.DBName, &d); err != nil {
+		return nil, err
+	}
+	if err := hideOutOfScopeRow(scope, d.BranchID); err != nil {
+		return nil, err
+	}
+	if d.Lines == nil {
+		d.Lines = []ShiftInvoiceLine{}
+	}
+	source, asOf := s.tenantFreshness(ctx, tenantID)
+	return &ShiftInvoiceEnvelope{Data: d, Source: source, AsOf: asOf}, nil
+}
+
 // --- Customers (slice 7): read-mostly, branch-specific — each customer
 // belongs to exactly one branch (Customers is a Tier-B, own-BranchId table),
 // so every row is decorated with that branch's registry name/health, the

@@ -490,6 +490,27 @@ func (s *Server) handleHqReportShiftDetail(w http.ResponseWriter, r *http.Reques
 	writeJSON(w, http.StatusOK, env)
 }
 
+func (s *Server) handleHqReportShiftTransactions(w http.ResponseWriter, r *http.Request) {
+	c := claimsFrom(r.Context())
+	env, err := s.hq.ReportShiftTransactions(r.Context(), c.Subject, chi.URLParam(r, "id"), chi.URLParam(r, "shiftId"))
+	if err != nil {
+		s.writeHqError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, env)
+}
+
+func (s *Server) handleHqReportShiftInvoice(w http.ResponseWriter, r *http.Request) {
+	c := claimsFrom(r.Context())
+	env, err := s.hq.ReportShiftInvoice(r.Context(), c.Subject, chi.URLParam(r, "id"),
+		chi.URLParam(r, "shiftId"), chi.URLParam(r, "invoiceId"))
+	if err != nil {
+		s.writeHqError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, env)
+}
+
 // handleTenantEvents streams tenant-scoped events over SSE. Registered
 // outside the API's 30s timeout group (like /updates/*) — the stream lives
 // for the tab's lifetime, kept open through proxies by a heartbeat comment.
