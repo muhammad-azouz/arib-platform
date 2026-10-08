@@ -269,7 +269,10 @@ func (s *Server) handleHqInventoryAttention(w http.ResponseWriter, r *http.Reque
 func (s *Server) handleHqConflicts(w http.ResponseWriter, r *http.Request) {
 	c := claimsFrom(r.Context())
 	params := url.Values{}
-	for _, k := range []string{"page", "page_size", "all"} {
+	// branch_id/type: the Branches card's "parked rows" link narrows the review page to one
+	// branch's ApplyError rows. Not a scope check — conflicts stay visible to any
+	// conflicts.view holder (spec OQ2) — only a view filter, validated again by the gateway.
+	for _, k := range []string{"page", "page_size", "all", "branch_id", "type"} {
 		if v := r.URL.Query().Get(k); v != "" {
 			params.Set(k, v)
 		}
