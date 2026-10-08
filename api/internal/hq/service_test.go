@@ -2404,3 +2404,73 @@ func TestConflicts_NotBranchFiltered(t *testing.T) {
 		t.Fatalf("expected both branches' conflicts unfiltered, got %d items", len(env.Data.Items))
 	}
 }
+
+// The gateway's parked-row count (unacked ApplyError rows) reaches each BranchView by branch
+// id — including a branch with no snapshot row and no completed sync — and defaults to 0 for
+// branches it omits and for an older gateway that does not send the field at all.
+func TestBranches_PassesThroughUnackedApplyErrors(t *testing.T) {
+	syncedAt := time.Now().UTC().Add(-3 * time.Minute)
+	branches := []model.Branch{
+		{ID: "11111111-1111-1111-1111-111111111111", TenantID: "tnt_1", Name: "وسط البلد", Status: model.BranchActive, LastSyncAt: &syncedAt},
+		{ID: "22222222-2222-2222-2222-222222222222", TenantID: "tnt_1", Name: "المعادي", Status: model.BranchActive},
+		{ID: "33333333-3333-3333-3333-333333333333", TenantID: "tnt_1", Name: "الزمالك", Status: model.BranchActive, LastSyncAt: &syncedAt},
+	}
+	serve := func(body string) *httptest.Server {
+		return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.URL.Path != "/hq/branch-snapshot" {
+				w.WriteHeader(http.StatusNotFound)
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(body))
+		}))
+	}
+	run := func(t *testing.T, gwURL string) map[string]int {
+		st := testStore(gwURL)
+		st.branches = branches
+		res, err := New(st, &fakeTokens{}, nil).Branches(context.Background(), "acc_owner", "tnt_1")
+		if err != nil {
+			t.Fatalf("branches: %v", err)
+		}
+		out := map[string]int{}
+		for _, v := range res.Branches {
+			out[v.ID] = v.UnackedApplyErrors
+		}
+		return out
+	}
+
+	t.Run("counts by branch id, absent means 0", func(t *testing.T) {
+		gw := serve(`{"unacked_apply_errors":{"11111111-1111-1111-1111-111111111111":2,` +
+			`"22222222-2222-2222-2222-222222222222":1},"branches":[{"branch_id":"11111111-1111-1111-1111-111111111111",` +
+			`"today_sales_total":0,"today_sales_count":0,"today_refunds_total":0,"open_shift":null,"open_shift_count":0}]}`)
+		defer gw.Close()
+		got := run(t, gw.URL)
+		if got["11111111-1111-1111-1111-111111111111"] != 2 {
+			t.Fatalf("synced branch: got %d, want 2", got["11111111-1111-1111-1111-111111111111"])
+		}
+		if got["22222222-2222-2222-2222-222222222222"] != 1 {
+			t.Fatalf("never-synced branch with a parked row: got %d, want 1", got["22222222-2222-2222-2222-222222222222"])
+		}
+		if got["33333333-3333-3333-3333-333333333333"] != 0 {
+			t.Fatalf("clean branch: got %d, want 0", got["33333333-3333-3333-3333-333333333333"])
+		}
+	})
+
+	t.Run("older gateway without the field defaults to 0", func(t *testing.T) {
+		gw := serve(`{"branches":[]}`)
+		defer gw.Close()
+		for id, n := range run(t, gw.URL) {
+			if n != 0 {
+				t.Fatalf("branch %s: got %d, want 0", id, n)
+			}
+		}
+	})
+
+	t.Run("gateway down defaults to 0", func(t *testing.T) {
+		for id, n := range run(t, "http://127.0.0.1:1") {
+			if n != 0 {
+				t.Fatalf("branch %s: got %d, want 0", id, n)
+			}
+		}
+	})
+}

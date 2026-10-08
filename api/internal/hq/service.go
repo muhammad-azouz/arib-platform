@@ -342,7 +342,12 @@ type BranchView struct {
 	Status     string     `json:"status"`
 	Health     string     `json:"health"` // ok | lagging | stale | never
 	LastSyncAt *time.Time `json:"last_sync_at,omitempty"`
-	Snapshot   struct {
+	// UnackedApplyErrors counts uploaded rows central parked (sync-gateway ConflictLog
+	// "ApplyError", unacknowledged): they retry every round but wait on someone fixing the
+	// data. 0 when the gateway is down or too old to report it. Independent of Health: a
+	// branch can sync on time and still have a row stuck.
+	UnackedApplyErrors int `json:"unacked_apply_errors"`
+	Snapshot           struct {
 		Data   *BranchSnapshot `json:"data"`
 		Source string          `json:"source"`
 		AsOf   *time.Time      `json:"as_of,omitempty"`
@@ -447,16 +452,23 @@ func (s *Service) Branches(ctx context.Context, accountID, tenantID string) (*Br
 	// Best-effort snapshot: a tenant without sync or a dead gateway means the
 	// branch cards render control-plane data with offline envelopes.
 	snapshots := map[string]*BranchSnapshot{}
+	applyErrors := map[string]int{}
 	gatewayOK := false
 	if t.DBName != "" && t.ShardID != "" {
 		if shard, err := s.store.ShardByID(ctx, t.ShardID); err == nil {
 			var resp struct {
 				Branches []BranchSnapshot `json:"branches"`
+				// Keyed by branch id; absent from older gateways (decodes as nil → all 0).
+				UnackedApplyErrors map[string]int `json:"unacked_apply_errors"`
 			}
 			if err := s.getJSON(ctx, shard.GatewayURL+"/hq/branch-snapshot", t.DBName, &resp); err == nil {
 				gatewayOK = true
 				for i := range resp.Branches {
 					snapshots[resp.Branches[i].BranchID] = &resp.Branches[i]
+				}
+				// The gateway prints .NET Guids lowercase; normalise both sides anyway.
+				for id, n := range resp.UnackedApplyErrors {
+					applyErrors[strings.ToLower(id)] = n
 				}
 			}
 		}
@@ -477,6 +489,7 @@ func (s *Service) Branches(ctx context.Context, accountID, tenantID string) (*Br
 			Health:     health,
 			LastSyncAt: b.LastSyncAt,
 		}
+		v.UnackedApplyErrors = applyErrors[strings.ToLower(b.ID)]
 		v.Snapshot.Data = snapshots[b.ID]
 		v.Snapshot.AsOf = b.LastSyncAt
 		if v.Snapshot.Data == nil && gatewayOK && b.LastSyncAt != nil {
