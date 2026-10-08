@@ -21,6 +21,7 @@ import { RenameBranchDialog } from '@/components/RenameBranchDialog'
 import {
   AddIcon,
   BranchIcon,
+  DangerIcon,
   DeviceIcon,
   EditIcon,
   MenuIcon,
@@ -45,6 +46,7 @@ export function Branches() {
   const { data: hq, isLoading: hqLoading } = useHqBranches(tenantId)
   const update = useUpdateBranch(tenantId ?? '')
   const canManage = useCan(tenantId, PERM.BranchesManage)
+  const canViewConflicts = useCan(tenantId, PERM.ConflictsView)
   // POST /branches is D5c-unscoped ("creates a branch that, by D4, they
   // could not then see") — unlike rename/status-toggle above, which stay on
   // `canManage` alone since PATCH /branches/{id} is D5d's per-branch
@@ -154,9 +156,19 @@ export function Branches() {
                   )}
                 </div>
 
-                {/* freshness */}
+                {/* freshness + parked rows */}
                 {view ? (
-                  <Freshness source={view.snapshot.source} asOf={view.last_sync_at} />
+                  <div className="flex flex-wrap items-center gap-2">
+                    <Freshness source={view.snapshot.source} asOf={view.last_sync_at} />
+                    <ParkedRowsBadge
+                      count={view.unacked_apply_errors ?? 0}
+                      href={
+                        canViewConflicts
+                          ? `/tenants/${tenantId}/conflicts?branch=${b.ID}&type=ApplyError`
+                          : undefined
+                      }
+                    />
+                  </div>
                 ) : hqLoading ? (
                   <Skeleton className="h-6 w-40 rounded-full" />
                 ) : null}
@@ -234,4 +246,24 @@ export function Branches() {
       )}
     </>
   )
+}
+
+// Rows this branch uploaded that central set aside (e.g. a barcode another branch already
+// uses). They retry on every sync and go through once the data is fixed, so this is "needs a
+// person", independent of the health dot: a branch can sync on time and still have one stuck.
+// Links to the Conflicts page narrowed to this branch's rows when the viewer may open it.
+function ParkedRowsBadge({ count, href }: { count: number; href?: string }) {
+  if (count <= 0) return null
+  const label = `${toArabicDigits(count)} ${count === 1 ? 'سجل معلّق' : 'سجلات معلّقة'}`
+  const badge = (
+    <Badge
+      tone="danger"
+      title="سجلات رفضها المركز بسبب تعارض في البيانات وتنتظر التصحيح"
+      className={cn(href && 'transition-colors hover:bg-danger/20')}
+    >
+      <DangerIcon className="size-3.5" />
+      {label}
+    </Badge>
+  )
+  return href ? <Link to={href}>{badge}</Link> : badge
 }

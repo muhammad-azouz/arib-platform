@@ -233,6 +233,9 @@ export interface BranchView {
   status: BranchStatus
   health: BranchHealth
   last_sync_at?: string | null
+  // Uploaded rows central set aside (ConflictLog ApplyError, not yet reviewed): they retry
+  // every sync but wait on someone fixing the data. 0 / absent from an older API.
+  unacked_apply_errors?: number
   snapshot: Envelope<BranchSnapshotData | null>
 }
 

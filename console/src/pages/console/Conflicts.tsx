@@ -3,7 +3,7 @@ import { Link, useParams, useSearchParams } from 'react-router-dom'
 import { toast } from 'sonner'
 import { ApiError } from '@/lib/api'
 import { errorMessage } from '@/lib/auth'
-import { useAckConflicts, useConflicts } from '@/lib/hooks'
+import { useAckConflicts, useBundle, useConflicts } from '@/lib/hooks'
 import { fmtDateTime, relative, toArabicDigits } from '@/lib/format'
 import { cn } from '@/lib/utils'
 import type { ConflictItem } from '@/lib/types'
@@ -11,7 +11,7 @@ import { Freshness } from '@/components/Freshness'
 import { PageHeader } from '@/components/PageHeader'
 import { Pagination } from '@/components/Pagination'
 import { LoadingState, EmptyState, ErrorState } from '@/components/States'
-import { DangerIcon, SuccessIcon } from '@/components/icon'
+import { CloseIcon, DangerIcon, SuccessIcon } from '@/components/icon'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card } from '@/components/ui/card'
@@ -115,7 +115,23 @@ export function Conflicts() {
   const { tenantId } = useParams<'tenantId'>()
   const [searchParams, setSearchParams] = useSearchParams()
   const all = searchParams.get('all') === '1'
+  // Set by the Branches card's "parked rows" badge: one branch's ApplyError rows.
+  const branchFilter = searchParams.get('branch') ?? undefined
+  const typeFilter = searchParams.get('type') ?? undefined
+  const filtered = !!branchFilter || !!typeFilter
+  const { data: bundle } = useBundle(tenantId)
+  const branchName = branchFilter
+    ? bundle?.Branches?.find((b) => b.ID === branchFilter)?.Name
+    : undefined
   const [page, setPage] = useState(1)
+
+  const clearFilter = () => {
+    const next = new URLSearchParams(searchParams)
+    next.delete('branch')
+    next.delete('type')
+    setSearchParams(next, { replace: true })
+    setPage(1)
+  }
 
   const setAll = (value: boolean) => {
     const next = new URLSearchParams(searchParams)
@@ -125,7 +141,13 @@ export function Conflicts() {
     setPage(1)
   }
 
-  const query = useConflicts(tenantId, { page, pageSize: PAGE_SIZE, all })
+  const query = useConflicts(tenantId, {
+    page,
+    pageSize: PAGE_SIZE,
+    all,
+    branchId: branchFilter,
+    type: typeFilter,
+  })
   const ack = useAckConflicts(tenantId ?? '')
 
   const notSubscribed = query.error instanceof ApiError && query.error.status === 402
@@ -133,7 +155,9 @@ export function Conflicts() {
   const data = query.data?.data
   // Pages are newest-first (Id DESC), so the first row of page 1 carries the
   // highest id currently on screen — the cutoff for "mark everything read".
-  const newestId = page === 1 ? data?.items[0]?.id : undefined
+  // Not offered while filtered: up_to_id acknowledges every branch's rows below
+  // that id, not just the ones this filtered view shows.
+  const newestId = page === 1 && !filtered ? data?.items[0]?.id : undefined
 
   const handleAck = (input: { ids?: number[]; up_to_id?: number }) => {
     ack.mutate(input, {
@@ -173,6 +197,21 @@ export function Conflicts() {
           </button>
         </div>
 
+        {filtered && (
+          <Badge tone="info" className="gap-2 py-1 text-sm">
+            {typeFilter === 'ApplyError' ? 'سجلات معلّقة' : 'مُصفّاة'}
+            {branchFilter && ` · ${branchName ?? 'فرع'}`}
+            <button
+              type="button"
+              onClick={clearFilter}
+              aria-label="إلغاء التصفية"
+              className="text-info/70 transition-colors hover:text-info"
+            >
+              <CloseIcon className="size-4" />
+            </button>
+          </Badge>
+        )}
+
         {data && (
           <div className="flex items-center gap-3 text-sm text-muted-foreground">
             <span>{toArabicDigits(data.unacked)} غير مُراجَع</span>
@@ -206,9 +245,19 @@ export function Conflicts() {
       ) : !data || data.items.length === 0 ? (
         <EmptyState
           icon={SuccessIcon}
-          title={all ? 'لا توجد تعارضات' : 'لا توجد تعارضات بحاجة إلى مراجعة'}
+          title={
+            typeFilter === 'ApplyError'
+              ? 'لا توجد سجلات معلّقة'
+              : all
+                ? 'لا توجد تعارضات'
+                : 'لا توجد تعارضات بحاجة إلى مراجعة'
+          }
           description={
-            all ? 'لم يُسجَّل أي تعارض مزامنة بعد.' : 'كل التعارضات المُسجَّلة تمت مراجعتها.'
+            typeFilter === 'ApplyError'
+              ? 'كل السجلات المرفوعة من هذا الفرع وصلت إلى المركز.'
+              : all
+                ? 'لم يُسجَّل أي تعارض مزامنة بعد.'
+                : 'كل التعارضات المُسجَّلة تمت مراجعتها.'
           }
         />
       ) : (
@@ -250,7 +299,9 @@ function ConflictCard({
   onAck: (id: number) => void
   ackPending: boolean
 }) {
-  const rows = item.remote_row != null ? diffFields(item.local_row, item.remote_row) : null
+  const isApplyError = item.conflict_type === 'ApplyError'
+  const rows =
+    !isApplyError && item.remote_row != null ? diffFields(item.local_row, item.remote_row) : null
 
   return (
     <Card className="p-4">
@@ -283,7 +334,9 @@ function ConflictCard({
       </div>
 
       <div className="mt-3">
-        {item.remote_row == null ? (
+        {isApplyError ? (
+          <ApplyErrorDetail item={item} />
+        ) : item.remote_row == null ? (
           <div className="rounded-lg border border-border bg-muted/30 px-3 py-2 text-sm text-muted-foreground">
             حذف من الفرع — تم إبقاء النسخة المركزية
           </div>
@@ -315,5 +368,42 @@ function ConflictCard({
         )}
       </div>
     </Card>
+  )
+}
+
+// An uploaded row central refused (unique index or foreign key) and set aside. remote_row is
+// {"error": "<database message>"}, not a competing row, so there is no diff to show: say what
+// happened, show the branch's values, and say what fixes it.
+function ApplyErrorDetail({ item }: { item: ConflictItem }) {
+  const local = parseRow(item.local_row)
+  const error = parseRow(item.remote_row)?.error
+  const fields = local ? Object.entries(local).filter(([k]) => !SKIP_FIELDS.has(k)) : []
+  return (
+    <div className="space-y-2">
+      <div className="rounded-lg border border-danger/30 bg-danger/5 px-3 py-2 text-sm">
+        <div className="font-medium text-danger">
+          رفض المركز هذا السجل بسبب تعارض في البيانات، وسيُعاد إرساله تلقائياً مع كل مزامنة.
+        </div>
+        <div className="mt-1 text-muted-foreground">
+          صحّح البيانات في الفرع (مثل تغيير باركود مكرر) وسيصل السجل في المزامنة التالية، ثم
+          اضغط «تمت المراجعة».
+        </div>
+        {typeof error === 'string' && (
+          <div className="dir-ltr mt-2 break-words font-mono text-xs text-muted-foreground">
+            {error}
+          </div>
+        )}
+      </div>
+      {fields.length > 0 && (
+        <div className="flex flex-wrap gap-x-4 gap-y-1 text-sm">
+          {fields.map(([k, v]) => (
+            <span key={k}>
+              <span className="text-muted-foreground">{fieldLabel(k)}: </span>
+              <span className="font-medium">{formatValue(v)}</span>
+            </span>
+          ))}
+        </div>
+      )}
+    </div>
   )
 }

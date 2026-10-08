@@ -512,12 +512,14 @@ export const api = {
   // catalog/inventory.
   conflicts: (
     tenantId: string,
-    params: { page?: number; pageSize?: number; all?: boolean },
+    params: { page?: number; pageSize?: number; all?: boolean; branchId?: string; type?: string },
   ) => {
     const q = new URLSearchParams()
     if (params.page) q.set('page', String(params.page))
     if (params.pageSize) q.set('page_size', String(params.pageSize))
     if (params.all) q.set('all', '1')
+    if (params.branchId) q.set('branch_id', params.branchId)
+    if (params.type) q.set('type', params.type)
     const qs = q.toString()
     return request<ConflictsResponse>(
       `/v1/tenants/${tenantId}/hq/conflicts${qs ? `?${qs}` : ''}`,

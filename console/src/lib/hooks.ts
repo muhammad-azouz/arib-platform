@@ -398,6 +398,8 @@ export interface ConflictsParams {
   page?: number
   pageSize?: number
   all?: boolean
+  branchId?: string
+  type?: string
 }
 
 export function useConflicts(tenantId: string | undefined, params: ConflictsParams) {

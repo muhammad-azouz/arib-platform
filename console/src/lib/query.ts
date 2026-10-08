@@ -60,7 +60,7 @@ export const qk = {
   // variant in one call, same pattern as 'hq-inventory'.
   conflicts: (
     id: string,
-    params: { page?: number; pageSize?: number; all?: boolean },
+    params: { page?: number; pageSize?: number; all?: boolean; branchId?: string; type?: string },
   ) => ['hq-conflicts', id, params] as const,
   // Shared 'hq-reports' prefix — one SSE invalidation flips every report view
   // (a sync round is exactly when new bills can land in a period).
