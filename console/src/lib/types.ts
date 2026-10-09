@@ -1720,3 +1720,76 @@ export interface Account {
 export interface MeView {
   account: Account
 }
+
+// --- Branch staff (AribOne POS users) — «موظفو الفروع» ----------------------
+//
+// NOT console members. These are the people who sign in to the AribOne desktop
+// app at a branch (the synced Users/Roles tables); console members live in
+// Settings. The API never returns a password or PIN hash: only whether a PIN
+// is set / locked and whether the account still has the factory password.
+
+export interface StaffMember {
+  id: string
+  name: string
+  login_name: string
+  branch_id: string
+  is_active: boolean
+  role_ids: string[]
+  has_pin: boolean
+  pin_locked: boolean
+  uses_default_password: boolean
+  created_at: string
+}
+
+// GET /v1/tenants/{id}/hq/staff
+export type StaffListResponse = CatalogEnvelope<{ items: StaffMember[] }>
+
+/**
+ * The body of both POST and PUT — a whole form, no partial patch.
+ * `password`: required on create; absent on edit keeps the current one.
+ * PIN, on edit: absent = unchanged, `pin` = set, `clear_pin` = remove.
+ */
+export interface StaffInput {
+  name: string
+  login_name: string
+  password?: string
+  branch_id: string
+  is_active: boolean
+  pin?: string
+  clear_pin?: boolean
+  role_ids: string[]
+}
+
+export interface StaffWriteResult {
+  id: string
+  written_at: string
+}
+
+export interface PosRole {
+  id: string
+  name: string
+  description: string
+  permission_ids: string[]
+  staff_count: number
+  /** The seeded Administrator role: read-only, the gateway refuses to change it. */
+  is_protected: boolean
+}
+
+// Body of POST/PUT /hq/pos-roles. permission_ids replaces the role's whole set.
+export interface PosRoleInput {
+  name: string
+  description: string
+  permission_ids: string[]
+}
+
+export interface PosPermission {
+  id: string
+  name: string
+  description: string
+}
+
+// GET /v1/tenants/{id}/hq/pos-roles
+export type PosRolesResponse = CatalogEnvelope<{
+  roles: PosRole[]
+  permissions: PosPermission[]
+}>

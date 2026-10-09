@@ -206,4 +206,9 @@ export const qk = {
     promotionId: string,
     params: { from?: string; to?: string; branchId?: string },
   ) => ['hq-promotions', id, 'performance', promotionId, params] as const,
+  // Branch staff (AribOne POS users). One 'hq-staff' prefix over the list and
+  // the POS-role list, so a staff write's single invalidation refreshes both
+  // (a role's staff_count changes when someone is assigned to it).
+  staff: (id: string, params: { branchId?: string }) => ['hq-staff', id, 'list', params] as const,
+  posRoles: (id: string) => ['hq-staff', id, 'pos-roles'] as const,
 }

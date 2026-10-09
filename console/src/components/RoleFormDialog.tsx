@@ -26,6 +26,11 @@ import { LoadingState } from '@/components/States'
 // إدارة (see lib/perm.ts's PERM and T110's nav-gating notes).
 const SECTIONS: { label: string; view?: string; manage?: string }[] = [
   { label: 'الفروع', view: PERM.BranchesView, manage: PERM.BranchesManage },
+  { label: 'موظفو الفروع (مستخدمو AribOne)', view: PERM.StaffView, manage: PERM.StaffManage },
+  // Manage only: the POS role list is part of the staff page (staff.view), and the
+  // server stores staff.view alongside this code. Editing roles also needs a member
+  // with no branch allowlist, because a role change reaches every branch.
+  { label: 'أدوار نقطة البيع (كل الفروع)', manage: PERM.PosRolesManage },
   { label: 'الكتالوج', view: PERM.CatalogView, manage: PERM.CatalogManage },
   { label: 'المخزون', view: PERM.InventoryView },
   { label: 'العملاء', view: PERM.CustomersView, manage: PERM.CustomersManage },

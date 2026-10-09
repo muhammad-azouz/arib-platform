@@ -22,6 +22,8 @@ import type {
   ReportSort,
   RoleView,
   ShiftStatusFilter,
+  PosRoleInput,
+  StaffInput,
   SupplierDebtFilter,
   SupplierEditInput,
   Tenant,
@@ -1135,6 +1137,90 @@ export function useDeletePromotion(tenantId: string) {
     mutationFn: (promotionId: string) => api.deletePromotion(tenantId, promotionId),
     onSuccess: () => {
       void qc.invalidateQueries({ queryKey: ['hq-promotions', tenantId] })
+    },
+  })
+}
+
+// --- Branch staff (AribOne POS users) ---------------------------------------
+//
+// Everything shares the 'hq-staff' prefix (the list and the POS-role list), so
+// each write invalidates once and both refresh together.
+
+export function useStaff(tenantId: string | undefined, params: { branchId?: string }) {
+  return useQuery({
+    queryKey: qk.staff(tenantId ?? '', params),
+    queryFn: () => api.staff(tenantId as string, params),
+    enabled: !!tenantId,
+    placeholderData: keepPreviousData,
+  })
+}
+
+export function usePosRoles(tenantId: string | undefined) {
+  return useQuery({
+    queryKey: qk.posRoles(tenantId ?? ''),
+    queryFn: () => api.posRoles(tenantId as string),
+    enabled: !!tenantId,
+  })
+}
+
+export function useCreateStaff(tenantId: string) {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: (input: StaffInput) => api.createStaff(tenantId, input),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ['hq-staff', tenantId] })
+    },
+  })
+}
+
+export function useUpdateStaff(tenantId: string) {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: ({ staffId, input }: { staffId: string; input: StaffInput }) =>
+      api.updateStaff(tenantId, staffId, input),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ['hq-staff', tenantId] })
+    },
+  })
+}
+
+export function useCreatePosRole(tenantId: string) {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: (input: PosRoleInput) => api.createPosRole(tenantId, input),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ['hq-staff', tenantId] })
+    },
+  })
+}
+
+export function useUpdatePosRole(tenantId: string) {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: ({ roleId, input }: { roleId: string; input: PosRoleInput }) =>
+      api.updatePosRole(tenantId, roleId, input),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ['hq-staff', tenantId] })
+    },
+  })
+}
+
+export function useDeletePosRole(tenantId: string) {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: (roleId: string) => api.deletePosRole(tenantId, roleId),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ['hq-staff', tenantId] })
+    },
+  })
+}
+
+export function useClearStaffLockout(tenantId: string) {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: (staffId: string) => api.clearStaffLockout(tenantId, staffId),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ['hq-staff', tenantId] })
     },
   })
 }

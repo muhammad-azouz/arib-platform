@@ -65,6 +65,7 @@ import {
   AddSquare,
   MinusSquare,
   RoundTransferHorizontal,
+  UserId,
 } from '@solar-icons/react'
 
 /** Shared type for any icon component in this module (Solar forward-ref svg). */
@@ -93,6 +94,9 @@ export const BellIcon = BellBing
 export const SupplierIcon = Delivery
 export const OrdersIcon = Bag4
 export const PromotionsIcon = TicketSale
+// AribOne POS users at the branches — deliberately NOT UsersIcon (Customers) or
+// AccountIcon (console members), so the three never look alike.
+export const StaffIcon = UserId
 
 // New-order workspace (T21)
 export const CartIcon = CartLarge2

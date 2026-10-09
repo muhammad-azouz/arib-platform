@@ -11,6 +11,7 @@ import (
 func TestAll_ExactCatalog(t *testing.T) {
 	want := []string{
 		"branches.view", "branches.manage",
+		"staff.view", "staff.manage", "pos_roles.manage",
 		"catalog.view", "catalog.manage",
 		"promotions.view", "promotions.manage",
 		"inventory.view",
@@ -39,6 +40,12 @@ func TestCan(t *testing.T) {
 		{"empty set", nil, CatalogView, false},
 		{"view-only set asked for manage", []string{CatalogView}, CatalogManage, false},
 		{"view-only section has no manage implication", []string{InventoryView}, "inventory.manage", false},
+		{"staff manage implies view", []string{StaffManage}, StaffView, true},
+		{"staff view does not imply manage", []string{StaffView}, StaffManage, false},
+		{"pos roles manage implies staff view", []string{PosRolesManage}, StaffView, true},
+		{"pos roles manage does not imply staff manage", []string{PosRolesManage}, StaffManage, false},
+		{"staff manage does not imply pos roles manage", []string{StaffManage}, PosRolesManage, false},
+		{"branches manage does not leak into staff", []string{BranchesManage}, StaffView, false},
 		{"promotions manage implies view", []string{PromotionsManage}, PromotionsView, true},
 		{"promotions view does not imply manage", []string{PromotionsView}, PromotionsManage, false},
 		{"catalog manage does not leak into promotions", []string{CatalogManage}, PromotionsView, false},
@@ -136,5 +143,15 @@ func TestScope_EmptyAllowlistAllowsEveryBranch(t *testing.T) {
 	}
 	if !member.AllowsBranch("br_1") || !member.AllowsBranch("br_99") {
 		t.Fatal("empty allowlist must allow every branch")
+	}
+}
+
+func TestNormalize_PosRolesManageStoresStaffView(t *testing.T) {
+	got, err := Normalize([]string{PosRolesManage})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 2 || got[0] != PosRolesManage || got[1] != StaffView {
+		t.Fatalf("Normalize(pos_roles.manage) = %v, want [pos_roles.manage staff.view]", got)
 	}
 }

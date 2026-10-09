@@ -56,6 +56,11 @@ import type {
   PromotionStatusFilter,
   PromotionWriteResult,
   PromotionsResponse,
+  PosRoleInput,
+  PosRolesResponse,
+  StaffInput,
+  StaffListResponse,
+  StaffWriteResult,
   ReportSort,
   RoleView,
   SalesReportResponse,
@@ -1042,6 +1047,51 @@ export const api = {
       `/v1/tenants/${tenantId}/hq/promotions/${promotionId}/performance${qs ? `?${qs}` : ''}`,
     )
   },
+
+  // --- Branch staff (AribOne POS users), over the API's /hq/staff* and
+  //     /hq/pos-roles. Passwords and PINs travel only in the write bodies; no
+  //     response carries a credential. Failures arrive as {error, code?,
+  //     field?} and surface through ApiError's message like every other write. ---
+
+  staff: (tenantId: string, params: { branchId?: string }) => {
+    const q = new URLSearchParams()
+    if (params.branchId) q.set('branch_id', params.branchId)
+    const qs = q.toString()
+    return request<StaffListResponse>(`/v1/tenants/${tenantId}/hq/staff${qs ? `?${qs}` : ''}`)
+  },
+
+  createStaff: (tenantId: string, input: StaffInput) =>
+    request<StaffWriteResult>(`/v1/tenants/${tenantId}/hq/staff`, post(input)),
+
+  updateStaff: (tenantId: string, staffId: string, input: StaffInput) =>
+    request<StaffWriteResult>(`/v1/tenants/${tenantId}/hq/staff/${staffId}`, {
+      method: 'PUT',
+      body: JSON.stringify(input),
+    }),
+
+  clearStaffLockout: (tenantId: string, staffId: string) =>
+    request<StaffWriteResult>(
+      `/v1/tenants/${tenantId}/hq/staff/${staffId}/clear-lockout`,
+      post({}),
+    ),
+
+  posRoles: (tenantId: string) =>
+    request<PosRolesResponse>(`/v1/tenants/${tenantId}/hq/pos-roles`),
+
+  // POS roles are company-wide: a write reaches every branch on its next sync.
+  createPosRole: (tenantId: string, input: PosRoleInput) =>
+    request<StaffWriteResult>(`/v1/tenants/${tenantId}/hq/pos-roles`, post(input)),
+
+  updatePosRole: (tenantId: string, roleId: string, input: PosRoleInput) =>
+    request<StaffWriteResult>(`/v1/tenants/${tenantId}/hq/pos-roles/${roleId}`, {
+      method: 'PUT',
+      body: JSON.stringify(input),
+    }),
+
+  deletePosRole: (tenantId: string, roleId: string) =>
+    request<StaffWriteResult>(`/v1/tenants/${tenantId}/hq/pos-roles/${roleId}`, {
+      method: 'DELETE',
+    }),
 
   // SSE stream URL. EventSource cannot set an Authorization header, so the
   // current access token rides the query string (the server keeps this route

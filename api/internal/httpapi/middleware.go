@@ -223,6 +223,21 @@ var permTable = []accessRule{
 	rule(http.MethodGet, "hq/promotions/{promotionId}", perm.PromotionsView),
 	rule(http.MethodPut, "hq/promotions/{promotionId}", perm.PromotionsManage),
 	rule(http.MethodDelete, "hq/promotions/{promotionId}", perm.PromotionsManage),
+	// Branch staff (AribOne POS users). Reads need staff.view; every write
+	// needs staff.manage. Branch scoping is enforced one layer down in
+	// hq.Service, as for promotions.
+	rule(http.MethodGet, "hq/staff", perm.StaffView),
+	rule(http.MethodPost, "hq/staff", perm.StaffManage),
+	rule(http.MethodGet, "hq/staff/{staffId}", perm.StaffView),
+	rule(http.MethodPut, "hq/staff/{staffId}", perm.StaffManage),
+	rule(http.MethodPost, "hq/staff/{staffId}/clear-lockout", perm.StaffManage),
+	rule(http.MethodGet, "hq/pos-roles", perm.StaffView),
+	// POS roles are company-wide: editing needs pos_roles.manage AND an unscoped
+	// member (hq.requireUnscoped), because a role change lands at every branch.
+	rule(http.MethodPost, "hq/pos-roles", perm.PosRolesManage),
+	rule(http.MethodPut, "hq/pos-roles/{roleId}", perm.PosRolesManage),
+	rule(http.MethodDelete, "hq/pos-roles/{roleId}", perm.PosRolesManage),
+
 	// Performance is a report ABOUT a promotion, not a change to one, so it
 	// sits on the view side — unlike /hq/orders/availability, which is
 	// read-only but exists solely to serve a create form.

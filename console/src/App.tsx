@@ -23,6 +23,7 @@ import { Suppliers } from '@/pages/console/Suppliers'
 import { SupplierDetail } from '@/pages/console/SupplierDetail'
 import { Orders } from '@/pages/console/Orders'
 import { Promotions } from '@/pages/console/Promotions'
+import { Staff } from '@/pages/console/Staff'
 import { PromotionDetail } from '@/pages/console/PromotionDetail'
 import { NewOrder } from '@/pages/console/NewOrder'
 import { OrderDetail } from '@/pages/console/OrderDetail'
@@ -80,6 +81,14 @@ export default function App() {
               element={
                 <RequirePerm code={PERM.BranchesView}>
                   <BranchDetail />
+                </RequirePerm>
+              }
+            />
+            <Route
+              path="staff"
+              element={
+                <RequirePerm code={PERM.StaffView}>
+                  <Staff />
                 </RequirePerm>
               }
             />

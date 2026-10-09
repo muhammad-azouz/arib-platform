@@ -238,6 +238,17 @@ func (s *Server) Router() http.Handler {
 					r.Put("/hq/promotions/{promotionId}", s.handleHqPromotionUpdate)
 					r.Delete("/hq/promotions/{promotionId}", s.handleHqPromotionDelete)
 					r.Get("/hq/promotions/{promotionId}/performance", s.handleHqPromotionPerformance)
+
+					// Branch staff (AribOne POS users) and POS roles.
+					r.Get("/hq/staff", s.handleHqStaff)
+					r.Post("/hq/staff", s.handleHqStaffCreate)
+					r.Get("/hq/staff/{staffId}", s.handleHqStaffDetail)
+					r.Put("/hq/staff/{staffId}", s.handleHqStaffUpdate)
+					r.Post("/hq/staff/{staffId}/clear-lockout", s.handleHqStaffClearLockout)
+					r.Get("/hq/pos-roles", s.handleHqPosRoles)
+					r.Post("/hq/pos-roles", s.handleHqPosRoleCreate)
+					r.Put("/hq/pos-roles/{roleId}", s.handleHqPosRoleUpdate)
+					r.Delete("/hq/pos-roles/{roleId}", s.handleHqPosRoleDelete)
 				})
 			})
 		})

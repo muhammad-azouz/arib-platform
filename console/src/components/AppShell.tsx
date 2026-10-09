@@ -12,6 +12,7 @@ import {
   DashboardIcon,
   CompanyIcon,
   BranchIcon,
+  StaffIcon,
   CatalogIcon,
   InventoryIcon,
   UsersIcon,
@@ -68,6 +69,9 @@ export function AppShell() {
   const nav: NavItem[] = [
     { to: base, label: 'نظرة عامة', icon: DashboardIcon, end: true },
     { to: `${base}/branches`, label: 'الفروع', icon: BranchIcon, code: PERM.BranchesView },
+    // AribOne POS users at the branches — NOT console members (those are under
+    // الإعدادات). Sits right after الفروع because staff belong to a branch.
+    { to: `${base}/staff`, label: 'موظفو الفروع', icon: StaffIcon, code: PERM.StaffView },
     { to: `${base}/catalog`, label: 'الكتالوج', icon: CatalogIcon, code: PERM.CatalogView },
     // Catalog-adjacent, not a report: a promotion is authored against products
     // and groups, so it sits next to الكتالوج rather than down with التقارير.

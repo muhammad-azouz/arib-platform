@@ -15,6 +15,9 @@ import type { TenantMeView } from './types'
 export const PERM = {
   BranchesView: 'branches.view',
   BranchesManage: 'branches.manage',
+  StaffView: 'staff.view',
+  StaffManage: 'staff.manage',
+  PosRolesManage: 'pos_roles.manage',
   CatalogView: 'catalog.view',
   CatalogManage: 'catalog.manage',
   PromotionsView: 'promotions.view',

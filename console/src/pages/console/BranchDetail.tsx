@@ -1,6 +1,7 @@
 import type { ReactNode } from 'react'
 import { Link, useParams } from 'react-router-dom'
 import { useBundle, useHqBranches } from '@/lib/hooks'
+import { PERM, useCan } from '@/lib/perm'
 import {
   branchStatusLabel,
   branchStatusTone,
@@ -18,6 +19,7 @@ import {
   DeviceIcon,
   RefreshIcon,
   SecurityIcon,
+  StaffIcon,
   ArrowLeading,
 } from '@/components/icon'
 import { Badge } from '@/components/ui/badge'
@@ -68,6 +70,7 @@ export function BranchDetail() {
   const { tenantId, branchId } = useParams<'tenantId' | 'branchId'>()
   const { data: bundle } = useBundle(tenantId)
   const { data: hq } = useHqBranches(tenantId)
+  const canViewStaff = useCan(tenantId, PERM.StaffView)
 
   if (!bundle) return <LoadingState />
 
@@ -181,6 +184,20 @@ export function BranchDetail() {
             يزامن الفرع بياناته تلقائيًا كل خمس دقائق تقريبًا عندما يكون متصلًا.
           </p>
         </Section>
+
+        {canViewStaff && (
+          <Section icon={StaffIcon} title="موظفو الفرع">
+            <p className="text-muted-foreground">
+              حسابات الدخول إلى برنامج AribOne في هذا الفرع وأدوارها.
+            </p>
+            <Link
+              to={`/tenants/${tenantId}/staff?branch=${branch.ID}`}
+              className="mt-2 inline-block text-primary"
+            >
+              عرض موظفي هذا الفرع
+            </Link>
+          </Section>
+        )}
 
         <Section icon={SecurityIcon} title="التشخيص">
           <p className="text-muted-foreground">

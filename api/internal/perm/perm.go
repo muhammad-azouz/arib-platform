@@ -26,6 +26,9 @@ import (
 const (
 	BranchesView     = "branches.view"
 	BranchesManage   = "branches.manage"
+	StaffView        = "staff.view"
+	StaffManage      = "staff.manage"
+	PosRolesManage   = "pos_roles.manage"
 	CatalogView      = "catalog.view"
 	CatalogManage    = "catalog.manage"
 	PromotionsView   = "promotions.view"
@@ -47,6 +50,8 @@ const (
 // dropping a code is a deliberate edit here, not an incidental one.
 var All = []string{
 	BranchesView, BranchesManage,
+	StaffView, StaffManage,
+	PosRolesManage,
 	CatalogView, CatalogManage,
 	PromotionsView, PromotionsManage,
 	InventoryView,
@@ -68,9 +73,14 @@ var catalogSet = func() map[string]bool {
 
 // managePairs lists every section that has both a view and a manage code
 // (D3's table): inventory and reports have view only, company has manage
-// only, so those three are absent here on purpose.
+// only, so those three are absent here on purpose. pos_roles.manage is the
+// one manage code whose view is another section's (staff.view).
 var managePairs = []struct{ manage, view string }{
 	{BranchesManage, BranchesView},
+	{StaffManage, StaffView},
+	// POS roles have no view code of their own: the list is part of the staff
+	// page (staff.view), and a member who can edit roles must be able to open it.
+	{PosRolesManage, StaffView},
 	{CatalogManage, CatalogView},
 	{PromotionsManage, PromotionsView},
 	{CustomersManage, CustomersView},

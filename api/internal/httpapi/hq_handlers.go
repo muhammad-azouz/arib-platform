@@ -1370,7 +1370,35 @@ func (s *Server) writeHqError(w http.ResponseWriter, err error) {
 		})
 		return
 	}
+	var badStaff *hq.StaffInvalidError
+	if errors.As(err, &badStaff) {
+		writeJSON(w, http.StatusBadRequest, map[string]string{
+			"error": badStaff.Message,
+			"field": badStaff.Field,
+		})
+		return
+	}
 	switch {
+	case errors.Is(err, hq.ErrDuplicateRoleName):
+		writeJSON(w, http.StatusConflict, map[string]string{
+			"code":  "duplicate_role_name",
+			"error": "اسم الدور مستخدم من قبل",
+		})
+	case errors.Is(err, hq.ErrRoleInUse):
+		writeJSON(w, http.StatusConflict, map[string]string{
+			"code":  "role_in_use",
+			"error": "الدور مُسند لموظفين، أزل إسناده منهم أولاً",
+		})
+	case errors.Is(err, hq.ErrRoleProtected):
+		writeJSON(w, http.StatusForbidden, map[string]string{
+			"code":  "role_protected",
+			"error": "دور المدير لا يمكن تعديله أو حذفه",
+		})
+	case errors.Is(err, hq.ErrDuplicateLoginName):
+		writeJSON(w, http.StatusConflict, map[string]string{
+			"code":  "duplicate_login_name",
+			"error": "اسم الدخول مستخدم من قبل",
+		})
 	case errors.Is(err, hq.ErrForbiddenScope):
 		writeJSON(w, http.StatusForbidden, map[string]string{
 			"code":  "forbidden_scope",
@@ -1542,6 +1570,137 @@ func (s *Server) handleHqPromotionUpdate(w http.ResponseWriter, r *http.Request)
 func (s *Server) handleHqPromotionDelete(w http.ResponseWriter, r *http.Request) {
 	c := claimsFrom(r.Context())
 	res, err := s.hq.DeletePromotion(r.Context(), c.Subject, chi.URLParam(r, "id"), chi.URLParam(r, "promotionId"))
+	if err != nil {
+		s.writeHqError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, res)
+}
+
+// --- Branch staff: AribOne POS users and roles («موظفو الفروع»), six routes over
+//     the gateway's /hq/staff* and /hq/pos-roles. Reads are staff.view, writes
+//     staff.manage (permTable holds the split). Branch scoping lives in
+//     hq.Service, as for promotions. These bodies carry plaintext passwords/PINs:
+//     decode errors never echo the body and nothing here logs it. ---
+
+func (s *Server) handleHqStaff(w http.ResponseWriter, r *http.Request) {
+	c := claimsFrom(r.Context())
+	params := url.Values{}
+	// branch_id is repeated: applyScope reconciles the whole list against the
+	// member's allowlist, so collapsing to the first value would drop the rest.
+	for _, v := range r.URL.Query()["branch_id"] {
+		if v != "" {
+			params.Add("branch_id", v)
+		}
+	}
+	env, err := s.hq.Staff(r.Context(), c.Subject, chi.URLParam(r, "id"), params)
+	if err != nil {
+		s.writeHqError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, env)
+}
+
+func (s *Server) handleHqStaffDetail(w http.ResponseWriter, r *http.Request) {
+	c := claimsFrom(r.Context())
+	env, err := s.hq.StaffMember(r.Context(), c.Subject, chi.URLParam(r, "id"), chi.URLParam(r, "staffId"))
+	if err != nil {
+		s.writeHqError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, env)
+}
+
+func (s *Server) handleHqPosRoles(w http.ResponseWriter, r *http.Request) {
+	c := claimsFrom(r.Context())
+	env, err := s.hq.PosRoles(r.Context(), c.Subject, chi.URLParam(r, "id"))
+	if err != nil {
+		s.writeHqError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, env)
+}
+
+func decodeStaffInput(w http.ResponseWriter, r *http.Request) (hq.StaffInput, bool) {
+	var in hq.StaffInput
+	if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
+		writeErr(w, http.StatusBadRequest, "invalid staff body")
+		return in, false
+	}
+	return in, true
+}
+
+func (s *Server) handleHqStaffCreate(w http.ResponseWriter, r *http.Request) {
+	in, ok := decodeStaffInput(w, r)
+	if !ok {
+		return
+	}
+	c := claimsFrom(r.Context())
+	res, err := s.hq.CreateStaff(r.Context(), c.Subject, chi.URLParam(r, "id"), in)
+	if err != nil {
+		s.writeHqError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusCreated, res)
+}
+
+func (s *Server) handleHqStaffUpdate(w http.ResponseWriter, r *http.Request) {
+	in, ok := decodeStaffInput(w, r)
+	if !ok {
+		return
+	}
+	c := claimsFrom(r.Context())
+	res, err := s.hq.UpdateStaff(r.Context(), c.Subject, chi.URLParam(r, "id"), chi.URLParam(r, "staffId"), in)
+	if err != nil {
+		s.writeHqError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, res)
+}
+
+func (s *Server) handleHqStaffClearLockout(w http.ResponseWriter, r *http.Request) {
+	c := claimsFrom(r.Context())
+	res, err := s.hq.ClearStaffLockout(r.Context(), c.Subject, chi.URLParam(r, "id"), chi.URLParam(r, "staffId"))
+	if err != nil {
+		s.writeHqError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, res)
+}
+
+func (s *Server) handleHqPosRoleCreate(w http.ResponseWriter, r *http.Request) {
+	var in hq.PosRoleInput
+	if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
+		writeErr(w, http.StatusBadRequest, "invalid role body")
+		return
+	}
+	c := claimsFrom(r.Context())
+	res, err := s.hq.CreatePosRole(r.Context(), c.Subject, chi.URLParam(r, "id"), in)
+	if err != nil {
+		s.writeHqError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusCreated, res)
+}
+
+func (s *Server) handleHqPosRoleUpdate(w http.ResponseWriter, r *http.Request) {
+	var in hq.PosRoleInput
+	if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
+		writeErr(w, http.StatusBadRequest, "invalid role body")
+		return
+	}
+	c := claimsFrom(r.Context())
+	res, err := s.hq.UpdatePosRole(r.Context(), c.Subject, chi.URLParam(r, "id"), chi.URLParam(r, "roleId"), in)
+	if err != nil {
+		s.writeHqError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, res)
+}
+
+func (s *Server) handleHqPosRoleDelete(w http.ResponseWriter, r *http.Request) {
+	c := claimsFrom(r.Context())
+	res, err := s.hq.DeletePosRole(r.Context(), c.Subject, chi.URLParam(r, "id"), chi.URLParam(r, "roleId"))
 	if err != nil {
 		s.writeHqError(w, err)
 		return
