@@ -587,6 +587,9 @@ export interface ConflictsData {
   page: number
   page_size: number
   items: ConflictItem[]
+  // The filters the server actually applied (branch_id/type). Absent from an older server that
+  // ignores them — the page must not then claim the list is filtered.
+  applied_filters?: { branch_id?: string | null; type?: string | null } | null
 }
 
 // GET /v1/tenants/{id}/hq/conflicts

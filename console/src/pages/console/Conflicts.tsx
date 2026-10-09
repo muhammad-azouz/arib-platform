@@ -152,7 +152,28 @@ export function Conflicts() {
 
   const notSubscribed = query.error instanceof ApiError && query.error.status === 402
   const gatewayError = query.error instanceof ApiError && query.error.status !== 402
-  const data = query.data?.data
+  const raw = query.data?.data
+  // Trust the filter only when the server confirms it. An older license server or gateway drops
+  // branch_id/type and returns everything; then narrow the visible page here and say the result
+  // is partial, rather than showing a "filtered" chip over an unfiltered list.
+  const applied = raw?.applied_filters
+  const confirmed =
+    !filtered ||
+    (!!applied &&
+      (!branchFilter || applied.branch_id?.toLowerCase() === branchFilter.toLowerCase()) &&
+      (!typeFilter || applied.type === typeFilter))
+  const partial = filtered && !!raw && !confirmed
+  const data =
+    raw && partial
+      ? {
+          ...raw,
+          items: raw.items.filter(
+            (i) =>
+              (!branchFilter || i.branch_id?.toLowerCase() === branchFilter.toLowerCase()) &&
+              (!typeFilter || i.conflict_type === typeFilter),
+          ),
+        }
+      : raw
   // Pages are newest-first (Id DESC), so the first row of page 1 carries the
   // highest id currently on screen — the cutoff for "mark everything read".
   // Not offered while filtered: up_to_id acknowledges every branch's rows below
@@ -212,7 +233,7 @@ export function Conflicts() {
           </Badge>
         )}
 
-        {data && (
+        {data && !partial && (
           <div className="flex items-center gap-3 text-sm text-muted-foreground">
             <span>{toArabicDigits(data.unacked)} غير مُراجَع</span>
             {data.unacked > 0 && newestId !== undefined && (
@@ -228,6 +249,13 @@ export function Conflicts() {
           </div>
         )}
       </div>
+
+      {partial && (
+        <p className="mb-4 flex items-start gap-2 rounded-lg border border-warning/30 bg-warning/5 px-3 py-2 text-sm text-warning">
+          <DangerIcon className="mt-0.5 size-4 shrink-0" />
+          التصفية غير مدعومة من الخادم بعد — النتائج المعروضة جزئية (من الصفحة الحالية فقط).
+        </p>
+      )}
 
       {notSubscribed ? (
         <EmptyState
