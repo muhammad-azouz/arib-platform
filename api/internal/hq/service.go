@@ -1307,6 +1307,16 @@ type ConflictsData struct {
 	Page     int            `json:"page"`
 	PageSize int            `json:"page_size"`
 	Items    []ConflictItem `json:"items"`
+	// AppliedFilters echoes the filters the gateway actually honoured. Nil (omitted) from an
+	// older gateway, which ignores branch_id/type: the console then knows not to claim the
+	// list is filtered.
+	AppliedFilters *ConflictFilters `json:"applied_filters,omitempty"`
+}
+
+// ConflictFilters are the optional /hq/conflicts filters; nil means "not filtered on".
+type ConflictFilters struct {
+	BranchID *string `json:"branch_id"`
+	Type     *string `json:"type"`
 }
 
 // ConflictsEnvelope wraps a conflicts page in the freshness envelope.

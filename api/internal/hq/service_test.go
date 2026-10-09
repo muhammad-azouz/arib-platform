@@ -2474,3 +2474,36 @@ func TestBranches_PassesThroughUnackedApplyErrors(t *testing.T) {
 		}
 	})
 }
+
+// applied_filters is passed through as the gateway sent it, and stays nil (omitted) for an older
+// gateway that does not send it, which is how the console tells a real filter from a dropped one.
+func TestConflicts_PassesThroughAppliedFilters(t *testing.T) {
+	run := func(t *testing.T, body string) ConflictsData {
+		gw := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(body))
+		}))
+		defer gw.Close()
+		st := testStore(gw.URL)
+		env, err := New(st, &fakeTokens{}, nil).Conflicts(context.Background(), "acc_owner", "tnt_1",
+			url.Values{"branch_id": {"b1"}, "type": {"ApplyError"}})
+		if err != nil {
+			t.Fatalf("conflicts: %v", err)
+		}
+		return env.Data
+	}
+
+	t.Run("new gateway confirms", func(t *testing.T) {
+		d := run(t, `{"unacked":1,"total":1,"items":[],"applied_filters":{"branch_id":"b1","type":"ApplyError"}}`)
+		f := d.AppliedFilters
+		if f == nil || f.BranchID == nil || *f.BranchID != "b1" || f.Type == nil || *f.Type != "ApplyError" {
+			t.Fatalf("applied_filters not passed through: %+v", f)
+		}
+	})
+
+	t.Run("older gateway leaves it nil", func(t *testing.T) {
+		if d := run(t, `{"unacked":4,"total":4,"items":[]}`); d.AppliedFilters != nil {
+			t.Fatalf("expected nil applied_filters, got %+v", d.AppliedFilters)
+		}
+	})
+}
